@@ -101,6 +101,63 @@ match, and the single script becomes a package.
   shape it found, never its content, when none of those fits. No `KeyError` ever
   reaches the user.
 
+### Fixed
+
+Found by two rounds of adversarial review before this version was released, so
+none of these ever reached a published version. Each was reproduced first.
+
+- **The `vitals` preset silently ignored `--metric`.** It took a code path that
+  never read the flag, so an explicit request was discarded with exit 0. Worst
+  of all, `vitals --metric res` ran all five queries instead of refusing, which
+  defeated the Real Experience Score refusal every other preset enforces. Now
+  rejected, with the Real Experience Score message taking precedence over the
+  generic one.
+- **`overview` sent an untranslated granularity.** Given the alias spellings
+  (`1d`, `1h`, `1mo`) it put them straight onto the wire as `by=1d`, which the
+  Web Analytics API does not accept. Only the overview path skipped the
+  translator that `trend` already used.
+- **An ungrouped Speed Insights value of exactly `0.0` read as "no data".**
+  Emptiness was decided by truthiness, but a Cumulative Layout Shift of `0.0` is
+  a perfect score, not an absent measurement. The two surfaces now decide
+  emptiness differently.
+- **The team did not reach the Speed Insights scope object.** It travelled only
+  as a query parameter, but `POST /v2/observability/query` declares an empty
+  `parameters` list in the OpenAPI document, so it accepts no query parameters
+  at all, while the Web Analytics endpoints explicitly declare `teamId` and
+  `slug`. A team owned project would likely have resolved against the personal
+  account. The team is now carried inside `scope` on both scope types, with the
+  inert query parameter still sent so the two channels cannot disagree.
+- **`NaN`, `Infinity` and `-Infinity` could escape as a traceback**, because
+  `json.loads` accepts all three by default. Refused at the parse boundary.
+- **A number that overflowed to infinity slipped past that guard.** `1e999` is
+  well formed JSON and never reaches `parse_constant`, so it became `inf`,
+  rendered as `inf` in a table, and came back out of `--json` as a bare
+  `Infinity`, which a strict consumer such as `jq` rejects. The parsed body is
+  now walked and any non-finite number refused.
+- **Redirects were followed**, so the operation allowlist bound only the first
+  hop and a redirect could have handed the bearer token to another host. Both
+  call sites pass `allow_redirects=False` and report a 3xx as an error naming
+  the location, so the allowlist binds every hop. That error also reports the
+  real attempt count rather than always claiming one.
+- **Control characters from a response reached the terminal.** Row labels were
+  hardened first, then review found three more values from the same response
+  that bypassed the boundary: a `Location` header, Vercel's own `error.message`,
+  and a metric name claimed off a row, which becomes a table column header and a
+  CSV header cell. A hostile `error.message` could blank the screen and forge a
+  reassuring second line under the tool's own `error:` prefix. All of them are
+  sanitized now, and `sanitize_label` moved to the package root so every layer
+  can reach it.
+- **A very short credential turned messages into confetti.** The scrubber
+  replaced the bare token wherever it appeared, so a token of `t` rewrote
+  `https` as `h<redacted><redacted>ps`. Substring matching now requires a
+  credential long enough to be one; the whole header value is still scrubbed
+  regardless of length, so nothing is exposed.
+- **The stdlib shadowing repair covered only one invocation form.** This package
+  contains `http.py`, which shadows the standard library `http` that `requests`
+  imports. The repair was guarded to the plain-script path, leaving
+  `python3 -m vercel_insights` breakable by a stray `sys.path` entry, confirmed
+  before fixing. It is unconditional now.
+
 ### Documentation
 
 - `SKILL.md` describes both surfaces and when to use each, extends the

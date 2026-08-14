@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, TypeGuard
 
-from . import OTHERS_LABEL, ApiError, ConfigError
+from . import OTHERS_LABEL, ApiError, ConfigError, sanitize_label
 from .http import PreparedRequest, default_headers, operation_url
 from .render import (
     DATA_POINTS_METRIC,
@@ -43,7 +43,6 @@ from .render import (
     UNIT_SCORE,
     Result,
     Row,
-    sanitize_label,
 )
 from .render import stringify_label as _stringify
 from .timerange import to_api_timestamp
@@ -477,29 +476,40 @@ def build_scope(
     project selection (``--all``), and the ambient team. Hence a discriminated
     object with a ``type`` of ``project`` or ``owner``.
 
-    The team travels on one channel only, and that channel is the ``teamId`` or
-    ``slug`` **query parameter**, never a field inside this object. That is
-    what every other endpoint in this REST API does, it is what the Web
-    Analytics surface here already does, and one channel used consistently for
-    both scope types is easier to correct than two used inconsistently. So the
-    scope names what to query and the query parameters name whose it is, for
-    ``--all`` and ``--project`` alike. The ``team`` and ``team_slug`` arguments
-    are accepted so that a caller passing the same keyword set to every scope
-    builder still works, and are deliberately unused.
+    The team goes **inside this object**, on both branches. That is not a style
+    choice: ``POST /v2/observability/query`` declares an empty ``parameters``
+    list in the OpenAPI document, meaning it takes no query parameters at all,
+    while the Web Analytics endpoints explicitly declare ``teamId`` and ``slug``
+    as query parameters. So on this endpoint the body is the only channel the
+    schema offers, and a team that travelled only as a query parameter would
+    likely be ignored, resolving a team owned project against the personal
+    account and returning 403 or an empty result.
+
+    ``build_request`` also still sends the ``teamId``/``slug`` query parameter.
+    An undeclared query parameter is inert on every Vercel endpoint observed so
+    far, so carrying it costs nothing and covers the case where the server reads
+    the team from there instead. Both channels agree, so whichever one the
+    server honours gets the same answer.
 
     Raises:
         ConfigError: When neither a project nor ``--all`` was supplied.
     """
-    del team, team_slug  # The query parameters carry these; see above.
+    scope: dict[str, Any]
     if all_projects:
-        return {"type": "owner"}
-    if not project:
+        scope = {"type": "owner"}
+    elif not project:
         raise ConfigError(
             "no project configured; pass --project with a project id or name, "
             "set VERCEL_PROJECT_ID in the environment, or pass --all to query "
             "every project in the team"
         )
-    return {"type": "project", "projectId": project}
+    else:
+        scope = {"type": "project", "projectId": project}
+    if team:
+        scope["teamId"] = team
+    elif team_slug:
+        scope["slug"] = team_slug
+    return scope
 
 
 def build_granularity(interval: str) -> dict[str, Any]:

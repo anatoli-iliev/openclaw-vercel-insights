@@ -27,13 +27,13 @@ from helpers import (
     utc,
 )
 
+from vercel_insights import sanitize_label
 from vercel_insights.render import (
     Result,
     format_csv,
     format_json,
     format_table,
     render_overview,
-    sanitize_label,
     stringify_label,
 )
 from vercel_insights.webanalytics import normalize

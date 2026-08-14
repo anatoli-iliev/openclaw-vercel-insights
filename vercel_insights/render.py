@@ -22,13 +22,12 @@ from __future__ import annotations
 import csv
 import io
 import json
-import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from . import OTHERS_LABEL
+from . import OTHERS_LABEL, sanitize_label
 from .timerange import TIME_GRANULARITIES, format_timestamp, to_api_timestamp
 
 #: Number of table rows the overview preset shows per section.
@@ -81,31 +80,10 @@ VITALS_LEGEND: tuple[str, ...] = (
 # The untrusted-input boundary
 # ---------------------------------------------------------------------------
 
-#: Every C0 control character, DEL, and every C1 control character. A response
-#: derived label is remote input in the strongest sense: a UTM campaign is
-#: whatever a visitor typed into a query string, and request paths, referrer
-#: hostnames, event names, event property values and routes are no better. Any
-#: of them can carry an ANSI escape sequence, a carriage return that rewrites
-#: the line already printed, or a byte that breaks a CSV cell open, so the
-#: whole class is escaped rather than any one sequence being pattern matched.
-_CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
-
-
-def _escape_control(match: re.Match[str]) -> str:
-    """Render one control character as a visible, unambiguous escape."""
-    return f"\\x{ord(match.group()):02x}"
-
-
-def sanitize_label(text: str) -> str:
-    """Make a response-derived string safe to print, in any output format.
-
-    Control characters become visible escapes (``\\x1b`` for ESC), so the value
-    still reads as what came back rather than being silently dropped, and can
-    no longer move the cursor, set a colour, blank the screen, or split a row
-    across two lines of CSV. Everything else, printable Unicode included, is
-    left exactly as the API sent it.
-    """
-    return _CONTROL_CHARACTERS.sub(_escape_control, text)
+# ``sanitize_label`` lives in the package root so that every layer can reach it,
+# including :mod:`vercel_insights.http`, which has to scrub a ``Location`` header
+# and a server supplied error message before either reaches a terminal. It is
+# re-exported here because this module is where labels are rendered.
 
 
 def stringify_label(value: Any) -> str:

@@ -19,6 +19,7 @@ dependency graph inside the package stays acyclic.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -40,7 +41,46 @@ __all__ = [
     "ApiError",
     "ConfigError",
     "RateLimitError",
+    "sanitize_label",
 ]
+
+
+# ---------------------------------------------------------------------------
+# The untrusted-input boundary
+# ---------------------------------------------------------------------------
+
+#: Every C0 control character, DEL, and every C1 control character. Anything a
+#: response carries is remote input in the strongest sense: a UTM campaign is
+#: whatever a visitor typed into a query string, and request paths, referrer
+#: hostnames, event names, routes, a server supplied error message and a
+#: ``Location`` header are no better. Any of them can carry an ANSI escape
+#: sequence, a carriage return that rewrites the line already printed, or a byte
+#: that breaks a CSV cell open, so the whole class is escaped rather than any one
+#: sequence being pattern matched.
+_CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def _escape_control(match: re.Match[str]) -> str:
+    """Render one control character as a visible, unambiguous escape."""
+    return f"\\x{ord(match.group()):02x}"
+
+
+def sanitize_label(text: str) -> str:
+    """Make a response-derived string safe to print, in any output format.
+
+    Control characters become visible escapes (``\\x1b`` for ESC), so the value
+    still reads as what came back rather than being silently dropped, and can
+    no longer move the cursor, set a colour, blank the screen, forge a plausible
+    looking second line of output, or split a row across two lines of CSV.
+    Everything else, printable Unicode included, is left exactly as the API sent
+    it.
+
+    This lives in the package root rather than in :mod:`vercel_insights.render`
+    because it guards more than labels: metric names claimed from a response
+    become column headers, and :mod:`vercel_insights.http` puts a ``Location``
+    header and Vercel's own error message straight onto stderr.
+    """
+    return _CONTROL_CHARACTERS.sub(_escape_control, text)
 
 
 class ConfigError(Exception):

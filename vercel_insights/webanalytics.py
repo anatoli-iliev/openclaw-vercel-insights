@@ -14,10 +14,10 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any, TypeGuard
 
-from . import OTHERS_LABEL, ApiError, ConfigError
+from . import OTHERS_LABEL, ApiError, ConfigError, sanitize_label
 from .http import PreparedRequest, default_headers, operation_url
 from .odata import validate_key_segments
-from .render import Result, Row, sanitize_label
+from .render import Result, Row
 from .render import stringify_label as _stringify
 from .timerange import TIME_GRANULARITIES, to_api_timestamp
 
@@ -491,7 +491,14 @@ def _extract_metrics(
     preferred: Sequence[str],
     skip: set[str],
 ) -> tuple[dict[str, float], list[str]]:
-    """Pull numeric metrics out of a row, known names first, extras after."""
+    """Pull numeric metrics out of a row, known names first, extras after.
+
+    An extra name is whatever key the response happened to carry, and it becomes
+    a table column header and a CSV header cell, so it is sanitized for the same
+    reason a label is. The preferred names are our own constants and need no
+    such treatment, but they go through the same call so no future edit can
+    reintroduce the gap by reordering these loops.
+    """
     metrics: dict[str, float] = {}
     names: list[str] = []
     for name in preferred:
@@ -502,6 +509,7 @@ def _extract_metrics(
     for name, value in entry.items():
         if name in skip or name in metrics or not _is_number(value):
             continue
-        metrics[name] = value
-        names.append(name)
+        safe_name = sanitize_label(name)
+        metrics[safe_name] = value
+        names.append(safe_name)
     return metrics, names

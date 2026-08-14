@@ -1107,22 +1107,25 @@ def test_a_single_metric_preset_still_accepts_the_metric_flag(cli: Cli) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 7. The team travels on exactly one channel, for both scope types
+# 7. The team reaches the scope object, for both scope types
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     ("selection", "expected_scope"),
     [
-        (["--project", PROJECT], {"type": "project", "projectId": PROJECT}),
-        (["--all"], {"type": "owner"}),
+        (
+            ["--project", PROJECT],
+            {"type": "project", "projectId": PROJECT, "TEAM_KEY": "team_abc"},
+        ),
+        (["--all"], {"type": "owner", "TEAM_KEY": "team_abc"}),
     ],
     ids=["project-scope", "owner-scope"],
 )
 @pytest.mark.parametrize(
     ("flag", "parameter"), [("--team", "teamId"), ("--team-slug", "slug")]
 )
-def test_both_scope_types_carry_the_team_on_the_same_single_channel(
+def test_both_scope_types_carry_the_team_inside_the_scope_object(
     cli: Cli,
     selection: list[str],
     expected_scope: dict[str, Any],
@@ -1137,13 +1140,19 @@ def test_both_scope_types_carry_the_team_on_the_same_single_channel(
     )
     assert code == 0, err
     call = session.calls[0]
-    # The scope names what to query and nothing else: no team field, of any
-    # spelling, in either scope type.
-    assert call["json"]["scope"] == expected_scope
-    assert "team_abc" not in json.dumps(call["json"])
-    # The team travels as a query parameter, exactly once.
+    # This endpoint declares no query parameters, so the scope object is the
+    # only channel its schema offers for the team; both scope types carry it.
+    wanted = {
+        (parameter if key == "TEAM_KEY" else key): value
+        for key, value in expected_scope.items()
+    }
+    assert call["json"]["scope"] == wanted
+    # The query parameter rides along inert, so both channels agree.
     assert call["params"] == [(parameter, "team_abc")]
-    assert json.dumps(call).count("team_abc") == 1
+    # Exactly twice, and deliberately so: once in the scope object (the only
+    # channel this endpoint's schema offers) and once as the inert query
+    # parameter, so the two can never disagree.
+    assert json.dumps(call).count("team_abc") == 2
 
 
 def test_a_run_with_no_team_carries_no_team_channel_at_all(cli: Cli) -> None:

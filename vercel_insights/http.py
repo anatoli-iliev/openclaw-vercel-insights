@@ -38,7 +38,15 @@ from urllib.parse import urlencode
 
 import requests
 
-from . import BASE_URL, DOCS_TOKEN_URL, VERSION, ApiError, ConfigError, RateLimitError
+from . import (
+    BASE_URL,
+    DOCS_TOKEN_URL,
+    VERSION,
+    ApiError,
+    ConfigError,
+    RateLimitError,
+    sanitize_label,
+)
 
 #: Every operation this client can perform, and nothing else. The key is what
 #: callers pass around; the method and the URL template are read from here and
@@ -63,6 +71,11 @@ MAX_SLEEP_SECONDS = 60.0
 REDACTED_BEARER = "Bearer <redacted>"
 REDACTED = "<redacted>"
 _SENSITIVE_HEADERS = frozenset({"authorization", "proxy-authorization", "cookie"})
+
+#: Shortest bare credential that is substring matched when scrubbing text. A
+#: real Vercel token is far longer; anything shorter is not a credential and
+#: matching it would corrupt every message it appears inside.
+MIN_SCRUBBABLE_CREDENTIAL = 8
 
 #: A path segment substituted into a URL template. No slash, no scheme, no
 #: host, so a template can only ever be filled in with a single path segment.
@@ -240,7 +253,15 @@ def _credential_values(headers: Mapping[str, str]) -> list[str]:
         values.add(value)
         if value.startswith("Bearer "):
             bearer = value[len("Bearer ") :].strip()
-            if bearer:
+            # A bare credential is replaced wherever it appears, which is only
+            # safe while it is long enough to be a credential. A one or two
+            # character value would match ordinary letters everywhere and turn
+            # every message into unreadable confetti, for example a token of
+            # "t" rewriting "https" as "h<redacted><redacted>ps". The whole
+            # header value is always scrubbed regardless of length, so nothing
+            # is exposed by declining to substring match a value this short:
+            # such a value is rejected as a token by validate_token anyway.
+            if len(bearer) >= MIN_SCRUBBABLE_CREDENTIAL:
                 values.add(bearer)
     return sorted(values, key=len, reverse=True)
 
@@ -518,16 +539,46 @@ def _reject_json_constant(name: str) -> float:
     raise ValueError(f"{name} is not valid JSON")
 
 
+def _reject_non_finite(value: Any) -> None:
+    """Walk a parsed body and refuse any float that is not finite.
+
+    :func:`_reject_json_constant` only sees the three bare literal tokens, so it
+    misses a number that overflows on the way in: ``1e999`` is well formed JSON
+    and ``json.loads`` reads it as ``inf`` without ever calling ``parse_constant``.
+    An ``inf`` that gets through renders as ``inf`` in a table and, worse, comes
+    back out of ``--json`` as a bare ``Infinity``, which is not JSON and which a
+    strict consumer such as ``jq`` refuses. Since this client's own README sells
+    piping ``--json`` into ``jq``, that has to be caught here rather than papered
+    over at the dump site.
+
+    Raises:
+        ValueError: On the first non-finite float found.
+    """
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("a non-finite number is not valid JSON")
+        return
+    if isinstance(value, Mapping):
+        for item in value.values():
+            _reject_non_finite(item)
+        return
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            _reject_non_finite(item)
+
+
 def _parse_body(text: str) -> dict[str, Any] | None:
     """Parse a response body, returning ``None`` when it is not a JSON object.
 
     ``None`` also covers a body that is syntactically JSON but carries a
-    non-standard literal; see :func:`_reject_json_constant`.
+    non-standard literal or a non-finite number; see
+    :func:`_reject_json_constant` and :func:`_reject_non_finite`.
     """
     if not text:
         return None
     try:
         parsed = json.loads(text, parse_constant=_reject_json_constant)
+        _reject_non_finite(parsed)
     except ValueError:
         return None
     if isinstance(parsed, dict):
@@ -551,7 +602,10 @@ def _api_error(
     else:
         snippet = text.strip().replace("\n", " ")[:300]
         message_text = snippet or "the API returned no error message"
-    message_text = scrub(message_text)
+    # The message is quoted verbatim from the response, so it is remote input:
+    # an error body carrying an ANSI escape could blank the screen and forge a
+    # convincing second line ("error: everything fine") under our own prefix.
+    message_text = sanitize_label(scrub(message_text))
     if status == 429 or code_text == "rate_limited":
         limit = _error_field(body, "limit")
         return RateLimitError(
@@ -569,6 +623,7 @@ def _redirect_error(
     response: ResponseLike,
     request: PreparedRequest,
     scrub: Callable[[str], str],
+    attempts: int,
 ) -> ApiError:
     """Refuse a redirect rather than carrying the credential to its target.
 
@@ -578,11 +633,15 @@ def _redirect_error(
     ``Location`` names. None of the three operations is documented to redirect,
     so one is a change worth reporting rather than a step to take silently.
 
-    The location is named because it is the whole diagnostic, and it is scrubbed
-    like every other string on its way into an :class:`ApiError`.
+    The location is named because it is the whole diagnostic. It is a response
+    header, so it is remote input: it goes through :func:`sanitize_label` as well
+    as the credential scrub, or a crafted ``Location`` could paint whatever it
+    liked on the terminal of whoever ran the command.
     """
     location = response.headers.get("Location") or response.headers.get("location")
-    target = f" to {scrub(location)}" if location else " (no Location header)"
+    target = (
+        f" to {sanitize_label(scrub(location))}" if location else " (no Location header)"
+    )
     return ApiError(
         status,
         "unexpected_redirect",
@@ -594,7 +653,7 @@ def _redirect_error(
             "of them is documented to redirect, so check for a proxy or a "
             "captive network between you and api.vercel.com"
         ),
-        attempts=1,
+        attempts=attempts,
     )
 
 
@@ -694,7 +753,7 @@ def execute(
         body = _parse_body(text)
 
         if 300 <= status < 400:
-            raise _redirect_error(status, response, request, safe)
+            raise _redirect_error(status, response, request, safe, attempt + 1)
 
         if 200 <= status < 300:
             if body is None:

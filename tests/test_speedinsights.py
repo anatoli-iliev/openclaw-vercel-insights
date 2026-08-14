@@ -397,12 +397,12 @@ def test_the_request_uses_the_observability_query_operation_and_its_url() -> Non
 def test_all_projects_scope_replaces_the_project_scope() -> None:
     body = build(project=None, all_projects=True).json_body
     assert body["scope"] == {"type": "owner"}
-    # An owner scope carries its team exactly as a project scope does: on the
-    # query parameter, never inside the scope object.
+    # An owner scope carries its team exactly as a project scope does: inside
+    # the scope object, with the inert query parameter sent as well.
     request = build(project=None, all_projects=True, team="team_abc")
     assert request.params == [("teamId", "team_abc")]
     assert request.json_body is not None
-    assert request.json_body["scope"] == {"type": "owner"}
+    assert request.json_body["scope"] == {"type": "owner", "teamId": "team_abc"}
 
 
 def test_no_project_and_no_all_is_refused_before_a_body_exists() -> None:
@@ -412,21 +412,29 @@ def test_no_project_and_no_all_is_refused_before_a_body_exists() -> None:
     assert "--project" in str(excinfo.value)
 
 
-def test_a_team_id_travels_as_a_query_parameter_and_never_inside_the_scope() -> None:
-    # One channel for the team, and it is the query parameter every other
-    # endpoint in this REST API uses. The scope says what to query; the query
-    # parameters say whose it is, for a project scope and an owner scope alike.
+def test_a_team_id_reaches_the_scope_object_and_the_query_parameter() -> None:
+    # This endpoint declares no query parameters at all, so the body is the only
+    # channel its schema offers; the query parameter rides along inert so both
+    # agree whichever one the server actually reads.
     request = build(team="team_abc")
     assert request.params == [("teamId", "team_abc")]
     assert request.json_body is not None
-    assert request.json_body["scope"] == {"type": "project", "projectId": PROJECT}
+    assert request.json_body["scope"] == {
+        "type": "project",
+        "projectId": PROJECT,
+        "teamId": "team_abc",
+    }
 
 
 def test_a_team_slug_travels_as_slug_rather_than_team_id() -> None:
     request = build(team_slug="acme")
     assert request.params == [("slug", "acme")]
     assert request.json_body is not None
-    assert request.json_body["scope"] == {"type": "project", "projectId": PROJECT}
+    assert request.json_body["scope"] == {
+        "type": "project",
+        "projectId": PROJECT,
+        "slug": "acme",
+    }
 
 
 @pytest.mark.parametrize(
@@ -446,21 +454,24 @@ def test_a_team_slug_travels_as_slug_rather_than_team_id() -> None:
     ],
     ids=["team-id", "team-slug", "no-team"],
 )
-def test_the_team_uses_one_channel_and_the_same_one_for_every_scope_type(
+def test_the_team_reaches_the_scope_object_for_every_scope_type(
     selection: dict[str, Any],
     team_kwargs: dict[str, str],
     expected_params: list[tuple[str, str]],
 ) -> None:
-    # One channel used consistently is easier to correct than two used
-    # inconsistently, so the scope names what to query and the query parameters
-    # name whose it is, for --all and --project alike.
+    # POST /v2/observability/query declares an empty `parameters` list in the
+    # OpenAPI document, so it takes no query parameters at all, while the Web
+    # Analytics endpoints explicitly declare teamId and slug. The body is the
+    # only channel this endpoint's schema offers, so a team that travelled only
+    # as a query parameter would resolve a team owned project against the
+    # personal account.
     request = build(**selection, **team_kwargs)
     assert request.params == expected_params
     assert request.json_body is not None
     scope = request.json_body["scope"]
-    assert set(scope) <= {"type", "projectId"}
+    assert set(scope) <= {"type", "projectId", "teamId", "slug"}
     for value in team_kwargs.values():
-        assert value not in json.dumps(scope)
+        assert value in json.dumps(scope), "the team must reach the scope object"
 
 
 def test_every_optional_field_is_omitted_rather_than_sent_as_null() -> None:
