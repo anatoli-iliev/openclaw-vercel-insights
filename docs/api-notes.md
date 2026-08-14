@@ -287,3 +287,203 @@ Vercel may retain beyond the guarantee.
 Other plan-gated behavior worth knowing: custom events require Pro or above, and
 UTM parameters require Web Analytics Plus or Enterprise. A query for those on a
 lower plan is expected to come back empty rather than to fail.
+
+# Vercel Speed Insights: verified ground truth
+
+Read from the live docs and the OpenAPI document on 2026-08-14. Speed Insights
+does not have a dedicated query API. It is exposed through Vercel's general
+Observability query surface, which is a different shape from Web Analytics.
+
+Sources:
+
+- <https://vercel.com/docs/speed-insights/accessing-metrics-with-vercel-cli> (metric ids, worked queries)
+- <https://vercel.com/docs/cli/metrics> (the full option surface `vercel metrics` exposes)
+- <https://vercel.com/docs/query/reference> (aggregations, filter operators, group-by fields)
+- <https://vercel.com/docs/speed-insights/metrics> (metric definitions, targets, percentile semantics)
+- <https://openapi.vercel.sh/> (the three observability endpoints)
+
+## Endpoints
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| POST | `/v2/observability/query` | Run one metric query. This is the only way to read Speed Insights data. |
+| GET | `/v2/observability/schema` | List queryable metrics for the current scope. |
+| GET | `/v2/observability/schema/{metricId}` | Describe one metric: dimensions, unit, aggregations. |
+
+There is no GET query endpoint. `POST` here is a read: the body carries the
+query, and nothing is created or mutated. The `/speed-insights/toggle` and
+`/web/insights/toggle` endpoints in the same API are writes that enable or
+disable the feature, and this project never calls them.
+
+## Metric ids
+
+Confirmed verbatim from the CLI documentation. Every value metric has a matching
+count metric giving the number of collected data points behind the value.
+
+| Web Vital | Value metric | Data point count metric | Unit |
+| --- | --- | --- | --- |
+| Largest Contentful Paint | `vercel.speed_insights.lcp_ms` | `vercel.speed_insights.lcp_count` | milliseconds |
+| Interaction to Next Paint | `vercel.speed_insights.inp_ms` | `vercel.speed_insights.inp_count` | milliseconds |
+| Cumulative Layout Shift | `vercel.speed_insights.cls` | `vercel.speed_insights.cls_count` | unitless score |
+| First Contentful Paint | `vercel.speed_insights.fcp_ms` | `vercel.speed_insights.fcp_count` | milliseconds |
+| Time to First Byte | `vercel.speed_insights.ttfb_ms` | `vercel.speed_insights.ttfb_count` | milliseconds |
+
+`vercel.speed_insights` is also valid as a prefix for the schema endpoint.
+
+**Real Experience Score is not queryable.** The docs state plainly: "Real
+Experience Score is not available through `vercel metrics`; use the Speed
+Insights dashboard to view Real Experience Score." The same applies here, since
+both go through the same query surface. Do not invent an RES metric id.
+
+## Request body
+
+`POST /v2/observability/query`, `Authorization: Bearer <token>`, JSON body.
+Required: `metric` and `scope`.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `metric` | string | Metric id, required. |
+| `scope` | object | Owner or project scope, required. |
+| `aggregation` | string | Defaults to the metric's `defaultAggregation` from the schema. Some aggregations take a dimension as `<agg>/<dimension>`, for example `unique/visitor_id`. |
+| `groupBy` | string[] | Dimensions to group by. Repeatable, same JSON-dimension and quoting rules as Web Analytics. |
+| `filter` | string | OData filter. |
+| `limit` | number | Maximum grouped results per time bucket. The CLI documents a default of 10. |
+| `orderBy` | string | Rollup column for grouped results. The CLI exposes this as `count` or `value`, defaulting to count. |
+| `orderDirection` | string | `asc` or `desc`, default `desc`. |
+| `granularity` | object | Time bucket size. |
+| `startTime` | string | Start timestamp. |
+| `endTime` | string | End timestamp. |
+| `bucketTimezone` | string | IANA zone, for example `Europe/Paris`. Aligns calendar buckets (`1d`, `1mo`) only. `startTime`, `endTime` and all output timestamps stay UTC. No effect below daily granularity. |
+
+Documented responses: 200, 400, 401, 402, 403, 408, 410. Note the 408, which
+Web Analytics does not have: a query can time out server-side, and that is worth
+retrying.
+
+### What the OpenAPI document does NOT pin down
+
+Be honest about this when changing request or response code. The published
+schema declares `scope`, `granularity`, and the entire 200 response body as bare
+`{"type": "object"}` with no inner properties. Their exact shapes are therefore
+inferred from the documented CLI behavior, not read from a schema:
+
+- `scope` carries the project or owner selection. `vercel metrics` exposes it as
+  `--project <name-or-id>` (defaulting to the linked project), `--all` for every
+  project in the current team, and the ambient team context. `--all` and
+  `--project` are mutually exclusive.
+- `granularity` carries the bucket size. The CLI spells these `1h`, `1d`, `1mo`,
+  and omitting it makes the server compute a granularity for the range.
+- The response is a metric result: grouped rollups and time buckets.
+
+Parse the response defensively and never require a field the documentation does
+not show. The `security` block on these three endpoints is empty in the OpenAPI
+document, which is a generation artifact: the whole REST API is bearer
+authenticated and these endpoints are no exception.
+
+## Aggregations
+
+From the Query Reference: Count, Count per Second, Sum, Sum per Second, Minimum,
+Maximum, Percentiles (75th, 90th, 95th, 99th), and Percentages. The CLI spells
+percentiles `p75`, `p90`, `p95`, `p99`. P75 is the dashboard default and the
+right default here.
+
+Aggregations are computed both within each time bucket and across the whole
+query window.
+
+## Dimensions
+
+Confirmed in worked CLI examples: `route`, `request_path`, `device_type`,
+`country`, `project_id`, `environment`.
+
+The Query Reference lists a wider set for the observability surface generally
+(request hostname, deployment id, HTTP status, cache result, request method,
+referrer, client IP and country, user agent, ASN, CDN region, WAF action and
+rule id, skew protection, sandbox name and session id). Not all of these are
+meaningful for a Speed Insights metric, so treat the six confirmed ones as the
+supported set and let the schema endpoint be the source of truth for the rest.
+
+Note the naming difference from Web Analytics: this API uses `snake_case`
+(`device_type`, `request_path`, `project_id`) where Web Analytics uses
+`camelCase` (`deviceType`, `requestPath`). A dimension name is not portable
+between the two surfaces.
+
+## Filters
+
+OData, same family as Web Analytics. `vercel metrics` accepts `--filter`
+repeatedly and joins the expressions with `and`.
+
+Confirmed operators: `eq`, `ne`, `in`, `startswith()`, and, unlike Web
+Analytics, the numeric comparisons `>`, `>=`, `<`, `<=`. The Query Reference
+also lists `endsWith`.
+
+Worked examples, verbatim from the docs:
+
+```text
+route eq '/dashboard'
+startswith(request_path, '/docs') or startswith(request_path, '/guides')
+country ne 'US'
+```
+
+`--prod` in the CLI is documented as exactly equivalent to
+`--filter "environment eq 'production'"`.
+
+## Granularity mapping
+
+The two surfaces spell time buckets differently, and there is no single
+vocabulary that satisfies both:
+
+| Meaning | Web Analytics (`by=`) | Observability (`granularity`) |
+| --- | --- | --- |
+| hourly | `hour` | `1h` |
+| daily | `day` | `1d` |
+| weekly | `week` | no documented equivalent |
+| monthly | `month` | `1mo` |
+| yearly | `year` | no documented equivalent |
+
+Accept both spellings from the user and translate per target. Reject a
+granularity that has no equivalent on the selected surface with a specific
+error, rather than sending something the API will refuse.
+
+## Targets for interpreting values
+
+Vercel publishes a single "good" target per metric. It does **not** publish the
+upper boundary between "needs improvement" and "poor", so do not render a
+three-tier rating as though Vercel defined it.
+
+| Metric | Vercel's stated good target |
+| --- | --- |
+| LCP | 2.5 seconds or less |
+| CLS | 0.1 or less |
+| INP | 200 milliseconds or less |
+| FCP | 1.8 seconds or less |
+| TTFB | under 800 milliseconds |
+| FID | 100 milliseconds or less |
+| TBT | under 800 milliseconds |
+
+Lower is better for every one of them. The dashboard's 0 to 100 colour bands
+(0 to 49 poor, 50 to 89 needs improvement, 90 to 100 good) apply to *scores*
+derived from a log-normal distribution of HTTP Archive data, not to raw metric
+values, so they cannot be applied to a raw millisecond figure.
+
+## Percentile semantics
+
+P75 means the fastest 75% of users, excluding the slowest 25%. A P75 LCP of
+1 second means 75% of users saw LCP faster than 1 second. Same pattern for P90,
+P95 and P99.
+
+A data point is one measurement of one Web Vital during one visit, collected on
+hard navigations. Up to 6 per visit are possible, typically 3 to 6. This is why
+the `*_count` metrics matter: a P75 over a handful of data points is not
+comparable to one over thousands, and grouped queries default to ordering by
+count for exactly that reason.
+
+## Plan access
+
+Speed Insights metrics are available through this query surface **without**
+Observability Plus. The docs state it twice, on both the CLI reference and the
+Speed Insights CLI page. Metrics other than Web Analytics and Speed Insights do
+require Observability Plus, so a query for anything outside those two families
+may fail on plan grounds.
+
+Speed Insights collects data on all deployed environments, preview included, so
+unlike the Web Analytics count endpoints there is no production-only
+restriction to work around. Filter by `environment` to narrow it.

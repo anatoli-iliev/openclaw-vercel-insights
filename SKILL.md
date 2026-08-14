@@ -1,16 +1,21 @@
 ---
-name: vercel-analytics
+name: vercel-insights
 description: >-
-  Answer questions about a Vercel site's traffic from the command line, covering
-  "how is my site traffic this week", "top pages on my Vercel site", "where is
-  my traffic coming from", "which countries visit us", "compare mobile vs
-  desktop visitors", "which browsers do people use" and "which campaign drove
-  signups". Use it for anything about Vercel Web Analytics: page views,
-  visitors, traffic trends over time, referrers, routes, UTM campaigns, devices,
-  browsers, or custom events. Read only, HTTP GET only, and it never changes
-  anything in the Vercel account.
-version: 0.1.0
-homepage: https://github.com/anatoli-iliev/openclaw-vercel-analytics
+  Answer questions about a Vercel site's traffic and its speed from the command
+  line. Traffic: "how is my site traffic this week", "top pages on my Vercel
+  site", "where is my traffic coming from", "which countries visit us", "compare
+  mobile vs desktop visitors", "which browsers do people use", "which campaign
+  drove signups". Speed: "how fast is my site", "what are my core web vitals",
+  "what is my LCP", "which pages are slowest", "is my CLS bad", "did my
+  performance regress this month", "why does the site feel slow on mobile". Use
+  it for anything about Vercel Web Analytics (page views, visitors, trends,
+  referrers, routes, UTM campaigns, devices, browsers, custom events) and
+  anything about Vercel Speed Insights (LCP, INP, CLS, FCP and TTFB at a
+  percentile, measured against Vercel's published targets, broken down by route,
+  country or device, or tracked over time). Read only: three allowlisted query
+  endpoints, no write path, and it never changes anything in the Vercel account.
+version: 0.2.0
+homepage: https://github.com/anatoli-iliev/openclaw-vercel-insights
 compatibility: openclaw >=1.0
 metadata:
   security_level: L1
@@ -36,100 +41,290 @@ metadata:
         required: false
         description: Set to any value to disable coloured output.
     emoji: "📊"
-    homepage: https://github.com/anatoli-iliev/openclaw-vercel-analytics
+    homepage: https://github.com/anatoli-iliev/openclaw-vercel-insights
 ---
 
-# Vercel Web Analytics
+# Vercel Insights
 
-Query the Vercel Web Analytics API and report a project's traffic: page views,
-visitors, top pages and routes, referrers, countries, devices, browsers, UTM
-campaigns, and custom events.
+Query a Vercel project's **traffic** (Web Analytics) and its **speed** (Speed
+Insights) from one command line: page views, visitors, top pages and routes,
+referrers, countries, devices, browsers, UTM campaigns, custom events, and the
+five Core Web Vitals against Vercel's published targets.
+
+## Two surfaces, one command
+
+These are two different Vercel APIs with different vocabularies, and the preset
+you pick decides which one is queried.
+
+| | Web Analytics | Speed Insights |
+| --- | --- | --- |
+| Answers | how many people came, and from where | how fast the site felt for them |
+| Metrics | `pageviews`, `visitors`, event `count` | LCP, INP, CLS, FCP, TTFB, plus data point counts |
+| Presets | `overview`, `trend`, `top-pages`, `top-routes`, `referrers`, `countries`, `devices`, `browsers`, `operating-systems`, `campaigns`, `events`, `total` | `vitals`, `slowest-pages`, `fastest-pages`, `vitals-by-country`, `vitals-by-device`, `vitals-trend`, `data-points` |
+| Dimension spelling | camelCase: `requestPath`, `deviceType` | snake_case: `request_path`, `device_type` |
+| Time buckets | `--granularity day` | `--granularity 1d` |
+| Selected by | `--dataset visits\|events` | `--metric lcp\|inp\|cls\|fcp\|ttfb` |
+
+Rule of thumb: a question about **how many** is Web Analytics, a question about
+**how fast** is Speed Insights. "Which pages are popular" is `top-pages`.
+"Which pages are slow" is `slowest-pages`.
+
+Both spellings of `--granularity` are accepted whichever surface is active and
+translated per API, so `--granularity day` and `--granularity 1d` mean the same
+thing. `week` and `year` exist on Web Analytics only; asking for them on Speed
+Insights is a configuration error that says so.
+
+`--dataset` and `--metric` select different APIs and are mutually exclusive.
+Speed Insights options on a Web Analytics preset, and the reverse, are rejected
+before any request is built, with a message naming the preset to use instead.
 
 ## This skill is read-only
 
-Everything below issues **HTTP GET and nothing else**. The Vercel Web Analytics
-API is a query API with no write surface, and the script has exactly one HTTP
-call site (`session.get`).
+**Read-only against a three-endpoint allowlist.** One module-level table in
+`vercel_insights/http.py` maps an operation key to a fixed method and URL, and
+it has exactly three entries:
 
-This skill cannot and does not modify deployments, projects, domains,
-environment variables, team settings, DNS, or anything else in the Vercel
-account. There is no code path that sends POST, PATCH, PUT, or DELETE. If a
-user asks for a change to their Vercel setup, this skill is the wrong tool: say
-so rather than trying.
+| Operation | Method | Endpoint |
+| --- | --- | --- |
+| `web_analytics` | GET | `/v1/query/web-analytics/{dataset}/{endpoint}` |
+| `observability_query` | POST | `/v2/observability/query` |
+| `observability_schema` | GET | `/v2/observability/schema` |
 
-The access token is read from the environment and is placed only in the
-`Authorization` header. It never appears in a URL, a query parameter, a log
-line, an error message, or any output this skill prints.
+The dispatcher takes an operation key, never a method and never a host, so no
+user input can select, extend or override an entry. There are exactly two HTTP
+call sites in the whole package, `session.get` and `session.post`, and both are
+inside that dispatcher.
+
+**Why one of them is a POST, and why that is still a read.** Vercel exposes no
+GET equivalent for an observability query: Speed Insights has no query API of
+its own, and the general observability surface takes its query in a JSON request
+body because a query is too structured for a query string. Nothing is created,
+updated or deleted. The body is the question, not a change. The endpoints in
+the same API that *do* write, `/speed-insights/toggle` and
+`/web/insights/toggle`, which turn the features on and off, are absent from the
+allowlist entirely and are unreachable from any code path here.
+
+This skill cannot modify deployments, projects, domains, environment variables,
+team settings or DNS. If a user asks for a change to their Vercel setup, this
+skill is the wrong tool: say so rather than trying.
+
+The access token is read from the environment and placed only in the
+`Authorization` header. It never appears in a URL, a query parameter, a request
+body, a log line, an error message, or any output this skill prints.
 
 ## Running it
 
 ```bash
-python3 scripts/vercel_analytics.py [PRESET] [OPTIONS]
+python3 -m vercel_insights [PRESET] [OPTIONS]
 ```
 
 With no arguments at all it runs the `overview` preset for the last 7 days.
 
 Add `--dry-run` to any command to print the exact request that would be sent,
-with the token redacted, and send nothing. It works with no token configured, so
-it is the safe way to show a user what a query will do before running it.
+with the token redacted, and send nothing. On the POST operation it prints the
+full JSON body, so a dry run shows the whole query rather than its envelope. It
+works with no token configured, so it is the safe way to show a user what a
+query will do before running it.
 
 ## Decision table: user phrasing to command
 
+Traffic questions:
+
 | The user says | Run |
 | --- | --- |
-| "how is my site doing", "traffic this week", "give me the numbers" | `python3 scripts/vercel_analytics.py` |
-| "how did traffic move over the last month", "daily trend", "chart it by week" | `python3 scripts/vercel_analytics.py trend --since 30d` (add `--granularity week`) |
-| "top pages", "most viewed pages", "what are people reading" | `python3 scripts/vercel_analytics.py top-pages --since 30d` |
-| "top routes", "which route is hottest", "roll the blog posts up" | `python3 scripts/vercel_analytics.py top-routes --since 30d` |
-| "where is my traffic coming from", "who links to us", "referrers" | `python3 scripts/vercel_analytics.py referrers --since 30d` |
-| "which countries", "where are visitors located" | `python3 scripts/vercel_analytics.py countries --since 30d` |
-| "mobile vs desktop", "what devices" | `python3 scripts/vercel_analytics.py devices --since 30d` |
-| "which browsers", "how much Safari" | `python3 scripts/vercel_analytics.py browsers --since 30d` |
-| "which operating systems", "Windows vs Mac" | `python3 scripts/vercel_analytics.py operating-systems --since 30d` |
-| "which campaign worked", "utm breakdown", "did the newsletter land" | `python3 scripts/vercel_analytics.py campaigns --since 30d` |
-| "how many signups", "custom events", "conversions" | `python3 scripts/vercel_analytics.py events --since 30d` |
-| "which campaign drove signups" | `python3 scripts/vercel_analytics.py events --event-name signup --since 30d --group-by utmCampaign` |
-| "how many visitors in total", "unique visitors for the month" | `python3 scripts/vercel_analytics.py total --since 30d` |
-| "how did /pricing do" | `python3 scripts/vercel_analytics.py trend --path /pricing --since 30d` |
-| "traffic from the US only" | add `--country US` to any command |
-| "give me a CSV", "put it in a spreadsheet" | add `--csv` (not available on `overview`) |
+| "how is my site doing", "traffic this week", "give me the numbers" | `python3 -m vercel_insights` |
+| "how did traffic move over the last month", "daily trend", "chart it by week" | `python3 -m vercel_insights trend --since 30d` (add `--granularity week`) |
+| "top pages", "most viewed pages", "what are people reading" | `python3 -m vercel_insights top-pages --since 30d` |
+| "top routes", "which route is hottest", "roll the blog posts up" | `python3 -m vercel_insights top-routes --since 30d` |
+| "where is my traffic coming from", "who links to us", "referrers" | `python3 -m vercel_insights referrers --since 30d` |
+| "which countries", "where are visitors located" | `python3 -m vercel_insights countries --since 30d` |
+| "mobile vs desktop", "what devices" | `python3 -m vercel_insights devices --since 30d` |
+| "which browsers", "how much Safari" | `python3 -m vercel_insights browsers --since 30d` |
+| "which operating systems", "Windows vs Mac" | `python3 -m vercel_insights operating-systems --since 30d` |
+| "which campaign worked", "utm breakdown", "did the newsletter land" | `python3 -m vercel_insights campaigns --since 30d` |
+| "how many signups", "custom events", "conversions" | `python3 -m vercel_insights events --since 30d` |
+| "which campaign drove signups" | `python3 -m vercel_insights events --event-name signup --since 30d --group-by utmCampaign` |
+| "how many visitors in total", "unique visitors for the month" | `python3 -m vercel_insights total --since 30d` |
+| "how did /pricing do" | `python3 -m vercel_insights trend --path /pricing --since 30d` |
+
+Performance questions:
+
+| The user says | Run |
+| --- | --- |
+| "how fast is my site", "core web vitals", "is my site healthy", "performance check" | `python3 -m vercel_insights vitals --since 7d` |
+| "what is my LCP", "what is my CLS", "is my CLS bad", "how is my INP" | `python3 -m vercel_insights vitals` and read that row against its target |
+| "which pages are slowest", "what is dragging the site down", "worst routes" | `python3 -m vercel_insights slowest-pages --since 30d` |
+| "which pages are fastest", "what is already fine" | `python3 -m vercel_insights fastest-pages --since 30d` |
+| "did my performance regress", "is it getting worse", "LCP over time", "since the last deploy" | `python3 -m vercel_insights vitals-trend --since 30d --granularity 1d` |
+| "why is it slow on mobile", "mobile vs desktop speed" | `python3 -m vercel_insights vitals-by-device --since 30d` |
+| "is it slow abroad", "speed by country", "how is it in India" | `python3 -m vercel_insights vitals-by-country --since 30d` |
+| "how slow is the blog specifically" | `python3 -m vercel_insights vitals --route '/blog/[slug]' --since 30d` |
+| "is that number trustworthy", "how much data is behind this" | `python3 -m vercel_insights data-points --since 30d` |
+| "show me the worst case, not the typical case" | add `--percentile 95` (or `90`, `99`) |
+| "what is my Real Experience Score" | Not queryable through any API. Send them to the Speed Insights tab of the dashboard. |
+
+Applies to both:
+
+| The user says | Run |
+| --- | --- |
+| "traffic from the US only", "US visitors only" | add `--country US` to any command |
+| "mobile only" | add `--device mobile` |
+| "production only" | add `--environment production` |
+| "give me a CSV", "put it in a spreadsheet" | add `--csv` (not available on `overview` or `vitals`) |
 | "give me JSON", "pipe it to jq" | add `--json` |
 | "what would that request look like" | add `--dry-run` |
 
 ## Presets
 
-Run `python3 scripts/vercel_analytics.py --list-presets` for this table at any time.
+Run `python3 -m vercel_insights --list-presets` for this table at any time.
 
-| Preset | Command | Groups by | Default limit |
+| Preset | Surface | Groups by | Default limit |
 | --- | --- | --- | --- |
-| `overview` (default) | `vercel_analytics.py` | `day`, then `requestPath`, then `referrerHostname` (3 calls) | 5 per table |
-| `trend` | `vercel_analytics.py trend` | `day` | 100 |
-| `top-pages` | `vercel_analytics.py top-pages` | `requestPath` | 10 |
-| `top-routes` | `vercel_analytics.py top-routes` | `route` | 10 |
-| `referrers` | `vercel_analytics.py referrers` | `referrerHostname` | 10 |
-| `countries` | `vercel_analytics.py countries` | `country` | 10 |
-| `devices` | `vercel_analytics.py devices` | `deviceType` | 10 |
-| `browsers` | `vercel_analytics.py browsers` | `browserName` | 10 |
-| `operating-systems` | `vercel_analytics.py operating-systems` | `osName` | 10 |
-| `campaigns` | `vercel_analytics.py campaigns` | `utmCampaign` | 10 |
-| `events` | `vercel_analytics.py events` | `eventName` | 10 |
-| `total` | `vercel_analytics.py total` | nothing, one ungrouped count | n/a |
+| `overview` (default) | web analytics | `day`, then `requestPath`, then `referrerHostname` (3 calls) | 5 per table |
+| `trend` | web analytics | `day` | 100 |
+| `top-pages` | web analytics | `requestPath` | 10 |
+| `top-routes` | web analytics | `route` | 10 |
+| `referrers` | web analytics | `referrerHostname` | 10 |
+| `countries` | web analytics | `country` | 10 |
+| `devices` | web analytics | `deviceType` | 10 |
+| `browsers` | web analytics | `browserName` | 10 |
+| `operating-systems` | web analytics | `osName` | 10 |
+| `campaigns` | web analytics | `utmCampaign` | 10 |
+| `events` | web analytics | `eventName` | 10 |
+| `total` | web analytics | nothing, one ungrouped count | n/a |
+| `vitals` | speed insights | nothing; one query per vital (5 calls) | n/a |
+| `slowest-pages` | speed insights | `route`, worst P75 LCP first | 10 |
+| `fastest-pages` | speed insights | `route`, best P75 LCP first | 10 |
+| `vitals-by-country` | speed insights | `country` | 10 |
+| `vitals-by-device` | speed insights | `device_type` | 10 |
+| `vitals-trend` | speed insights | time, `1d` buckets by default | n/a |
+| `data-points` | speed insights | `route`, summing the `*_count` metric | 10 |
 
-Any explicit flag overrides a preset value, with one exception: `overview` runs
-three queries of its own, so `--group-by`, `--event-property` and `--csv` are
-rejected there with exit code 2. Pick `trend`, `top-pages` or `referrers` when
-the user wants a different grouping or a CSV.
+Any explicit flag overrides a preset value, with two exceptions. `overview`
+runs three queries of its own, so `--group-by`, `--event-property` and `--csv`
+are rejected there. `vitals` runs one query per web vital, so `--group-by` and
+`--csv` are rejected there too. Both exit with code 2 and name the preset to use
+instead: `trend`, `top-pages` or `referrers` for traffic, `vitals-trend`,
+`slowest-pages` or `vitals-by-country` for speed.
 
 Groups past the limit are not dropped: they roll into a single `Others` row,
 and the table prints a line underneath saying so.
 
+## The flags worth remembering
+
+`--help` prints every one with its defaults. These are the ones that change an
+answer rather than its formatting:
+
+| Flag | What it does |
+| --- | --- |
+| `--limit N` | How many groups to show, 1 to 100. The rest roll into `Others` on Web Analytics; on Speed Insights it bounds grouped results per time bucket. |
+| `--percentile {75,90,95,99}` | Speed Insights. 75 by default, as on the dashboard. Higher asks about the slow tail. |
+| `--aggregation NAME` | Speed Insights. `sum`, `count`, `min`, `max`, `p90` and so on, instead of a percentile. Not with `--percentile`. |
+| `--order-by {count,value}`, `--order {asc,desc}` | Speed Insights, grouped queries only. Default `count` and `desc`, so a group with few measurements does not lead. |
+| `--data-points` | Speed Insights. Report how many measurements were collected instead of the metric value, aggregated with `sum`. |
+| `--all` | Speed Insights. Every project in the team instead of one. Mutually exclusive with `--project`. |
+| `--bucket-timezone IANA` | Speed Insights. Aligns `1d` and `1mo` buckets; timestamps stay UTC and a sub-daily bucket ignores it, with a warning. |
+| `--timeout SECONDS`, `--max-retries N` | 30 seconds and 3 retries by default. Only 408, 429 and 5xx responses and network failures are retried. |
+| `--verbose` | Diagnostics on stderr. Never the token. |
+| `--list-presets`, `--version` | Print and exit 0, touching no network. |
+
+## Reading a Speed Insights answer
+
+`vitals` is the one to reach for when the question is broad. It issues one query
+per metric because the API answers for one metric per request, and composes the
+five answers into one table:
+
+```console
+$ python3 -m vercel_insights vitals
+Vercel Speed Insights: prj_demo
+Range: 2026-08-07T09:00:00Z to 2026-08-14T09:00:00Z (UTC)
+
+metric                        p75  target  verdict       data points
+-------------------------  ------  ------  ------------  -----------
+Largest Contentful Paint    2.4 s   2.5 s  meets target       18,204
+Interaction to Next Paint  176 ms  200 ms  meets target       12,110
+Cumulative Layout Shift     0.072   0.100  meets target       18,204
+First Contentful Paint      1.2 s   1.8 s  meets target       18,204
+Time to First Byte         918 ms  800 ms  over target        18,204
+
+Lower is better for all five metrics.
+The target is Vercel's published 'good' threshold, so the verdict is two tier: meets target or over target.
+A percentile over few data points is not comparable to one over many, so read the value next to its data point count.
+Real Experience Score is not queryable through this API; read it on the Speed Insights dashboard.
+```
+
+Six things to carry into how you report this to a user:
+
+- **Lower is better for all five metrics.** Never read a table of vitals as
+  though a bigger number were a better one.
+- **The verdict is two tier on purpose: `meets target` or `over target`.**
+  Vercel publishes one "good" threshold per metric and no boundary above it, so
+  there is no honest third tier. Do not invent "needs improvement" or "poor".
+  The dashboard's green, amber and red bands describe a derived 0 to 100 score,
+  not the raw millisecond or score value this tool reports.
+- **The default is P75**, which is what the dashboard shows: the fastest 75% of
+  users, excluding the slowest 25%. A P75 LCP of 2.4 s means three quarters of
+  visits painted the main content within 2.4 seconds. `--percentile 90|95|99`
+  asks about the tail instead.
+- **Data points make the percentile trustworthy.** One data point is one
+  measurement of one vital during one visit, and a visit can produce up to six.
+  A P75 over 90 data points and a P75 over 18,000 are not comparable numbers.
+  Say so when a row's count is small. Grouped queries order by count by default
+  for exactly this reason, so a route with a handful of measurements does not
+  lead the table.
+- **INP usually has fewer data points than the rest**, because it needs an
+  interaction. That is normal, not a bug.
+- **Real Experience Score is not queryable.** Vercel states plainly that RES is
+  not available through the query API this tool uses, so there is nothing to
+  request, and this client will not substitute another metric for it. Asking for
+  it by name is a configuration error pointing at the dashboard. RES is a
+  composite derived from these five metrics, so the five are the honest answer
+  to "how healthy is my site" from a command line.
+
+Grouped Speed Insights tables have **no totals row and no share-of-total
+column**, unlike the traffic tables. That is deliberate: summing the P75 of six
+countries is meaningless. `data-points` is the one exception, because a sum of
+measurement counts genuinely adds up.
+
+```console
+$ python3 -m vercel_insights slowest-pages --device mobile --limit 5
+Vercel Speed Insights: prj_demo (slowest-pages, p75)
+Range: 2026-08-07T09:00:00Z to 2026-08-14T09:00:00Z (UTC)
+Filter: device_type eq 'mobile'
+
+route              p75_lcp  data_points
+-----------------  -------  -----------
+/blog/[slug]         4.1 s        1,830
+/pricing             3.0 s        2,240
+/dashboard/[id]      2.5 s          902
+/docs/[[...slug]]    2.0 s        4,410
+/                    1.2 s        8,822
+
+Metric: vercel.speed_insights.lcp_ms (Largest Contentful Paint)
+Target: 2.5 s or less
+Lower is better for all five metrics.
+The target is Vercel's published 'good' threshold, so the verdict is two tier: meets target or over target.
+A percentile over few data points is not comparable to one over many, so read the value next to its data point count.
+```
+
+Note what `--device mobile` compiled to: `device_type eq 'mobile'`, the Speed
+Insights spelling. The same flag on a traffic preset compiles to
+`deviceType eq 'mobile'`. Use the shorthand flags rather than writing raw
+`--filter` clauses and the spelling is handled for you.
+
+Speed Insights needs no Observability Plus: these metrics are available on the
+query surface without it. It also collects on every deployed environment,
+preview included, so unlike the traffic count endpoints there is no
+production-only restriction; narrow it with `--environment production` when the
+user means the live site.
+
 ## When to reach for the events dataset
 
-There are two datasets. `visits` is page views, and it is the default for every
-preset except `events`. Use `--dataset events` (or the `events` preset, which
-sets it) when the question is about something a person *did* rather than a page
-they loaded: signups, checkouts, button clicks, form submissions, anything sent
-through `track()` in `@vercel/analytics`.
+There are two Web Analytics datasets. `visits` is page views, and it is the
+default for every traffic preset except `events`. Use `--dataset events` (or the
+`events` preset, which sets it) when the question is about something a person
+*did* rather than a page they loaded: signups, checkouts, button clicks, form
+submissions, anything sent through `track()` in `@vercel/analytics`.
 
 Signs the events dataset is wanted: the user names an event ("signup",
 "checkout_started"), asks about conversions, or asks to break a result down by a
@@ -141,6 +336,10 @@ is a configuration error with an exit code of 2:
 - the `eventName` dimension and the `--event-name` filter
 - `--event-property NAME`, which adds `eventData/NAME` to the grouping
 - any `eventData/...` grouping written out longhand
+
+None of them exist on Speed Insights at all: that API collects no custom events,
+so `--dataset`, `--event-name`, `--event-property` and `--flag` on a Speed
+Insights preset are configuration errors naming the reason.
 
 The metric names differ too: `visits` returns `pageviews` and `visitors`, while
 `events` returns `count` and `visitors`.
@@ -174,14 +373,29 @@ Each filter flag adds one OData clause and all clauses are joined with `and`. A
 comma-separated value becomes an `in (...)` set, so `--country US,CA,MX` is one
 clause covering three countries.
 
-`--path`, `--route`, `--country`, `--device`, `--browser`, `--os`, `--referrer`,
-`--utm-source`, `--utm-medium`, `--utm-campaign`, `--event-name` (events only),
-`--flag NAME=VALUE` (repeatable), `--environment {production,preview}`, and
-`--filter ODATA` for a raw clause.
+Valid on **both** surfaces, compiled to the right spelling for whichever one is
+active: `--path`, `--route`, `--country`, `--device`,
+`--environment {production,preview}`.
 
-The API supports `eq`, `ne`, `in`, `and`, `or`, `not`, and parentheses. It has
-**no comparison operators**: do not write `gt`, `lt`, `ge`, or `le` in a
-`--filter`, they will be rejected.
+Valid on **Web Analytics only**: `--browser`, `--os`, `--referrer`,
+`--utm-source`, `--utm-medium`, `--utm-campaign`, `--event-name` (events
+dataset), `--flag NAME=VALUE` (repeatable). Using one while a Speed Insights
+preset is active is a configuration error that names the reason: that API does
+not collect the dimension at all.
+
+`--filter ODATA` appends a raw clause verbatim on either surface, repeatable.
+
+The two APIs accept different operators, and this matters when writing a raw
+`--filter`:
+
+- Web Analytics: `eq`, `ne`, `in`, `and`, `or`, `not`, parentheses, and
+  `startswith`. It has **no comparison operators**: `gt`, `lt`, `ge` and `le`
+  are rejected by the API, so do not write them.
+- Speed Insights: the same, plus `endsWith` and the numeric comparisons `>`,
+  `>=`, `<`, `<=`.
+
+Raw `--filter` text is passed through unvalidated on both surfaces, so a clause
+the target API does not accept comes back as its own 400 with Vercel's message.
 
 ## Time window
 
@@ -192,7 +406,7 @@ milliseconds. Everything is normalized to UTC.
 
 The guaranteed reporting window depends on the plan: 1 month on Hobby, 12 months
 on Pro, 24 months on Web Analytics Plus and Enterprise. A `--since` older than
-that is allowed but may return nothing, and the script warns on stderr past 24
+that is allowed but may return nothing, and the tool warns on stderr past 24
 months.
 
 ## Environment variables
@@ -200,10 +414,14 @@ months.
 | Variable | Required | Meaning |
 | --- | --- | --- |
 | `VERCEL_TOKEN` | yes, except for `--dry-run` | Vercel access token, read scope is enough. Overridable with `--token`. |
-| `VERCEL_PROJECT_ID` | yes | Project ID or project name. Overridable with `--project`. |
+| `VERCEL_PROJECT_ID` | yes, except with `--all` | Project ID or project name. Overridable with `--project`. |
 | `VERCEL_TEAM_ID` | no | Team ID for a team-owned project. Overridable with `--team`. |
 | `VERCEL_TEAM_SLUG` | no | Team slug instead of the ID. Never set both; it is an error. |
 | `NO_COLOR` | no | Set to any value to disable colour. |
+
+These five are the only variables the code reads. `--all`, which queries every
+project in the team, is Speed Insights only and is mutually exclusive with
+`--project`.
 
 ## Exit codes
 
@@ -216,27 +434,37 @@ months.
 
 An empty result is a success, not a failure. It prints one line naming the
 resolved range and the active filter. When a user sees that, the usual fixes are
-a wider `--since`, a looser filter, or checking that Web Analytics is actually
-enabled on the project.
+a wider `--since`, a looser filter, or checking that the feature is actually
+enabled on the project: Web Analytics and Speed Insights are separate
+per-project switches, and each only has data from the moment it was turned on.
 
 ## Gotchas worth knowing
 
 - `requestPath` is the literal URL path (`/blog/my-post`). `route` is the
   framework pattern (`/blog/[slug]`), which rolls many URLs into one row. Use
-  `top-routes` when the user wants sections rather than individual posts.
+  `top-routes` and `slowest-pages` when the user wants sections rather than
+  individual pages.
+- A dimension name is **not portable between the surfaces**. `requestPath` on a
+  Speed Insights preset is an error telling you to write `request_path`, and the
+  reverse holds too. The shorthand filter flags avoid the whole problem.
 - `visitors` summed across time buckets double counts a person who visited on
   two days. For distinct visitors over the whole window use `total`.
 - The count endpoints behind `total` report production traffic only, so
   `--environment preview` with `total` is a configuration error. Group by
-  something (for example `--group-by day`) to reach preview data.
-- `--json` and `--csv` are mutually exclusive, and `--csv`, `--group-by` and
-  `--event-property` are rejected with `overview` because it issues three
-  separate queries.
-- UTM dimensions require Web Analytics Plus or Enterprise. On lower plans
-  `campaigns` returns nothing rather than failing.
+  something (for example `--group-by day`) to reach preview data. Speed Insights
+  has no such restriction.
+- `--json` and `--csv` are mutually exclusive. `--csv` needs a single table, so
+  it is rejected with `overview` and with `vitals`, both of which issue several
+  queries.
+- UTM dimensions require Web Analytics Plus or Enterprise, and custom events
+  require Pro. On lower plans those queries return nothing rather than failing.
+  Speed Insights needs no Observability Plus.
+- A Speed Insights percentile over a handful of data points is noise. Check
+  `data-points` before drawing a conclusion from a small route.
 
 ## Further reading
 
 - `README.md` for setup and worked examples.
-- `docs/api-notes.md` for the verified API facts this is built on.
-- `examples/example_outputs.md` for full sample output.
+- `docs/api-notes.md` for the verified facts about both APIs.
+- `docs/cli-contract.md` for the authoritative interface.
+- `examples/example_outputs.md` for fuller sample output.

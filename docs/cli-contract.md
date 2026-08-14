@@ -1,213 +1,216 @@
 # CLI and module contract
 
-This is the authoritative interface for `scripts/vercel_analytics.py`. Tests,
-documentation, and examples are all written against it. Read `docs/api-notes.md`
-first for the API facts this contract is built on.
+Authoritative interface for the `vercel-insights` skill. Tests, documentation and
+examples are written against it. Read `docs/api-notes.md` first: it holds the
+verified facts for both APIs this contract is built on.
 
 Target: Python 3.10+. Runtime dependency: `requests`. Everything else is stdlib.
 
-## Invocation
+## Package layout
+
+The tool is a package at the repository root, not a single script. It covers two
+different Vercel APIs with different request shapes, so one file no longer earns
+its keep.
 
 ```
-python3 scripts/vercel_analytics.py [PRESET] [OPTIONS]
+vercel_insights/
+  __init__.py        VERSION, exceptions, shared constants
+  __main__.py        entry point, path-robust so it runs from anywhere
+  timerange.py       time parsing, range resolution, granularity translation
+  odata.py           OData quoting, clause building, JSON dimension keys
+  http.py            operation allowlist, request prep, redaction, retries
+  webanalytics.py    Web Analytics request building and response normalization
+  speedinsights.py   Speed Insights request building and response normalization
+  render.py          table, JSON, CSV, overview and vitals renderers
+  presets.py         the preset table
+  cli.py             argument parsing and main()
 ```
 
-`PRESET` is an optional positional argument. With no arguments at all, the script
-runs the `overview` preset for the last 7 days.
+Both of these must work:
+
+```bash
+python3 -m vercel_insights --help              # from the repository root
+python3 /abs/path/vercel_insights/__main__.py  # from anywhere
+```
+
+`__main__.py` puts the package's parent directory on `sys.path` before importing,
+so the second form works without installation. `pip install -e .` additionally
+provides a `vercel-insights` console script.
+
+## Two surfaces, one CLI
+
+| | Web Analytics | Speed Insights |
+| --- | --- | --- |
+| Endpoints | `GET /v1/query/web-analytics/{visits,events}/{count,aggregate}` | `POST /v2/observability/query`, `GET /v2/observability/schema[/{metricId}]` |
+| Selected by | `--dataset visits\|events` | `--metric lcp\|inp\|cls\|fcp\|ttfb` |
+| Dimension case | camelCase (`requestPath`) | snake_case (`request_path`) |
+| Time buckets | `by=day` | `granularity: 1d` |
+| Metrics | `pageviews`/`visitors`, `count`/`visitors` | one value per metric, plus `*_count` data points |
+
+A preset determines which surface is used. `--dataset` and `--metric` are
+mutually exclusive: passing both is a config error naming the conflict.
 
 ## Presets
 
-Each preset is a named bundle of defaults. Any explicit flag overrides the preset.
+| Preset | Surface | Query | Default limit |
+| --- | --- | --- | --- |
+| `overview` (default) | web analytics | 3 aggregate calls: `day`, `requestPath`, `referrerHostname` | 5 |
+| `trend` | web analytics | aggregate by `day` | 100 |
+| `top-pages` | web analytics | aggregate by `requestPath` | 10 |
+| `top-routes` | web analytics | aggregate by `route` | 10 |
+| `referrers` | web analytics | aggregate by `referrerHostname` | 10 |
+| `countries` | web analytics | aggregate by `country` | 10 |
+| `devices` | web analytics | aggregate by `deviceType` | 10 |
+| `browsers` | web analytics | aggregate by `browserName` | 10 |
+| `operating-systems` | web analytics | aggregate by `osName` | 10 |
+| `campaigns` | web analytics | aggregate by `utmCampaign` | 10 |
+| `events` | web analytics | aggregate by `eventName` (+ `eventData/<p>`) | 10 |
+| `total` | web analytics | count | n/a |
+| `vitals` | speed insights | 5 queries, P75 of each metric, ungrouped | n/a |
+| `slowest-pages` | speed insights | P75 `lcp_ms` by `route`, `orderBy value`, `desc` | 10 |
+| `fastest-pages` | speed insights | P75 `lcp_ms` by `route`, `orderBy value`, `asc` | 10 |
+| `vitals-by-country` | speed insights | P75 of `--metric` by `country` | 10 |
+| `vitals-by-device` | speed insights | P75 of `--metric` by `device_type` | 10 |
+| `vitals-trend` | speed insights | P75 of `--metric` over time, `granularity` default `1d` | n/a |
+| `data-points` | speed insights | `sum` of `<metric>_count` by `route` | 10 |
 
-| Preset | Dataset | Endpoint | Grouping | Default limit |
-| --- | --- | --- | --- | --- |
-| `overview` (default) | visits | 3 aggregate calls | `day`, then `requestPath`, then `referrerHostname` | 5 for the two tables |
-| `trend` | visits | aggregate | `day` (override with `--granularity`) | n/a |
-| `top-pages` | visits | aggregate | `requestPath` | 10 |
-| `top-routes` | visits | aggregate | `route` | 10 |
-| `referrers` | visits | aggregate | `referrerHostname` | 10 |
-| `countries` | visits | aggregate | `country` | 10 |
-| `devices` | visits | aggregate | `deviceType` | 10 |
-| `browsers` | visits | aggregate | `browserName` | 10 |
-| `operating-systems` | visits | aggregate | `osName` | 10 |
-| `campaigns` | visits | aggregate | `utmCampaign` | 10 |
-| `events` | events | aggregate | `eventName`, plus `eventData/<p>` when `--event-property` is given | 10 |
-| `total` | visits | count | none | n/a |
-
-`overview` is the only preset that issues more than one request. It exists because
-the API cannot return ungrouped totals and grouped rows in a single call.
+`vitals` is the Speed Insights counterpart of `overview`: it issues one query per
+metric because the API returns one metric per request. Like `overview`, it
+rejects `--group-by`, `--csv` and `--metric` with a message naming the preset to
+use instead.
 
 `--list-presets` prints this table and exits 0 without touching the network.
 
 ## Options
 
-Configuration:
+Configuration is unchanged: `--token`/`VERCEL_TOKEN`, `--project`/`VERCEL_PROJECT_ID`,
+`--team`/`VERCEL_TEAM_ID`, `--team-slug`/`VERCEL_TEAM_SLUG`.
 
-| Flag | Env fallback | Default | Notes |
-| --- | --- | --- | --- |
-| `--token` | `VERCEL_TOKEN` | none | Required for real requests, not for `--dry-run`. |
-| `--project` | `VERCEL_PROJECT_ID` | none | Required. Project ID or name. |
-| `--team` | `VERCEL_TEAM_ID` | none | Optional. Mutually exclusive with `--team-slug`. |
-| `--team-slug` | `VERCEL_TEAM_SLUG` | none | Optional. Sent as `slug`. |
-
-Query shape:
+### Speed Insights options
 
 | Flag | Default | Notes |
 | --- | --- | --- |
-| `--dataset {visits,events}` | `visits` | Preset may set it. |
-| `--group-by DIM` / `--dimension DIM` | preset | Repeatable. Maximum 2 total. |
-| `--granularity {hour,day,week,month,year}` | none | Sugar that appends a time dimension to the grouping. |
-| `--since VALUE` | `7d` | See time formats below. |
-| `--until VALUE` | `now` | See time formats below. |
-| `--limit N` | `10` | Integer 1..100. |
+| `--metric lcp\|inp\|cls\|fcp\|ttfb` | preset | Selects the Speed Insights surface. |
+| `--percentile 75\|90\|95\|99` | `75` | Sugar for `--aggregation p75` and friends. |
+| `--aggregation NAME` | metric default | Raw passthrough, for example `sum`, `p90`, `max`. |
+| `--order-by count\|value` | `count` | Grouped results only. |
+| `--order asc\|desc` | `desc` | Grouped results only. |
+| `--bucket-timezone IANA` | none | Aligns `1d`/`1mo` buckets only. |
+| `--all` | off | Query every project in the team. Mutually exclusive with `--project`. |
+| `--data-points` | off | Query the `*_count` metric instead of the value metric. |
 
-Filter shorthands. Each builds one OData clause; all clauses are joined with
-`and`. A comma-separated value becomes an `in (...)` clause.
+### Shared options
 
-| Flag | Clause |
-| --- | --- |
-| `--path VALUE` | `requestPath eq 'VALUE'` |
-| `--route VALUE` | `route eq 'VALUE'` |
-| `--country VALUE` | `country eq 'VALUE'` |
-| `--device VALUE` | `deviceType eq 'VALUE'` |
-| `--browser VALUE` | `browserName eq 'VALUE'` |
-| `--os VALUE` | `osName eq 'VALUE'` |
-| `--referrer VALUE` | `referrerHostname eq 'VALUE'` |
-| `--utm-source VALUE` | `utmSource eq 'VALUE'` |
-| `--utm-medium VALUE` | `utmMedium eq 'VALUE'` |
-| `--utm-campaign VALUE` | `utmCampaign eq 'VALUE'` |
-| `--event-name VALUE` | `eventName eq 'VALUE'` (events dataset only) |
-| `--flag NAME=VALUE` | `flags/NAME eq 'VALUE'`, repeatable |
-| `--environment {production,preview}` | `environment eq 'VALUE'` |
-| `--filter ODATA` | Raw, repeatable, appended verbatim |
-| `--event-property NAME` | Not a filter: adds `eventData/NAME` to the grouping |
+`--group-by` (repeatable), `--granularity`, `--since`, `--until`, `--limit`,
+`--filter` (repeatable), `--json`, `--csv`, `--dry-run`, `--timeout`,
+`--max-retries`, `--no-color`, `--verbose`, `--version`, `--list-presets`.
 
-Output and behavior:
+Filter shorthands compile to the correct dimension spelling for the active
+surface: `--path` becomes `requestPath eq '...'` on Web Analytics and
+`request_path eq '...'` on Speed Insights. Shorthands valid on both:
+`--path`, `--route`, `--country`, `--device`, `--environment`. Shorthands that
+exist only on Web Analytics (`--browser`, `--os`, `--referrer`, the UTM flags,
+`--event-name`, `--flag`, `--event-property`) are a config error when the Speed
+Insights surface is active, and the message names the reason.
 
-| Flag | Default | Notes |
+### Granularity
+
+`--granularity` accepts both vocabularies and translates per surface:
+
+| Accepted input | Web Analytics | Speed Insights |
 | --- | --- | --- |
-| `--json` | off | Machine-readable. Mutually exclusive with `--csv`. |
-| `--csv` | off | Mutually exclusive with `--json`. |
-| `--dry-run` | off | Print the request, send nothing. Works with no token. |
-| `--timeout SECONDS` | `30.0` | Applied to every request. |
-| `--max-retries N` | `3` | Retries after the first attempt. `0` disables. |
-| `--no-color` | auto | Also honors `NO_COLOR` and non-TTY stdout. |
-| `--verbose` | off | Diagnostics to stderr. Never prints the token. |
-| `--list-presets` | | Print presets, exit 0. |
-| `--version` | | Print version, exit 0. |
+| `hour`, `1h` | `hour` | `1h` |
+| `day`, `1d` | `day` | `1d` |
+| `week` | `week` | config error, no equivalent |
+| `month`, `1mo` | `month` | `1mo` |
+| `year` | `year` | config error, no equivalent |
 
-## Time formats
-
-`--since` and `--until` accept:
-
-- Relative offsets: `30m`, `24h`, `7d`, `4w` (minutes, hours, days, weeks). Interpreted as "ago".
-- `now`, `today` (UTC midnight today), `yesterday` (UTC midnight yesterday).
-- ISO date: `2026-08-01`.
-- ISO datetime: `2026-08-01T12:00:00Z` or with a numeric offset.
-- Unix milliseconds: a bare integer of 11 or more digits.
-
-Both are normalized to UTC and sent as ISO-8601 with a `Z` suffix. `since` must be
-strictly earlier than `until`, otherwise it is a config error.
+An unsupported combination is rejected before any network call, and the error
+names both the granularity and the surface.
 
 ## Validation rules, all enforced before any network call
 
-1. Missing project: config error naming `--project` and `VERCEL_PROJECT_ID`.
-2. Missing token, unless `--dry-run`: config error naming `--token` and `VERCEL_TOKEN`, with a pointer to the token-creation docs.
-3. `--team` together with `--team-slug`: config error.
-4. More than 2 grouping dimensions: config error stating the API maximum is 2.
-5. More than one time granularity in the grouping: config error listing the granularities.
-6. Unknown grouping dimension for the dataset: config error listing valid dimensions for that dataset.
-7. `eventData/...` grouping or `--event-name` on the `visits` dataset: config error pointing at `--dataset events`.
-8. `--limit` outside 1..100: config error stating the API bounds and that overflow rolls into `Others`.
-9. `--environment preview` on a count query: config error explaining count is production-only and suggesting `--group-by day`.
-10. `--json` with `--csv`: config error.
-11. `--since` not strictly before `--until`: config error.
-12. `--since` older than 24 months: warning on stderr about the reporting window, not an error.
-13. `--flag` without `=`: config error showing the `NAME=VALUE` form.
+Rules 1 to 13 from the previous contract still apply (missing project, missing
+token unless `--dry-run`, `--team` with `--team-slug`, more than 2 grouping
+dimensions, more than one time granularity, unknown dimension, events-only
+dimension on visits, `--limit` out of bounds, `--environment preview` on a count
+query, `--json` with `--csv`, `--since` not before `--until`, reporting-window
+warning, `--flag` without `=`). Added:
 
-Every message names the offending value and the fix. No stack traces reach the
-user for any of these.
+14. `--dataset` together with `--metric`: config error naming the conflict.
+15. A Web-Analytics-only shorthand or grouping dimension used on the Speed Insights surface, and the reverse.
+16. `--granularity week` or `year` on Speed Insights: config error listing what that surface supports.
+17. `--all` together with `--project`: config error.
+18. `--percentile` outside 75, 90, 95, 99: config error listing the four.
+19. `--metric` with an unknown name: config error listing the five, with a did-you-mean suggestion.
+20. `--order-by` or `--order` without a grouping: config error explaining they apply to grouped results only.
+21. `--bucket-timezone` with a sub-daily granularity: warning on stderr, not an error, since the API ignores it there.
+22. Any Speed Insights option used while the Web Analytics surface is active: config error.
+
+Every message names the offending value and the fix. No traceback reaches the user.
 
 ## Exit codes
 
-| Code | Meaning |
-| --- | --- |
-| 0 | Success, including an empty result set. |
-| 1 | API returned an error, or the network failed after retries. |
-| 2 | Configuration or usage error. |
-| 130 | Interrupted. |
-
-## Module surface
-
-These names are public within the module and are what the tests import.
-
-Exceptions: `ConfigError`, `ApiError` (carries `status`, `code`, `message`),
-`RateLimitError(ApiError)`.
-
-Constants: `BASE_URL`, `VERSION`, `TIME_GRANULARITIES`, `VISIT_DIMENSIONS`,
-`EVENT_DIMENSIONS`, `JSON_DIMENSIONS`, `MIN_LIMIT`, `MAX_LIMIT`, `MAX_GROUP_BY`,
-`RETRYABLE_STATUSES`, `PRESETS`.
-
-Dataclasses:
-
-- `PreparedRequest`: `method`, `url`, `params` (a list of `(key, value)` pairs, ordered), `headers`
-- `Row`: `key` (display label, `None` for a count result), `metrics` (dict of name to number), `timestamp` (optional)
-- `Result`: `rows`, `is_count`, `dataset`, `group_by`, `query` (the echoed `query` block), `metric_names`
-
-Functions:
-
-| Name | Responsibility |
-| --- | --- |
-| `parse_time_value(value, now)` | One `--since`/`--until` token to an aware UTC datetime. |
-| `resolve_range(since, until, now)` | Both tokens, with ordering validation. |
-| `to_api_timestamp(dt)` | Aware datetime to the ISO-8601 `Z` string sent to the API. |
-| `quote_odata(value)` | Wrap in single quotes, doubling any embedded single quote. |
-| `build_clause(dimension, value)` | One `eq` clause, or an `in (...)` clause for comma-separated values. |
-| `combine_filters(clauses)` | Join with `and`, parenthesizing any clause containing a top-level `or`. Returns `None` when empty. |
-| `validate_dimension(dimension, dataset)` | Validate one grouping dimension, including JSON dimension keys and their quoting. |
-| `validate_group_by(dimensions, dataset)` | Apply the count and granularity rules. |
-| `select_endpoint(group_by)` | `"aggregate"` when grouping is present, else `"count"`. |
-| `build_request(...)` | Produce a `PreparedRequest`. Pure; performs no I/O. |
-| `redact_headers(headers)` | Replace the bearer credential with a fixed placeholder. |
-| `format_dry_run(request)` | Human-readable request dump with the token redacted. |
-| `retry_delay(attempt, response, body, now)` | `Retry-After`, else `error.limit.resetMs`/`reset`, else exponential backoff with jitter. |
-| `execute(request, session, sleep, jitter, max_retries, timeout)` | Perform the GET with retries. Returns parsed JSON. |
-| `normalize(payload, dataset, group_by)` | Response JSON to a `Result`, including the JSON-dimension key remap. |
-| `format_table(result, ...)` | Aligned table with a totals row and share percentages. |
-| `format_json(result, payload)` | JSON output. |
-| `format_csv(result)` | CSV output. |
-| `render_overview(results, ...)` | Compose the three `overview` results into one report. |
-| `build_parser()` | The `argparse.ArgumentParser`. |
-| `main(argv, env)` | Entry point returning an exit code. |
-
-`execute` takes injected `session`, `sleep`, and `jitter` callables so retry
-behavior is deterministic under test. `retry_delay` is pure.
+0 success including empty results, 1 API error, 2 configuration error, 130 interrupted.
 
 ## Security invariants
 
-These are testable properties, not aspirations.
+Restated for two surfaces. These are testable properties.
 
-1. Exactly one HTTP call site in the module, and it is `session.get`. There is no code path that can issue any other verb.
-2. The token appears only in the `Authorization` header. It is never placed in a URL, query parameter, log line, exception message, or any formatter output.
-3. `--dry-run` never constructs a session and never sends a request, and succeeds with no token in the environment.
-4. `redact_headers` is applied to every rendering of headers, including verbose diagnostics and error paths.
-5. No `eval`, no `exec`, no `subprocess`, no filesystem writes.
+1. **Operation allowlist.** `http.py` holds one module-level table mapping each allowed operation to a fixed `(method, url_template)` pair. There are exactly three entries: the Web Analytics query (GET), the observability query (POST), and the observability schema (GET). The dispatcher takes an operation key, never a method or a host. No user input can select, extend or override an entry.
+2. The only HTTP calls in the package are `session.get` and `session.post`, each appearing exactly once, both inside that dispatcher.
+3. The token appears only in the `Authorization` header: never in a URL, query parameter, request body, log line, exception message, `__repr__`, or formatter output. It is validated at config time as header-safe and scrubbed from every error path.
+4. `--dry-run` constructs no session and sends nothing, and succeeds with no token present. For a POST operation it prints the full JSON body it would have sent.
+5. `redact_headers` is applied everywhere headers are rendered.
+6. No `eval`, no `exec`, no `subprocess`, no filesystem writes.
+
+The project's public claim changes from "GET-only" to "read-only against a
+three-endpoint allowlist". Documentation must state why one endpoint is POST:
+Vercel exposes no GET equivalent for observability queries, and a query body is
+still a read.
+
+## Speed Insights rendering
+
+`Result` gains what the renderer needs to interpret a value: the metric id, its
+unit (`ms` or a unitless score), and the number of data points when available.
+
+- Millisecond values render as milliseconds under 1000 and as seconds with one decimal above, for example `1.4 s`.
+- CLS renders as a bare number with three decimals.
+- The `vitals` preset prints one row per metric: metric name, P75 value, Vercel's published target, and whether the value meets it.
+- Targets come from `docs/api-notes.md`: LCP 2500 ms, INP 200 ms, CLS 0.1, FCP 1800 ms, TTFB 800 ms. Render a two-tier verdict, meets target or over target. **Do not render a three-tier good / needs improvement / poor scale**: Vercel publishes only the good target, and the dashboard's three colour bands apply to derived 0-100 scores, not to raw values.
+- Lower is better for all five metrics. Say so in the output legend so a reader does not misread an ordering.
+- When a data point count is available, show it, and note that a percentile over few data points is not comparable to one over many.
+- Real Experience Score is not queryable. If a user asks for it by name, fail with a config error that says so and points at the dashboard, rather than silently substituting another metric.
+
+## Module surface
+
+Exceptions and constants live in `__init__.py`: `ConfigError`, `ApiError`,
+`RateLimitError`, `VERSION`, `BASE_URL`.
+
+| Module | Public surface |
+| --- | --- |
+| `timerange` | `parse_time_value`, `resolve_range`, `to_api_timestamp`, `normalize_granularity(value, surface)` |
+| `odata` | `quote_odata`, `build_clause`, `combine_filters`, `json_dimension`, `validate_key_segments` |
+| `http` | `OPERATIONS`, `PreparedRequest`, `redact_headers`, `format_dry_run`, `retry_delay`, `execute`, `scrub_credentials` |
+| `webanalytics` | `VISIT_DIMENSIONS`, `EVENT_DIMENSIONS`, `select_endpoint`, `validate_group_by`, `build_request`, `normalize` |
+| `speedinsights` | `METRICS`, `TARGETS`, `SPEED_DIMENSIONS`, `validate_metric`, `build_request`, `normalize` |
+| `render` | `Row`, `Result`, `format_table`, `format_json`, `format_csv`, `render_overview`, `render_vitals`, `verdict` |
+| `presets` | `PRESETS`, `Preset`, `format_presets` |
+| `cli` | `build_parser`, `main` |
+
+`execute` keeps its injected `session`, `sleep` and `jitter` callables so retry
+behavior stays deterministic under test. `retry_delay` stays pure. Retryable
+statuses now include **408**, which the observability API documents and Web
+Analytics does not.
 
 ## Output expectations
 
-Table output for a grouped query shows the group label, each metric column right
-aligned, and a share-of-total percentage for the primary metric, followed by a
-totals row. A row returned as `Others` is labeled as such and annotated so users
-understand it is the limit overflow bucket, not a real group value.
+Unchanged for Web Analytics: grouped tables carry one column per grouped
+dimension, a share-of-total percent for the primary metric, a totals row, and a
+labelled `Others` bucket with its explanatory note. Empty results print one
+explanatory line and exit 0. JSON carries `query`, `range`, `rows`, `totals` and
+the untouched payload under `raw`. CSV is written with `csv.writer`.
 
-Count output shows the metrics as a small labeled block, plus the resolved date
-range.
-
-Empty results print a single explanatory line naming the resolved range and the
-active filter, and exit 0. They never print an empty table or a traceback.
-
-JSON output is an object with `query`, `range`, `rows`, and `totals`, plus the
-untouched API payload under `raw`.
-
-CSV output writes a header row of the group column and metric columns, then one
-row per group, using `csv.writer` so quoting is correct.
+Speed Insights output follows the same conventions, with the value column
+formatted per its unit and, for `vitals`, the target and verdict columns
+described above.

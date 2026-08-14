@@ -7,6 +7,115 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-14
+
+Speed Insights arrives, and with it the project's scope grows from traffic to
+traffic and speed. The skill, the repository and the module are renamed to
+match, and the single script becomes a package.
+
+### Changed
+
+- **Renamed.** The skill is now `vercel-insights` (was `vercel-analytics`), the
+  repository is `openclaw-vercel-insights` (was `openclaw-vercel-analytics`),
+  and the module is `vercel_insights`. The old name described half of what the
+  tool now does. Update any bookmark, clone URL or ClawHub install accordingly;
+  this entry is the record of that rename.
+- **Invocation.** `python3 scripts/vercel_analytics.py` is gone. Run
+  `python3 -m vercel_insights` from the repository root, or
+  `python3 /abs/path/to/vercel_insights/__main__.py` from anywhere: the entry
+  point repairs `sys.path` before importing, so it works uninstalled. A
+  `pip install -e .` additionally provides a `vercel-insights` console script.
+- **Package split.** The single script became a package of focused modules:
+  `timerange` (time parsing and granularity translation), `odata` (quoting and
+  clause building), `http` (the operation allowlist, redaction and retries),
+  `webanalytics` and `speedinsights` (one per API), `render` (every output
+  format), `presets`, and `cli`. `http`, `odata`, `timerange` and `render` know
+  nothing about either API, which is what let a second surface be added without
+  touching the first.
+- **The read-only claim is now "read-only against a three-endpoint allowlist"**,
+  not "GET only". `http.py` holds one table mapping an operation key to a fixed
+  method and URL, with exactly three entries: the Web Analytics query (GET), the
+  observability query (POST) and the observability schema (GET). The dispatcher
+  takes an operation key, never a method and never a host. One entry is a POST
+  because Vercel exposes no GET equivalent for an observability query; the body
+  carries the question and nothing is created or mutated. The `/speed-insights/toggle`
+  and `/web/insights/toggle` endpoints, which genuinely write, are absent from
+  the table and unreachable.
+- `--granularity` now accepts both time vocabularies and translates per API, so
+  `day` and `1d` mean the same thing. `week` and `year` remain Web Analytics
+  only, and asking for either on Speed Insights is a configuration error naming
+  what that surface supports.
+- HTTP 408 joins 429 and the 5xx statuses as retryable. The observability query
+  API documents it: a query can time out server-side, and that is worth another
+  attempt.
+- A dry run of a request with no query parameters no longer prints a bare
+  trailing `?` on the encoded URL line.
+
+### Added
+
+- **Speed Insights support** through `POST /v2/observability/query`, the only
+  way to read these metrics: Speed Insights has no dedicated query API. Ten
+  queryable metrics, the five web vitals (`lcp`, `inp`, `cls`, `fcp`, `ttfb`)
+  and the `*_count` metric giving the number of data points behind each one.
+- Seven presets on the new surface: `vitals` (P75 of all five against their
+  published targets, one query per metric composed into one table),
+  `slowest-pages` and `fastest-pages` (routes ordered by P75 LCP),
+  `vitals-by-country`, `vitals-by-device`, `vitals-trend`, and `data-points`.
+- Speed Insights options: `--metric`, `--percentile {75,90,95,99}`,
+  `--aggregation`, `--order-by {count,value}`, `--order {asc,desc}`,
+  `--bucket-timezone`, `--all` (every project in the team), and `--data-points`.
+- Value rendering per unit: milliseconds below one second stay milliseconds and
+  above it become seconds with one decimal (`2.4 s`), and the layout shift score
+  renders as a bare three-decimal number. Each value is shown against Vercel's
+  published "good" target with a **two-tier** verdict, `meets target` or
+  `over target`. Vercel publishes no boundary above the good threshold, and the
+  dashboard's three colour bands describe a derived 0 to 100 score rather than a
+  raw value, so a three-tier rating is deliberately not rendered.
+- Grouped Speed Insights tables carry no totals row and no share-of-total
+  column, because a percentile does not add up. `data-points` is the exception,
+  since a sum of measurement counts does.
+- Data point counts are reported alongside every value where the response
+  carries one, with a legend explaining that a percentile over few data points
+  is not comparable to one over many. Grouped queries order by count by default
+  for the same reason.
+- Asking for Real Experience Score by name is a configuration error that says it
+  is not queryable through this API and points at the Speed Insights dashboard,
+  rather than quietly substituting another metric.
+- Filter shorthands now compile to the dimension spelling of whichever surface
+  is active: `--device mobile` becomes `deviceType eq 'mobile'` on Web Analytics
+  and `device_type eq 'mobile'` on Speed Insights. A shorthand the active
+  surface has no dimension for is a configuration error naming the reason.
+- Nine new validation rules, all enforced before any network call: `--dataset`
+  with `--metric`, a dimension or shorthand used on the wrong surface (in both
+  directions, each naming the other surface's spelling), an unsupported
+  granularity per surface, `--all` with `--project`, a percentile outside the
+  four Vercel computes, an unknown metric with a did-you-mean suggestion,
+  ordering flags without a grouping, a bucket timezone at sub-daily granularity
+  (a warning, since the API ignores it there), and any Speed Insights option
+  used while the Web Analytics surface is active.
+- Defensive response parsing for the observability surface. The published
+  OpenAPI document declares the 200 body as a bare object, so the normalizer
+  probes for a wrapped container, a single metric value, a rollup keyed by
+  dimension value, a list of grouped rows, and a list of time buckets with rows
+  nested inside them, and reports a clear `invalid_response` error naming the
+  shape it found, never its content, when none of those fits. No `KeyError` ever
+  reaches the user.
+
+### Documentation
+
+- `SKILL.md` describes both surfaces and when to use each, extends the
+  phrasing-to-command decision table with performance questions, states the
+  read-only guarantee in its allowlist form with the POST explained, and covers
+  how to read a percentile, a target and a data point count without
+  overclaiming.
+- `README.md` gains a Core Web Vitals section of captured output, the new
+  presets and flags, the allowlist framing of the security section, and the two
+  facts most likely to be assumed wrongly: Speed Insights needs no Observability
+  Plus, and Real Experience Score is dashboard-only.
+- Every sample block in the documentation is captured from a real run of the
+  tool driven through `main()` against a stub session. None of it is
+  hand-written to look like terminal output.
+
 ## [0.1.0] - 2026-08-14
 
 Initial release: a read-only command line client for the Vercel Web Analytics
@@ -14,9 +123,9 @@ API, packaged as an OpenClaw skill.
 
 ### Added
 
-- `scripts/vercel_analytics.py`, a single-file CLI over the four Vercel Web
-  Analytics query endpoints (`visits/count`, `visits/aggregate`, `events/count`,
-  `events/aggregate`). Read-only: exactly one HTTP call site, and it is a GET.
+- A single-file CLI over the four Vercel Web Analytics query endpoints
+  (`visits/count`, `visits/aggregate`, `events/count`, `events/aggregate`).
+  Read-only: exactly one HTTP call site, and it is a GET.
 - Twelve presets: `overview` (the default, three calls composed into one
   report), `trend`, `top-pages`, `top-routes`, `referrers`, `countries`,
   `devices`, `browsers`, `operating-systems`, `campaigns`, `events`, and
@@ -78,5 +187,6 @@ API, packaged as an OpenClaw skill.
   is ever built.
 - No `eval`, no `exec`, no `subprocess`, and no filesystem writes.
 
-[Unreleased]: https://github.com/anatoli-iliev/openclaw-vercel-analytics/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/anatoli-iliev/openclaw-vercel-analytics/releases/tag/v0.1.0
+[Unreleased]: https://github.com/anatoli-iliev/openclaw-vercel-insights/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/anatoli-iliev/openclaw-vercel-insights/releases/tag/v0.2.0
+[0.1.0]: https://github.com/anatoli-iliev/openclaw-vercel-insights/releases/tag/v0.1.0

@@ -40,18 +40,27 @@ jobs:
         run: ruff check .
 
       - name: Type check (mypy --strict)
-        run: mypy --strict scripts tests
+        run: mypy --strict vercel_insights tests
 
       - name: Test (pytest)
         run: pytest -q
 
-      # Exercises the entry point itself on every interpreter in the matrix.
-      # All three invocations are offline by construction: --version and
-      # --list-presets never touch the network, and --dry-run prints the
-      # request it would send without ever building a session, so no token is
-      # read and nothing is sent.
+      # Exercises the entry point itself on every interpreter in the matrix,
+      # both as a module and through the installed console script. Every
+      # invocation is offline by construction: --version and --list-presets
+      # never touch the network, and --dry-run prints the request it would
+      # send without ever building a session, so no token is read and nothing
+      # is sent.
       - name: Smoke test the CLI (offline, no token)
         run: |
-          python scripts/vercel_analytics.py --version
-          python scripts/vercel_analytics.py --list-presets
-          python scripts/vercel_analytics.py --project demo --dry-run
+          python -m vercel_insights --version
+          python -m vercel_insights --list-presets
+          python -m vercel_insights --project demo --dry-run
+          python -m vercel_insights vitals --project demo --dry-run
+          vercel-insights --version
+
+      # The contract promises the file form runs from any working directory,
+      # so run it from one that is not the repository root.
+      - name: Smoke test the file entry point from another directory
+        working-directory: ${{ runner.temp }}
+        run: python "${{ github.workspace }}/vercel_insights/__main__.py" --version

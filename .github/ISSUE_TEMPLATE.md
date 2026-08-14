@@ -32,28 +32,31 @@
 <!-- The full command, with the token replaced by REDACTED. -->
 
 ```console
-$ python3 scripts/vercel_analytics.py ...
+$ python3 -m vercel_insights ...
 ```
 
 ## `--dry-run` output
 
 <!--
 Re-run the same command with --dry-run added and paste the output here. It
-sends no request, needs no token, and shows the exact URL and parameters the
-skill built, which is usually enough to spot the problem.
+sends no request, needs no token, and shows exactly what the skill built: the
+URL and query parameters for a Web Analytics query, and the full JSON body for
+a Speed Insights query. That is usually enough to spot the problem.
 -->
 
 ```console
-$ python3 scripts/vercel_analytics.py ... --dry-run
+$ python3 -m vercel_insights ... --dry-run
 ```
 
 ## Environment
 
 - OS and version:
 - Python version (`python3 --version`):
-- Skill version (`python3 scripts/vercel_analytics.py --version`):
+- Skill version (`python3 -m vercel_insights --version`):
 - `requests` version (`python3 -m pip show requests`):
 - Installed how (cloned the repo, installed through OpenClaw, other):
+- Which surface: Web Analytics (a `--dataset` or traffic preset) or Speed
+  Insights (a `--metric` or vitals preset).
 
 ## Anything else
 
@@ -61,5 +64,7 @@ $ python3 scripts/vercel_analytics.py ... --dry-run
 Optional. Relevant context: does it reproduce every time, did it work before,
 does it happen on one preset only, is the project on Hobby, Pro, or Enterprise.
 Plan matters for some queries: custom events need Pro or above, and UTM
-dimensions need Web Analytics Plus or Enterprise.
+dimensions need Web Analytics Plus or Enterprise. Speed Insights metrics do not
+need Observability Plus, but Real Experience Score is not queryable at all: it
+is dashboard only, so the skill declines it on purpose.
 -->
