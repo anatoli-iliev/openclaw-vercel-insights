@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# The suite is fully offline: it never calls the Vercel API and never reads a
+# secret. Read access to the repository contents is all it needs.
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # requires-python is an open ">=3.10", so the matrix runs from that
+        # floor up to the newest stable release, which is also the interpreter
+        # the project is developed on. Add the next version here when it ships.
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install the dev extra
+        run: python -m pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Type check (mypy --strict)
+        run: mypy --strict scripts tests
+
+      - name: Test (pytest)
+        run: pytest -q
+
+      # Exercises the entry point itself on every interpreter in the matrix.
+      # All three invocations are offline by construction: --version and
+      # --list-presets never touch the network, and --dry-run prints the
+      # request it would send without ever building a session, so no token is
+      # read and nothing is sent.
+      - name: Smoke test the CLI (offline, no token)
+        run: |
+          python scripts/vercel_analytics.py --version
+          python scripts/vercel_analytics.py --list-presets
+          python scripts/vercel_analytics.py --project demo --dry-run

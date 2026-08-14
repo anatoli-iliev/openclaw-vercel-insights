@@ -1,0 +1,67 @@
+# Secrets: never commit a Vercel token. .env.example is the template to copy.
+.env
+.env.*
+!.env.example
+
+# Byte-compiled and optimised files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Tool caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.dmypy.json
+dmypy.json
+.tox/
+.nox/
+.cache/
+
+# Coverage and test reports
+.coverage
+.coverage.*
+coverage.xml
+coverage/
+htmlcov/
+nosetests.xml
+junit*.xml
+
+# Packaging and build output
+build/
+dist/
+sdist/
+wheels/
+*.egg-info/
+*.egg
+.eggs/
+MANIFEST
+pip-wheel-metadata/
+
+# Editors and IDEs
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+.\#*
+\#*\#
+
+# OS noise
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+desktop.ini
