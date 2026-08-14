@@ -40,6 +40,7 @@ from helpers import (
     dry_run_values,
     error_payload,
     patch_retry_sleep,
+    speed_value_payload,
 )
 
 from vercel_insights import ConfigError
@@ -1005,6 +1006,355 @@ def test_a_dry_run_of_a_post_with_no_query_parameters_prints_no_trailing_questio
     assert code == 0, err
     assert f"{SPEED_QUERY_URL}?" not in out
     assert SPEED_QUERY_URL in out
+
+
+# ---------------------------------------------------------------------------
+# 6. The vitals preset refuses --metric, and says why in the right order
+# ---------------------------------------------------------------------------
+#
+# vitals reports all five web vitals, one query each, so naming one of them is
+# meaningless there. Which of the two refusals a user gets matters: asking for
+# Real Experience Score has to say that it is not queryable at all, because
+# that is true of every preset, and the answer "vitals reports all five anyway"
+# would leave the user trying vitals-trend --metric res next.
+
+
+@pytest.mark.parametrize("spelling", ["lcp", "inp", "cls", "fcp", "ttfb", "lcp_ms"])
+def test_vitals_refuses_a_perfectly_valid_metric_and_names_the_preset_to_use(
+    cli: Cli, spelling: str
+) -> None:
+    code, out, err = cli.run(["vitals", "--metric", spelling], env=dict(BASE_ENV))
+    assert code == 2
+    assert out == ""
+    assert cli.created == []
+    assert f"--metric {spelling!r} has no meaning on the vitals preset" in err
+    assert "vitals-trend" in err
+    assert "vitals-by-country" in err
+    assert "Traceback" not in err
+
+
+@pytest.mark.parametrize(
+    "spelling", ["res", "RES", "real experience score", "Real Experience Score"]
+)
+def test_vitals_with_a_real_experience_score_metric_gets_the_specific_refusal(
+    cli: Cli, spelling: str
+) -> None:
+    code, out, err = cli.run(["vitals", "--metric", spelling], env=dict(BASE_ENV))
+    assert code == 2
+    assert out == ""
+    assert cli.created == []
+    assert "Real Experience Score is not queryable" in err
+    assert "dashboard" in err
+    # Not the generic preset complaint, and not a quiet substitution either.
+    assert "has no meaning on the vitals preset" not in err
+    assert LCP_ID not in err
+
+
+def test_vitals_with_an_unknown_metric_still_gets_the_did_you_mean(cli: Cli) -> None:
+    code, out, err = cli.run(["vitals", "--metric", "lpc"], env=dict(BASE_ENV))
+    assert code == 2
+    assert out == ""
+    assert "unknown metric 'lpc'" in err
+    assert "Did you mean 'lcp'?" in err
+
+
+@pytest.mark.parametrize(
+    ("extra", "fragment"),
+    [
+        (["--csv"], "--csv needs a single table"),
+        (["--group-by", "route"], "--group-by has no meaning"),
+    ],
+)
+def test_the_older_vitals_refusals_still_win_where_they_did_before(
+    cli: Cli, extra: list[str], fragment: str
+) -> None:
+    code, out, err = cli.run(
+        ["vitals", "--metric", "res", *extra], env=dict(BASE_ENV)
+    )
+    assert code == 2
+    assert out == ""
+    assert fragment in err
+    assert "Real Experience Score" not in err
+
+
+def test_bare_vitals_is_unaffected_and_still_issues_exactly_five_queries(
+    cli: Cli,
+) -> None:
+    session = FakeSession(
+        *[FakeResponse(200, payload) for payload in SPEED_VITALS_PAYLOADS]
+    )
+    code, out, err = cli.run(["vitals", *WINDOW], env=dict(BASE_ENV), session=session)
+    assert code == 0, err
+    assert len(session.calls) == 5
+    assert [call["json"]["metric"] for call in session.calls] == [
+        LCP_ID,
+        INP_ID,
+        CLS_ID,
+        FCP_ID,
+        TTFB_ID,
+    ]
+    assert "meets target" in out
+
+
+def test_a_single_metric_preset_still_accepts_the_metric_flag(cli: Cli) -> None:
+    # The guard is on the preset that reports all five, not on --metric itself.
+    code, out, err = cli.run(
+        ["vitals-trend", "--metric", "cls", *WINDOW, "--dry-run"],
+        env=dict(DRY_RUN_ENV),
+    )
+    assert code == 0, err
+    assert dry_run_bodies(out)[0]["metric"] == CLS_ID
+
+
+# ---------------------------------------------------------------------------
+# 7. The team travels on exactly one channel, for both scope types
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("selection", "expected_scope"),
+    [
+        (["--project", PROJECT], {"type": "project", "projectId": PROJECT}),
+        (["--all"], {"type": "owner"}),
+    ],
+    ids=["project-scope", "owner-scope"],
+)
+@pytest.mark.parametrize(
+    ("flag", "parameter"), [("--team", "teamId"), ("--team-slug", "slug")]
+)
+def test_both_scope_types_carry_the_team_on_the_same_single_channel(
+    cli: Cli,
+    selection: list[str],
+    expected_scope: dict[str, Any],
+    flag: str,
+    parameter: str,
+) -> None:
+    session = FakeSession(FakeResponse(200, SPEED_EMPTY_PAYLOAD))
+    code, _out, err = cli.run(
+        ["vitals-by-country", *selection, flag, "team_abc", *WINDOW],
+        env={"VERCEL_TOKEN": TOKEN},
+        session=session,
+    )
+    assert code == 0, err
+    call = session.calls[0]
+    # The scope names what to query and nothing else: no team field, of any
+    # spelling, in either scope type.
+    assert call["json"]["scope"] == expected_scope
+    assert "team_abc" not in json.dumps(call["json"])
+    # The team travels as a query parameter, exactly once.
+    assert call["params"] == [(parameter, "team_abc")]
+    assert json.dumps(call).count("team_abc") == 1
+
+
+def test_a_run_with_no_team_carries_no_team_channel_at_all(cli: Cli) -> None:
+    session = FakeSession(FakeResponse(200, SPEED_EMPTY_PAYLOAD))
+    code, _out, err = cli.run(
+        ["vitals-by-country", *WINDOW], env=dict(BASE_ENV), session=session
+    )
+    assert code == 0, err
+    call = session.calls[0]
+    assert call["params"] == []
+    assert call["json"]["scope"] == {"type": "project", "projectId": PROJECT}
+
+
+# ---------------------------------------------------------------------------
+# 8. Zero is a measurement on this surface, not an absence
+# ---------------------------------------------------------------------------
+#
+# A Cumulative Layout Shift of exactly 0.0 is a perfect score and the best
+# result the metric can have. Calling it "no data" would hide it. A Web
+# Analytics count of zero is the opposite: genuinely nothing to tabulate.
+
+
+def test_an_ungrouped_cls_of_exactly_zero_renders_as_a_real_measurement(
+    cli: Cli,
+) -> None:
+    session = FakeSession(FakeResponse(200, speed_value_payload(CLS_ID, 0.0, 4200)))
+    code, out, err = cli.run(
+        ["vitals-trend", "--metric", "cls", *WINDOW],
+        env=dict(BASE_ENV),
+        session=session,
+    )
+    assert code == 0, err
+    assert "p75_cls" in out
+    assert "0.000" in out
+    assert "4,200" in out
+    assert f"No {CLS_ID} data" not in out
+    assert "no data" not in out
+
+
+def test_a_zero_value_with_no_data_point_count_beside_it_is_still_a_measurement(
+    cli: Cli,
+) -> None:
+    # The response carried a value and nothing else, and that value is 0.0. It
+    # is the only thing in the row, so nothing else can vouch for it: presence
+    # of the value key is what has to decide, never truthiness.
+    session = FakeSession(FakeResponse(200, speed_value_payload(CLS_ID, 0.0)))
+    code, out, err = cli.run(
+        ["vitals-trend", "--metric", "cls", *WINDOW],
+        env=dict(BASE_ENV),
+        session=session,
+    )
+    assert code == 0, err
+    assert "p75_cls" in out
+    assert "0.000" in out
+    assert f"No {CLS_ID} data" not in out
+
+
+def test_five_vitals_of_zero_with_no_counts_still_render_a_table(cli: Cli) -> None:
+    session = FakeSession(
+        *[
+            FakeResponse(200, speed_value_payload(metric_id, 0.0))
+            for metric_id in (LCP_ID, INP_ID, CLS_ID, FCP_ID, TTFB_ID)
+        ]
+    )
+    code, out, err = cli.run(["vitals", *WINDOW], env=dict(BASE_ENV), session=session)
+    assert code == 0, err
+    assert "Cumulative Layout Shift" in out
+    assert "0.000" in out
+    assert "no data" not in out
+    assert f"No {LCP_ID} data" not in out
+
+
+def test_a_metric_that_really_came_back_empty_still_reads_as_empty(cli: Cli) -> None:
+    session = FakeSession(FakeResponse(200, SPEED_EMPTY_PAYLOAD))
+    code, out, err = cli.run(
+        ["vitals-trend", "--metric", "cls", *WINDOW],
+        env=dict(BASE_ENV),
+        session=session,
+    )
+    assert code == 0, err
+    assert f"No {CLS_ID} data for project {PROJECT}" in out
+    assert "0.000" not in out
+
+
+def test_five_vitals_all_measuring_zero_render_a_table_of_met_targets(
+    cli: Cli,
+) -> None:
+    session = FakeSession(
+        *[
+            FakeResponse(200, speed_value_payload(metric_id, 0.0, 4200))
+            for metric_id in (LCP_ID, INP_ID, CLS_ID, FCP_ID, TTFB_ID)
+        ]
+    )
+    code, out, err = cli.run(["vitals", *WINDOW], env=dict(BASE_ENV), session=session)
+    assert code == 0, err
+    labels = [
+        "Largest Contentful Paint",
+        "Interaction to Next Paint",
+        "Cumulative Layout Shift",
+        "First Contentful Paint",
+        "Time to First Byte",
+    ]
+    rows = {
+        label: next(line for line in out.splitlines() if line.startswith(label))
+        for label in labels
+    }
+    assert all("meets target" in row for row in rows.values())
+    assert "0.000" in rows["Cumulative Layout Shift"]
+    assert "0 ms" in rows["Largest Contentful Paint"]
+    assert f"No {LCP_ID} data" not in out
+    assert "no data" not in out
+
+
+def test_a_web_analytics_count_of_zero_is_still_reported_as_no_data(cli: Cli) -> None:
+    # The other side of the same rule: zero page views by zero visitors really
+    # is nothing to tabulate, and one line of prose says more than a table of
+    # zeroes.
+    payload = {"version": 1, "query": {}, "data": {"pageviews": 0, "visitors": 0}}
+    session = FakeSession(FakeResponse(200, payload))
+    code, out, err = cli.run(["total", *WINDOW], env=dict(BASE_ENV), session=session)
+    assert code == 0, err
+    assert f"No visits data for project {PROJECT} (ungrouped)" in out
+    assert "TOTAL" not in out
+
+
+# ---------------------------------------------------------------------------
+# 9. Failure paths on the Speed Insights surface specifically
+# ---------------------------------------------------------------------------
+
+
+def test_a_keyboard_interrupt_on_a_speed_run_exits_one_hundred_and_thirty(
+    cli: Cli,
+) -> None:
+    session = FakeSession(KeyboardInterrupt())
+    code, out, err = cli.run(
+        ["slowest-pages", *WINDOW], env=dict(BASE_ENV), session=session
+    )
+    assert code == 130
+    assert out == ""
+    assert "interrupted" in err
+    assert "Traceback" not in err
+    assert session.closed is True
+
+
+def test_a_keyboard_interrupt_between_two_vitals_queries_still_exits_one_thirty(
+    cli: Cli,
+) -> None:
+    session = FakeSession(
+        FakeResponse(200, SPEED_VITALS_PAYLOADS[0]), KeyboardInterrupt()
+    )
+    code, out, err = cli.run(["vitals", *WINDOW], env=dict(BASE_ENV), session=session)
+    assert code == 130
+    assert out == ""
+    assert "interrupted" in err
+    assert len(session.calls) == 2
+    assert session.closed is True
+
+
+@pytest.mark.parametrize(
+    ("body", "fragment"),
+    [
+        ("<html>gateway timeout</html>", "not a JSON object"),
+        ("", "not a JSON object"),
+        ("[1, 2, 3]", "not a JSON object"),
+        ('{"version": 1, "data": {"value": NaN}}', "NaN"),
+    ],
+    ids=["html", "empty", "json-array", "nan"],
+)
+def test_a_body_the_speed_path_cannot_parse_exits_one_without_a_traceback(
+    cli: Cli, body: str, fragment: str
+) -> None:
+    session = FakeSession(FakeResponse(200, text=body))
+    code, out, err = cli.run(
+        ["slowest-pages", "--max-retries", "0", *WINDOW],
+        env=dict(BASE_ENV),
+        session=session,
+    )
+    assert code == 1
+    assert out == ""
+    assert "invalid_response" in err
+    assert fragment in err
+    assert "Traceback" not in err
+
+
+def test_a_speed_response_missing_its_data_key_entirely_exits_one(cli: Cli) -> None:
+    # Parsable JSON, valid envelope, no result in it. Reading the schema version
+    # as a P75 of 1 millisecond would print a confidently formatted wrong figure.
+    session = FakeSession(FakeResponse(200, {"version": 1, "query": {"metric": LCP_ID}}))
+    code, out, err = cli.run(
+        ["slowest-pages", "--max-retries", "0", *WINDOW],
+        env=dict(BASE_ENV),
+        session=session,
+    )
+    assert code == 1
+    assert out == ""
+    assert "invalid_response" in err
+    assert "cannot read" in err
+    assert "1 ms" not in err
+    assert "Traceback" not in err
+
+
+def test_a_vitals_run_whose_last_query_is_unreadable_exits_one(cli: Cli) -> None:
+    session = FakeSession(
+        *[FakeResponse(200, payload) for payload in SPEED_VITALS_PAYLOADS[:4]],
+        FakeResponse(200, {"version": 1, "query": {}}),
+    )
+    code, out, err = cli.run(["vitals", *WINDOW], env=dict(BASE_ENV), session=session)
+    assert code == 1
+    assert out == ""
+    assert "invalid_response" in err
+    assert "Traceback" not in err
 
 
 def test_list_presets_shows_every_speed_preset_with_its_query_endpoint(

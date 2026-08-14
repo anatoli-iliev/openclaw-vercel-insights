@@ -8,12 +8,15 @@ import pytest
 import requests
 from helpers import (
     COUNTRY_PAYLOAD,
+    SPEED_QUERY_URL,
+    TOKEN,
     FakeResponse,
     FakeSession,
     Recorder,
     error_payload,
     no_jitter,
     prepared,
+    speed_request,
     utc,
 )
 
@@ -133,6 +136,313 @@ def test_a_408_request_timeout_is_retried() -> None:
 
 def test_408_is_on_the_retryable_status_list() -> None:
     assert 408 in vi_http.RETRYABLE_STATUSES
+
+
+# 507 Insufficient Storage, 508 Loop Detected, 599 and friends are not on the
+# named list, and none of them ever will be: the rule is "any other 5xx is
+# retried too", and these are what hold that clause in place.
+UNLISTED_SERVER_ERRORS = [501, 505, 507, 508, 599]
+
+
+@pytest.mark.parametrize("status", UNLISTED_SERVER_ERRORS)
+def test_a_five_hundred_status_not_on_the_named_list_is_retried_anyway(
+    status: int,
+) -> None:
+    assert status not in vi_http.RETRYABLE_STATUSES, (
+        f"{status} is now named explicitly, so this test no longer covers the "
+        "'any other 5xx' rule; pick another unlisted status"
+    )
+    sleeps = Recorder()
+    session = FakeSession(
+        FakeResponse(status, error_payload("server_error", "something gave way")),
+        FakeResponse(200, COUNTRY_PAYLOAD),
+    )
+    payload = vi_http.execute(
+        prepared(), session, sleep=sleeps, jitter=no_jitter, max_retries=3
+    )
+    assert payload == COUNTRY_PAYLOAD
+    assert sleeps.delays == [0.5]
+    assert len(session.calls) == 2
+
+
+@pytest.mark.parametrize("status", UNLISTED_SERVER_ERRORS)
+def test_an_unlisted_five_hundred_that_never_clears_reports_every_attempt(
+    status: int,
+) -> None:
+    sleeps = Recorder()
+    session = FakeSession(
+        *[
+            FakeResponse(status, error_payload("server_error", "still down"))
+            for _ in range(3)
+        ]
+    )
+    with pytest.raises(ApiError) as excinfo:
+        vi_http.execute(
+            prepared(), session, sleep=sleeps, jitter=no_jitter, max_retries=2
+        )
+    assert "gave up after 3 attempts" in str(excinfo.value)
+    assert sleeps.delays == [0.5, 1.0]
+
+
+@pytest.mark.parametrize("status", [402, 404, 409, 418, 451])
+def test_a_four_hundred_status_off_the_list_is_still_never_retried(
+    status: int,
+) -> None:
+    sleeps = Recorder()
+    session = FakeSession(
+        FakeResponse(status, error_payload("nope", "no")),
+        FakeResponse(200, COUNTRY_PAYLOAD),
+    )
+    with pytest.raises(ApiError):
+        vi_http.execute(
+            prepared(), session, sleep=sleeps, jitter=no_jitter, max_retries=3
+        )
+    assert sleeps.delays == []
+    assert len(session.calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# Rate limits, recognised by status and by error code
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("status", [400, 403, 500, 503])
+def test_the_documented_rate_limited_code_is_a_rate_limit_at_any_status(
+    status: int,
+) -> None:
+    # docs/api-notes.md documents the code, not only the status: "Rate limiting
+    # returns code rate_limited and carries a limit object". A body that says so
+    # is a rate limit whatever status carried it, so the reset time is read and
+    # the CLI prints its rate limit hint rather than a bare error.
+    assert status != 429
+    limit = {"remaining": 0, "reset": 1571432075, "resetMs": 1571432075563, "total": 6}
+    body = error_payload(
+        "rate_limited", "The rate limit of 6 exceeded. Try again in 7 days", limit=limit
+    )
+    session = FakeSession(FakeResponse(status, body))
+    with pytest.raises(RateLimitError) as excinfo:
+        vi_http.execute(
+            prepared(), session, sleep=Recorder(), jitter=no_jitter, max_retries=0
+        )
+    error = excinfo.value
+    assert error.status == status
+    assert error.code == "rate_limited"
+    assert error.limit == limit
+    assert "Try again in 7 days" in str(error)
+
+
+def test_a_429_is_a_rate_limit_even_when_the_body_names_another_code() -> None:
+    # The other half of the same rule: the status alone is enough.
+    session = FakeSession(
+        FakeResponse(429, error_payload("too_many_requests", "slow down"))
+    )
+    with pytest.raises(RateLimitError) as excinfo:
+        vi_http.execute(
+            prepared(), session, sleep=Recorder(), jitter=no_jitter, max_retries=0
+        )
+    assert excinfo.value.status == 429
+    assert excinfo.value.code == "too_many_requests"
+
+
+def test_a_429_carrying_no_body_at_all_is_still_a_rate_limit() -> None:
+    session = FakeSession(FakeResponse(429, text=""))
+    with pytest.raises(RateLimitError) as excinfo:
+        vi_http.execute(
+            prepared(), session, sleep=Recorder(), jitter=no_jitter, max_retries=0
+        )
+    assert excinfo.value.code == "rate_limited"
+
+
+def test_an_ordinary_error_is_not_dressed_up_as_a_rate_limit() -> None:
+    session = FakeSession(FakeResponse(403, error_payload("forbidden", "no")))
+    with pytest.raises(ApiError) as excinfo:
+        vi_http.execute(
+            prepared(), session, sleep=Recorder(), jitter=no_jitter, max_retries=0
+        )
+    assert not isinstance(excinfo.value, RateLimitError)
+
+
+# ---------------------------------------------------------------------------
+# Non-standard JSON literals
+# ---------------------------------------------------------------------------
+#
+# json.loads reads NaN, Infinity and -Infinity as floats by default even though
+# none of the three is JSON. A nan that got that far would compare false against
+# every target, format as "nan", and read as a measurement.
+
+NON_STANDARD_LITERALS = ["NaN", "Infinity", "-Infinity"]
+
+
+@pytest.mark.parametrize("literal", NON_STANDARD_LITERALS)
+def test_the_json_module_really_would_have_accepted_the_literal(literal: str) -> None:
+    # The premise of the guard below: without it, this is what would be parsed.
+    accepted = json.loads(f'{{"data": {{"pageviews": {literal}}}}}')
+    assert isinstance(accepted["data"]["pageviews"], float)
+
+
+@pytest.mark.parametrize("literal", NON_STANDARD_LITERALS)
+def test_a_success_body_carrying_a_non_standard_literal_is_refused(
+    literal: str,
+) -> None:
+    body = f'{{"version": 1, "data": {{"pageviews": {literal}, "visitors": 3}}}}'
+    session = FakeSession(FakeResponse(200, text=body))
+    with pytest.raises(ApiError) as excinfo:
+        vi_http.execute(
+            prepared(), session, sleep=Recorder(), jitter=no_jitter, max_retries=0
+        )
+    error = excinfo.value
+    assert error.code == "invalid_response"
+    assert error.status == 200
+    assert "NaN" in str(error) and "Infinity" in str(error)
+    # The refusal names the class of literal, never the field it sat on.
+    assert "pageviews" not in str(error)
+    assert not isinstance(error, json.JSONDecodeError)
+
+
+@pytest.mark.parametrize("literal", NON_STANDARD_LITERALS)
+def test_a_non_standard_literal_anywhere_in_the_body_is_refused(
+    literal: str,
+) -> None:
+    # Nested inside an array, and as the whole document, not only as one field.
+    for body in (
+        f'{{"version": 1, "data": [{{"country": "US", "pageviews": {literal}}}]}}',
+        f'{{"data": {literal}}}',
+        literal,
+    ):
+        session = FakeSession(FakeResponse(200, text=body))
+        with pytest.raises(ApiError) as excinfo:
+            vi_http.execute(
+                prepared(), session, sleep=Recorder(), jitter=no_jitter, max_retries=0
+            )
+        assert excinfo.value.code == "invalid_response"
+
+
+def test_an_ordinary_float_body_is_still_parsed_normally() -> None:
+    session = FakeSession(FakeResponse(200, text='{"version": 1, "data": {"cls": 0.0}}'))
+    payload = vi_http.execute(
+        prepared(), session, sleep=Recorder(), jitter=no_jitter, max_retries=0
+    )
+    assert payload == {"version": 1, "data": {"cls": 0.0}}
+
+
+# ---------------------------------------------------------------------------
+# Redirects: reported, never followed
+# ---------------------------------------------------------------------------
+#
+# The token travels in the Authorization header, so following a redirect would
+# hand it to whatever host the Location names. Not following one is what makes
+# the operation allowlist bind every hop rather than only the first.
+
+REDIRECT_STATUSES = [300, 301, 302, 303, 305, 307, 308, 399]
+
+
+@pytest.mark.parametrize("status", REDIRECT_STATUSES)
+def test_a_redirect_is_reported_rather_than_followed(status: int) -> None:
+    sleeps = Recorder()
+    session = FakeSession(
+        FakeResponse(status, {}, {"Location": "https://evil.example/steal"}),
+        FakeResponse(200, COUNTRY_PAYLOAD),
+    )
+    with pytest.raises(ApiError) as excinfo:
+        vi_http.execute(
+            prepared(), session, sleep=sleeps, jitter=no_jitter, max_retries=3
+        )
+    error = excinfo.value
+    assert error.status == status
+    assert error.code == "unexpected_redirect"
+    assert "https://evil.example/steal" in str(error)
+    assert "does not follow" in str(error)
+    # One attempt only: a redirect is neither retried nor chased.
+    assert len(session.calls) == 1
+    assert sleeps.delays == []
+
+
+@pytest.mark.parametrize("status", REDIRECT_STATUSES)
+def test_a_redirect_reaches_no_second_host(status: int) -> None:
+    session = FakeSession(
+        FakeResponse(status, {}, {"Location": "https://evil.example/steal"})
+    )
+    with pytest.raises(ApiError):
+        vi_http.execute(
+            prepared(), session, sleep=Recorder(), jitter=no_jitter, max_retries=0
+        )
+    hosts = {call["url"] for call in session.calls}
+    assert hosts == {
+        "https://api.vercel.com/v1/query/web-analytics/visits/aggregate"
+    }
+    assert all("evil.example" not in call["url"] for call in session.calls)
+
+
+def test_a_redirect_with_a_lowercase_location_header_is_named_too() -> None:
+    session = FakeSession(
+        FakeResponse(302, {}, {"location": "https://proxy.internal/vercel"})
+    )
+    with pytest.raises(ApiError) as excinfo:
+        vi_http.execute(
+            prepared(), session, sleep=Recorder(), jitter=no_jitter, max_retries=0
+        )
+    assert "https://proxy.internal/vercel" in str(excinfo.value)
+
+
+def test_a_redirect_without_a_location_header_still_reports_cleanly() -> None:
+    session = FakeSession(FakeResponse(302, {}))
+    with pytest.raises(ApiError) as excinfo:
+        vi_http.execute(
+            prepared(), session, sleep=Recorder(), jitter=no_jitter, max_retries=0
+        )
+    assert excinfo.value.code == "unexpected_redirect"
+    assert "no Location header" in str(excinfo.value)
+
+
+def test_a_redirect_location_echoing_the_token_is_scrubbed() -> None:
+    session = FakeSession(
+        FakeResponse(302, {}, {"Location": f"https://evil.example/?t={TOKEN}"})
+    )
+    with pytest.raises(ApiError) as excinfo:
+        vi_http.execute(
+            prepared(), session, sleep=Recorder(), jitter=no_jitter, max_retries=0
+        )
+    assert TOKEN not in str(excinfo.value)
+    assert "<redacted>" in str(excinfo.value)
+
+
+def test_a_redirect_on_the_post_operation_is_refused_the_same_way() -> None:
+    session = FakeSession(
+        FakeResponse(307, {}, {"Location": "https://evil.example/steal"})
+    )
+    with pytest.raises(ApiError) as excinfo:
+        vi_http.execute(
+            speed_request(), session, sleep=Recorder(), jitter=no_jitter, max_retries=0
+        )
+    assert excinfo.value.code == "unexpected_redirect"
+    assert len(session.calls) == 1
+    assert session.calls[0]["url"] == SPEED_QUERY_URL
+
+
+def test_neither_call_site_ever_asks_the_session_to_follow_a_redirect() -> None:
+    # The guarantee is structural: allow_redirects=False is passed at both call
+    # sites, so it holds for a real requests.Session too, not only for a 3xx a
+    # test happens to queue up.
+    get_session = FakeSession(FakeResponse(200, COUNTRY_PAYLOAD))
+    vi_http.execute(prepared(), get_session, sleep=Recorder(), jitter=no_jitter)
+    assert get_session.calls[0]["method"] == "GET"
+    assert get_session.calls[0]["allow_redirects"] is False
+
+    post_session = FakeSession(FakeResponse(200, {"data": {"value": 2412}}))
+    vi_http.execute(speed_request(), post_session, sleep=Recorder(), jitter=no_jitter)
+    assert post_session.calls[0]["method"] == "POST"
+    assert post_session.calls[0]["allow_redirects"] is False
+
+
+def test_every_attempt_of_a_retried_request_also_refuses_redirects() -> None:
+    session = FakeSession(
+        FakeResponse(500, error_payload("internal_server_error", "boom")),
+        FakeResponse(200, COUNTRY_PAYLOAD),
+    )
+    vi_http.execute(
+        prepared(), session, sleep=Recorder(), jitter=no_jitter, max_retries=2
+    )
+    assert [call["allow_redirects"] for call in session.calls] == [False, False]
 
 
 def test_injected_jitter_is_added_to_every_delay() -> None:

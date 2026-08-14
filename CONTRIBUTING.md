@@ -144,7 +144,9 @@ which surface it belongs to, because that decides almost everything else:
 
 A preset queries exactly one surface and no flag changes that: `--metric` picks
 which web vital a Speed Insights preset reports, it does not turn a Web
-Analytics preset into a Speed Insights one.
+Analytics preset into a Speed Insights one. On a Web Analytics preset `--metric`
+is a configuration error, and on `vitals` it is one too, since that preset
+reports all five vitals and has no single metric to choose.
 
 Then do all five steps in the same pull request, or the preset will be
 half-documented:
@@ -187,10 +189,22 @@ Open an issue at
   version.
 - If the API returned an error, the `error:` line verbatim. It carries Vercel's
   own message, which is the most specific diagnostic available.
-- If a Speed Insights query came back as `invalid_response`, add the output of
-  the same command with `--json`. That prints the untouched payload, which is
-  what the parser needs to learn a response shape the OpenAPI document does not
-  publish.
+- If a Speed Insights query came back as `invalid_response`, paste the whole
+  `error:` line rather than just the code. That line names the shape this client
+  actually saw ("a JSON object with 2 field(s)", "a JSON array of 3
+  entry/entries"), which is the first thing the parser needs to learn a shape the
+  OpenAPI document does not publish. Add the `--dry-run` output of the same
+  command alongside it, so the query that produced the shape is on record too.
+  Together those two are enough to open the issue on.
+
+  The untouched payload would settle it faster still, so try the same command
+  with `--json` and paste whatever it prints. Be aware of what you may get: the
+  shape error is raised while the response is being normalized, before anything
+  is rendered, so on that path `--json` can print nothing at all on stdout and
+  repeat the same `error:` line on stderr with exit code 1. If that is what
+  happens, say so in the issue rather than assuming you ran it wrong. It is a
+  known rough edge, and the two items above still give us something to work
+  with.
 
 Please **never paste a token**, an unredacted `Authorization` header, or a raw
 `--verbose` transcript you have not read through first. If you think you have

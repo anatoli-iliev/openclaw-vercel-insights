@@ -440,6 +440,25 @@ def test_a_malformed_payload_exits_one_rather_than_rendering_something(
     assert "Traceback" not in err
 
 
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+def test_a_body_carrying_a_non_standard_json_literal_exits_one_cleanly(
+    cli: Cli, literal: str
+) -> None:
+    # json.loads would have read any of the three as a float, and a nan reaching
+    # the renderer prints as "nan" and compares false against every target.
+    body = f'{{"version": 1, "data": {{"pageviews": {literal}, "visitors": 3}}}}'
+    session = FakeSession(FakeResponse(200, text=body))
+    code, out, err = cli.run(
+        ["total", "--max-retries", "0"], env=dict(BASE_ENV), session=session
+    )
+    assert code == 1
+    assert out == ""
+    assert "invalid_response" in err
+    assert "NaN" in err
+    assert "Traceback" not in err
+    assert "nan" not in out
+
+
 def test_an_aggregate_body_shaped_like_a_count_exits_one_instead_of_rendering(
     cli: Cli,
 ) -> None:
@@ -636,6 +655,122 @@ def test_granularity_rebuckets_the_overview_trend_section(cli: Cli) -> None:
     )
     assert code == 0, err
     assert dry_run_values(out, "by", call=0) == ["week"]
+
+
+# Both vocabularies are accepted from the user, and Web Analytics understands
+# only one of them. The alias has to be translated on the way to `by=`, which is
+# a separate code path in the overview because that preset picks its own
+# grouping rather than passing --group-by through.
+GRANULARITY_ON_THE_WIRE: list[tuple[str, str]] = [
+    ("hour", "hour"),
+    ("1h", "hour"),
+    ("day", "day"),
+    ("1d", "day"),
+    ("week", "week"),
+    ("month", "month"),
+    ("1mo", "month"),
+    ("year", "year"),
+]
+
+#: Spellings that exist only in the Speed Insights vocabulary. None of them is
+#: a legal Web Analytics `by` value, so none may ever reach one.
+SPEED_ONLY_SPELLINGS = ["1h", "1d", "1mo"]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    GRANULARITY_ON_THE_WIRE,
+    ids=[case[0] for case in GRANULARITY_ON_THE_WIRE],
+)
+def test_the_overview_translates_either_granularity_vocabulary_for_its_trend(
+    cli: Cli, value: str, expected: str
+) -> None:
+    code, out, err = cli.run(
+        ["overview", "--granularity", value, "--dry-run"], env=dict(DRY_RUN_ENV)
+    )
+    assert code == 0, err
+    calls = dry_run_calls(out)
+    assert len(calls) == 3
+    assert dry_run_values(out, "by", call=0) == [expected]
+    # The other two overview sections are dimension grouped and unaffected.
+    assert dry_run_values(out, "by", call=1) == ["requestPath"]
+    assert dry_run_values(out, "by", call=2) == ["referrerHostname"]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    GRANULARITY_ON_THE_WIRE,
+    ids=[case[0] for case in GRANULARITY_ON_THE_WIRE],
+)
+def test_a_single_query_preset_translates_the_same_way_the_overview_does(
+    cli: Cli, value: str, expected: str
+) -> None:
+    code, out, err = cli.run(
+        ["trend", "--granularity", value, "--dry-run"], env=dict(DRY_RUN_ENV)
+    )
+    assert code == 0, err
+    assert dry_run_values(out, "by") == [expected]
+
+
+WEB_PRESETS_TAKING_A_GRANULARITY = [
+    "overview",
+    "trend",
+    "top-pages",
+    "top-routes",
+    "referrers",
+    "countries",
+    "devices",
+    "browsers",
+    "operating-systems",
+    "campaigns",
+    "events",
+    "total",
+]
+
+
+@pytest.mark.parametrize("preset", WEB_PRESETS_TAKING_A_GRANULARITY)
+@pytest.mark.parametrize("value", SPEED_ONLY_SPELLINGS)
+def test_no_speed_insights_spelling_ever_reaches_a_web_analytics_by_parameter(
+    cli: Cli, preset: str, value: str
+) -> None:
+    # Every Web Analytics preset, every alias spelling, every request the run
+    # plans: `by` may only ever carry a name Web Analytics itself documents.
+    code, out, err = cli.run(
+        [preset, "--granularity", value, "--dry-run"], env=dict(DRY_RUN_ENV)
+    )
+    assert code == 0, err
+    sent = [
+        item for _endpoint, params in dry_run_calls(out) for item in params
+        if item[0] == "by"
+    ]
+    assert sent, f"{preset} sent no by parameter at all"
+    for _name, dimension in sent:
+        assert dimension not in SPEED_ONLY_SPELLINGS
+        if dimension in ("hour", "day", "week", "month", "year"):
+            assert dimension in TIME_GRANULARITIES
+
+
+def test_the_overview_heading_reads_the_translated_bucket_not_the_alias(
+    cli: Cli,
+) -> None:
+    daily = {
+        "version": 1,
+        "query": {"groupBy": ["day"]},
+        "data": [
+            {"timestamp": "2026-08-10T00:00:00.000Z", "pageviews": 9, "visitors": 7}
+        ],
+    }
+    session = FakeSession(
+        FakeResponse(200, daily),
+        FakeResponse(200, TOP_PAGES_PAYLOAD),
+        FakeResponse(200, REFERRERS_PAYLOAD),
+    )
+    code, out, err = cli.run(
+        ["overview", "--granularity", "1d"], env=dict(BASE_ENV), session=session
+    )
+    assert code == 0, err
+    assert "By day" in out
+    assert "By 1d" not in out
 
 
 def test_granularity_relabels_the_overview_trend_heading(cli: Cli) -> None:

@@ -22,6 +22,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -74,6 +75,53 @@ VITALS_LEGEND: tuple[str, ...] = (
     "A percentile over few data points is not comparable to one over many, so "
     "read the value next to its data point count.",
 )
+
+
+# ---------------------------------------------------------------------------
+# The untrusted-input boundary
+# ---------------------------------------------------------------------------
+
+#: Every C0 control character, DEL, and every C1 control character. A response
+#: derived label is remote input in the strongest sense: a UTM campaign is
+#: whatever a visitor typed into a query string, and request paths, referrer
+#: hostnames, event names, event property values and routes are no better. Any
+#: of them can carry an ANSI escape sequence, a carriage return that rewrites
+#: the line already printed, or a byte that breaks a CSV cell open, so the
+#: whole class is escaped rather than any one sequence being pattern matched.
+_CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def _escape_control(match: re.Match[str]) -> str:
+    """Render one control character as a visible, unambiguous escape."""
+    return f"\\x{ord(match.group()):02x}"
+
+
+def sanitize_label(text: str) -> str:
+    """Make a response-derived string safe to print, in any output format.
+
+    Control characters become visible escapes (``\\x1b`` for ESC), so the value
+    still reads as what came back rather than being silently dropped, and can
+    no longer move the cursor, set a colour, blank the screen, or split a row
+    across two lines of CSV. Everything else, printable Unicode included, is
+    left exactly as the API sent it.
+    """
+    return _CONTROL_CHARACTERS.sub(_escape_control, text)
+
+
+def stringify_label(value: Any) -> str:
+    """Render a group label that may be a string, number, bool or null.
+
+    This is the single boundary at which a response value becomes a label:
+    both surfaces normalize through it, so the table, CSV, JSON, overview and
+    vitals renderers all inherit :func:`sanitize_label` without repeating it.
+    """
+    if value is None:
+        return "(none)"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return sanitize_label(value) or "(empty)"
+    return sanitize_label(str(value))
 
 
 @dataclass(frozen=True)

@@ -11,7 +11,10 @@ place either value is written down. :func:`execute` takes a
 :class:`PreparedRequest`, which carries an operation *key*, never a method and
 never a host, so no user input can select, extend or override an entry. There
 are exactly two HTTP call sites in this package, ``session.get`` and
-``session.post``, and both are inside :func:`execute`.
+``session.post``, and both are inside :func:`execute`. Neither follows
+redirects, so the allowlist binds every hop of a request rather than only its
+first: a 3xx is reported as an error naming the location it wanted to send the
+``Authorization`` header to.
 
 One of the three operations is a POST. That is still a read: Vercel exposes no
 GET equivalent for an observability query, so the query travels in the body.
@@ -403,6 +406,7 @@ class SessionLike(Protocol):
         params: list[tuple[str, str]] | None = ...,
         headers: dict[str, str] | None = ...,
         timeout: float | None = ...,
+        allow_redirects: bool = ...,
     ) -> Any: ...
 
     def post(
@@ -413,6 +417,7 @@ class SessionLike(Protocol):
         headers: dict[str, str] | None = ...,
         json: dict[str, Any] | None = ...,
         timeout: float | None = ...,
+        allow_redirects: bool = ...,
     ) -> Any: ...
 
 
@@ -497,12 +502,32 @@ def _error_field(body: Mapping[str, Any] | None, name: str) -> Any:
     return error.get(name)
 
 
+def _reject_json_constant(name: str) -> float:
+    """Refuse the three non-standard literals ``json`` accepts by default.
+
+    ``json.loads`` reads ``NaN``, ``Infinity`` and ``-Infinity`` as floats even
+    though none of them is JSON, and a ``nan`` that gets that far propagates
+    silently: it compares false against every target, formats as ``nan``, and
+    can surface as a raw traceback instead of a message. Rejecting them at the
+    parse boundary turns the whole class of problem into one clean
+    ``invalid_response`` error.
+
+    Raises:
+        ValueError: Always, which :func:`_parse_body` turns into "not JSON".
+    """
+    raise ValueError(f"{name} is not valid JSON")
+
+
 def _parse_body(text: str) -> dict[str, Any] | None:
-    """Parse a response body, returning ``None`` when it is not a JSON object."""
+    """Parse a response body, returning ``None`` when it is not a JSON object.
+
+    ``None`` also covers a body that is syntactically JSON but carries a
+    non-standard literal; see :func:`_reject_json_constant`.
+    """
     if not text:
         return None
     try:
-        parsed = json.loads(text)
+        parsed = json.loads(text, parse_constant=_reject_json_constant)
     except ValueError:
         return None
     if isinstance(parsed, dict):
@@ -537,6 +562,40 @@ def _api_error(
             limit=limit if isinstance(limit, Mapping) else None,
         )
     return ApiError(status, code_text, message_text, attempts=attempts)
+
+
+def _redirect_error(
+    status: int,
+    response: ResponseLike,
+    request: PreparedRequest,
+    scrub: Callable[[str], str],
+) -> ApiError:
+    """Refuse a redirect rather than carrying the credential to its target.
+
+    Redirects are not followed, so the operation allowlist binds every hop
+    rather than only the first: a 3xx from one of the three allowlisted URLs
+    could otherwise send the ``Authorization`` header to whatever host the
+    ``Location`` names. None of the three operations is documented to redirect,
+    so one is a change worth reporting rather than a step to take silently.
+
+    The location is named because it is the whole diagnostic, and it is scrubbed
+    like every other string on its way into an :class:`ApiError`.
+    """
+    location = response.headers.get("Location") or response.headers.get("location")
+    target = f" to {scrub(location)}" if location else " (no Location header)"
+    return ApiError(
+        status,
+        "unexpected_redirect",
+        scrub(
+            f"{request.url} answered with a redirect{target}, which this client "
+            "does not follow: the token travels in the Authorization header, and "
+            "following a redirect would hand it to whatever host the redirect "
+            "names. The three endpoints this client may call are fixed, and none "
+            "of them is documented to redirect, so check for a proxy or a "
+            "captive network between you and api.vercel.com"
+        ),
+        attempts=1,
+    )
 
 
 def _is_retryable(status: int) -> bool:
@@ -597,6 +656,7 @@ def execute(
                     params=request.params,
                     headers=request.headers,
                     timeout=timeout,
+                    allow_redirects=False,
                 )
             else:
                 response = session.post(
@@ -605,6 +665,7 @@ def execute(
                     headers=request.headers,
                     json=request.json_body,
                     timeout=timeout,
+                    allow_redirects=False,
                 )
         except (requests.Timeout, requests.ConnectionError) as exc:
             reason = safe(f"{type(exc).__name__}: {exc}")
@@ -632,12 +693,19 @@ def execute(
         text = str(response.text)
         body = _parse_body(text)
 
+        if 300 <= status < 400:
+            raise _redirect_error(status, response, request, safe)
+
         if 200 <= status < 300:
             if body is None:
                 raise ApiError(
                     status,
                     "invalid_response",
-                    safe("the response was not a JSON object"),
+                    safe(
+                        "the response was not a JSON object (a body carrying "
+                        "NaN, Infinity or -Infinity is refused here too: none "
+                        "of the three is JSON)"
+                    ),
                     attempts=attempt + 1,
                 )
             return body

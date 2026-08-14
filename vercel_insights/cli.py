@@ -50,6 +50,7 @@ from .http import (
 from .odata import build_clause, combine_filters, json_dimension
 from .presets import DEFAULT_METRIC, DEFAULT_PRESET, PRESETS, Preset, format_presets
 from .render import (
+    DATA_POINTS_METRIC,
     OVERVIEW_TABLE_LIMIT,
     Result,
     Style,
@@ -73,8 +74,10 @@ from .speedinsights import (
     Metric,
     metric_for,
     validate_aggregation,
+    validate_metric,
     validate_percentile,
 )
+from .speedinsights import DATASET as SPEED_INSIGHTS_DATASET
 from .speedinsights import build_request as build_speed_request
 from .speedinsights import normalize as normalize_speed
 from .speedinsights import validate_group_by as validate_speed_group_by
@@ -813,6 +816,20 @@ def _resolve_settings(args: argparse.Namespace, env: Mapping[str, str]) -> Setti
             "single query preset with --csv instead"
         )
 
+    if preset.metric == "*" and args.metric:
+        # Validate the name first, so that naming something unqueryable gets
+        # the specific answer rather than the generic one: --metric res must
+        # say that Real Experience Score cannot be queried at all, which is
+        # true of every preset, before this says that this preset reports all
+        # five anyway.
+        validate_metric(args.metric)
+        raise ConfigError(
+            f"--metric {args.metric!r} has no meaning on the {preset.name} "
+            f"preset: {preset.name} reports all five web vitals, one query "
+            "each. Use vitals-trend, vitals-by-country, vitals-by-device or "
+            "slowest-pages for a single metric"
+        )
+
     warnings: list[str] = []
     metrics: tuple[Metric, ...] = ()
     aggregation = DEFAULT_AGGREGATION
@@ -909,6 +926,22 @@ def _plan_speed_requests(settings: Settings) -> list[PreparedRequest]:
     return [build_speed_request(metric=metric, **common) for metric in settings.metrics]
 
 
+def _overview_granularity(settings: Settings) -> str:
+    """The time bucket the overview's trend query groups by.
+
+    Read off the resolved settings rather than off the raw flag, because the
+    two vocabularies do not agree with the wire: ``--granularity 1d`` is a
+    legal input that Web Analytics would reject verbatim, and by the time it
+    reaches the settings it has already been translated to ``day`` and
+    validated. The overview rejects ``--group-by``, so its grouping is exactly
+    one time dimension and there is nothing else here to find.
+    """
+    for dimension in settings.group_by:
+        if dimension in TIME_GRANULARITIES:
+            return dimension
+    return "day"
+
+
 def _plan_requests(
     settings: Settings, args: argparse.Namespace
 ) -> list[PreparedRequest]:
@@ -933,7 +966,7 @@ def _plan_requests(
         ]
 
     table_limit = settings.limit if settings.limit is not None else OVERVIEW_TABLE_LIMIT
-    granularity = args.granularity or "day"
+    granularity = _overview_granularity(settings)
     return [
         build_request(group_by=[granularity], limit=MAX_LIMIT, **common),
         build_request(group_by=["requestPath"], limit=table_limit, **common),
@@ -942,12 +975,30 @@ def _plan_requests(
 
 
 def _is_empty(result: Result) -> bool:
-    """True when there is nothing worth tabulating: no rows, or a zero count."""
+    """True when there is nothing worth tabulating.
+
+    No rows is empty on either surface. An ungrouped row needs the two surfaces
+    told apart, because zero means opposite things on them:
+
+    * Web Analytics counts. Zero page views by zero visitors is genuinely no
+      data, and printing a table of zeroes says less than one line of prose.
+    * Speed Insights values. A Cumulative Layout Shift of exactly ``0.0`` is a
+      perfect score and a real measurement, and calling it "no data" would hide
+      the best result the metric can have. So presence decides here, never
+      truthiness: the value key is either in the row or it is not, and a data
+      point count settles it when the value arrived under a name the parser
+      recognised but the caller did not ask for.
+    """
     if not result.rows:
         return True
-    if result.is_count:
-        return not any(value for value in result.rows[0].metrics.values())
-    return False
+    if not result.is_count:
+        return False
+    row = result.rows[0]
+    if result.dataset == SPEED_INSIGHTS_DATASET:
+        return not (
+            result.primary_metric in row.metrics or DATA_POINTS_METRIC in row.metrics
+        )
+    return not any(value for value in row.metrics.values())
 
 
 def _empty_message(settings: Settings, group_by: Sequence[str]) -> str:
@@ -1157,7 +1208,7 @@ def _emit_overview(
     out: TextIO,
 ) -> int:
     """Render the three overview results as one report, or as JSON."""
-    granularity = args.granularity or "day"
+    granularity = _overview_granularity(settings)
     groupings = [[granularity], ["requestPath"], ["referrerHostname"]]
     results = [
         normalize(payload, settings.dataset, grouping)

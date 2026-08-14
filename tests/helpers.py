@@ -115,6 +115,7 @@ class FakeSession:
         params: Any = None,
         headers: Any = None,
         timeout: Any = None,
+        allow_redirects: Any = True,
     ) -> FakeResponse:
         return self._serve(
             {
@@ -123,6 +124,7 @@ class FakeSession:
                 "params": params,
                 "headers": headers,
                 "timeout": timeout,
+                "allow_redirects": allow_redirects,
             }
         )
 
@@ -134,6 +136,7 @@ class FakeSession:
         headers: Any = None,
         json: Any = None,
         timeout: Any = None,
+        allow_redirects: Any = True,
     ) -> FakeResponse:
         return self._serve(
             {
@@ -143,6 +146,7 @@ class FakeSession:
                 "headers": headers,
                 "json": json,
                 "timeout": timeout,
+                "allow_redirects": allow_redirects,
             }
         )
 
@@ -393,6 +397,29 @@ TWO_DIMENSION_PAYLOAD: dict[str, Any] = {
 }
 TWO_DIMENSIONS = ["eventName", "eventData/plan"]
 
+# A response derived label is remote input in the strongest sense: a UTM
+# campaign is whatever a visitor typed into a query string. These two carry an
+# ANSI colour sequence, a carriage return that would rewrite the line already
+# printed, a NUL, a DEL and a C1 introducer, and the escaped forms below are
+# what every output format must show instead.
+ANSI_CAMPAIGN = "\x1b[31mRED\x1b[0m\rHIDDEN"
+ESCAPED_ANSI_CAMPAIGN = "\\x1b[31mRED\\x1b[0m\\x0dHIDDEN"
+C1_CAMPAIGN = "ok\x07\x00\x7f\x9b]0;pwned\x07"
+ESCAPED_C1_CAMPAIGN = "ok\\x07\\x00\\x7f\\x9b]0;pwned\\x07"
+
+#: Printable Unicode a sanitizer must leave exactly as the API sent it.
+UNICODE_CAMPAIGN = "sommerfest-2026 éè 中文 \U0001f680"
+
+CONTROL_CHARACTER_CAMPAIGN_PAYLOAD: dict[str, Any] = {
+    "version": 1,
+    "query": {"groupBy": ["utmCampaign"], "limit": 10},
+    "data": [
+        {"utmCampaign": ANSI_CAMPAIGN, "pageviews": 5, "visitors": 4},
+        {"utmCampaign": C1_CAMPAIGN, "pageviews": 2, "visitors": 2},
+        {"utmCampaign": UNICODE_CAMPAIGN, "pageviews": 1, "visitors": 1},
+    ],
+}
+
 TIME_ONLY_OTHERS_PAYLOAD: dict[str, Any] = {
     "version": 1,
     "query": {"groupBy": ["day"], "limit": 2},
@@ -499,6 +526,26 @@ SPEED_DATA_POINTS_PAYLOAD: dict[str, Any] = {
         {"route": "/blog/[slug]", "value": 1830},
     ],
 }
+
+#: Grouped rows whose limit overflowed, so the API collapsed the rest into the
+#: documented Others bucket. Speed Insights collapses exactly as Web Analytics
+#: does, and the row has to be labelled and annotated on this surface too.
+SPEED_ROUTE_WITH_OTHERS_PAYLOAD: dict[str, Any] = {
+    "version": 1,
+    "query": {"metric": LCP_ID, "groupBy": ["route"], "limit": 2},
+    "data": [
+        {"route": "/blog/[slug]", "value": 4120.0, LCP_COUNT_ID: 1830},
+        {"route": "/pricing", "value": 2980.0, LCP_COUNT_ID: 640},
+        {"route": "Others", "value": 1240.0, LCP_COUNT_ID: 8800},
+    ],
+}
+
+#: A route label and a bucket label carrying terminal control sequences. Both
+#: are remote input rendered into the same table cells as any other label.
+ANSI_ROUTE = "/\x1b[2Jwiped"
+ESCAPED_ANSI_ROUTE = "/\\x1b[2Jwiped"
+ANSI_BUCKET = "2026-08-10T00:00:00Z\x1b[2J"
+ESCAPED_ANSI_BUCKET = "2026-08-10T00:00:00Z\\x1b[2J"
 
 SPEED_EMPTY_PAYLOAD: dict[str, Any] = {
     "version": 1,

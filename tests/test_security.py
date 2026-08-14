@@ -16,9 +16,11 @@ import requests
 from conftest import Cli
 from helpers import (
     BASE_ENV,
+    CONTROL_CHARACTER_CAMPAIGN_PAYLOAD,
     COUNTRY_PAYLOAD,
     DAILY_PAYLOAD,
     DRY_RUN_ENV,
+    ESCAPED_ANSI_CAMPAIGN,
     PROJECT,
     SECRET,
     TESTS_DIR,
@@ -680,6 +682,122 @@ def test_the_body_is_handed_to_post_as_json_rather_than_pasted_into_the_url() ->
     assert call["json"]["metric"] == "vercel.speed_insights.lcp_ms"
     assert call["params"] == []
     assert TOKEN not in call["url"]
+
+
+# ---------------------------------------------------------------------------
+# 6. The allowlist binds every hop, not only the first
+# ---------------------------------------------------------------------------
+#
+# The token travels in the Authorization header. A followed redirect would hand
+# it to whatever host the Location names, which would make the three entry
+# allowlist a statement about first hops only.
+
+
+def test_a_redirect_never_carries_the_authorization_header_to_another_host(
+    cli: Cli,
+) -> None:
+    session = FakeSession(
+        FakeResponse(302, {}, {"Location": "https://evil.example/steal"})
+    )
+    code, out, err = cli.run(
+        ["top-pages", "--max-retries", "3"], env=dict(BASE_ENV), session=session
+    )
+    assert code == 1
+    assert out == ""
+    # Exactly one request was made, to the one allowlisted URL, and the client
+    # asked the session not to follow anything.
+    assert len(session.calls) == 1
+    call = session.calls[0]
+    assert call["url"] == (
+        "https://api.vercel.com/v1/query/web-analytics/visits/aggregate"
+    )
+    assert call["allow_redirects"] is False
+    assert call["headers"]["Authorization"] == f"Bearer {TOKEN}"
+    # The redirect is reported by name so the user can see where it pointed.
+    assert "unexpected_redirect" in err
+    assert "https://evil.example/steal" in err
+    assert TOKEN not in err
+
+
+def test_a_redirect_on_the_post_operation_is_refused_through_the_cli_too(
+    cli: Cli,
+) -> None:
+    session = FakeSession(
+        FakeResponse(308, {}, {"Location": "https://evil.example/steal"})
+    )
+    code, out, err = cli.run(
+        ["slowest-pages", "--max-retries", "3"], env=dict(BASE_ENV), session=session
+    )
+    assert code == 1
+    assert out == ""
+    assert len(session.calls) == 1
+    assert session.calls[0]["url"] == "https://api.vercel.com/v2/observability/query"
+    assert session.calls[0]["allow_redirects"] is False
+    assert "unexpected_redirect" in err
+    assert TOKEN not in err
+
+
+def test_a_redirect_pointing_at_a_url_carrying_the_token_is_scrubbed(
+    cli: Cli,
+) -> None:
+    session = FakeSession(
+        FakeResponse(302, {}, {"Location": f"https://evil.example/?token={TOKEN}"})
+    )
+    code, _out, err = cli.run(
+        ["top-pages", "--max-retries", "0"], env=dict(BASE_ENV), session=session
+    )
+    assert code == 1
+    assert TOKEN not in err
+    assert "<redacted>" in err
+    assert "Traceback" not in err
+
+
+def test_the_source_pins_allow_redirects_false_at_both_call_sites() -> None:
+    # A structural check to go with the behavioural ones: the flag is passed at
+    # both call sites, so it holds for a real requests.Session as well.
+    dispatcher = next(path for path in package_sources() if path.name == "http.py")
+    source = dispatcher.read_text(encoding="utf-8")
+    assert source.count("allow_redirects=False") == 2
+    assert "allow_redirects=True" not in source
+
+
+# ---------------------------------------------------------------------------
+# 7. Response derived labels reaching a terminal
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["campaigns"], ["campaigns", "--csv"], ["campaigns", "--json"]],
+    ids=["table", "csv", "json"],
+)
+def test_no_control_character_from_a_response_ever_reaches_stdout(
+    cli: Cli, argv: list[str]
+) -> None:
+    # The label here is a UTM campaign, which is whatever a visitor typed into
+    # a query string: real untrusted input, arriving on a real preset.
+    session = FakeSession(FakeResponse(200, CONTROL_CHARACTER_CAMPAIGN_PAYLOAD))
+    code, out, err = cli.run(argv, env=dict(BASE_ENV), session=session)
+    assert code == 0, err
+    for character in ("\x1b", "\r", "\x00", "\x07", "\x7f", "\x9b"):
+        assert character not in out, f"raw {character!r} reached stdout"
+    # Escaped, not dropped: the value still reads as what came back.
+    if "--json" in argv:
+        keys = [row["key"] for row in json.loads(out)["rows"]]
+        assert ESCAPED_ANSI_CAMPAIGN in keys
+    else:
+        assert ESCAPED_ANSI_CAMPAIGN in out
+
+
+def test_a_control_character_label_cannot_forge_a_totals_row_either(cli: Cli) -> None:
+    # A carriage return inside a label would let the response overwrite the
+    # line already printed, which is how a table is made to lie about its total.
+    session = FakeSession(FakeResponse(200, CONTROL_CHARACTER_CAMPAIGN_PAYLOAD))
+    code, out, err = cli.run(["campaigns"], env=dict(BASE_ENV), session=session)
+    assert code == 0, err
+    lines = [line for line in out.splitlines() if line.strip()]
+    assert sum(1 for line in lines if line.startswith("TOTAL")) == 1
+    assert "\r" not in out
 
 
 def test_a_speed_formatter_can_never_print_the_token() -> None:

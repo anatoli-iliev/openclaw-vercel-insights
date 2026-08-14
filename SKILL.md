@@ -95,6 +95,11 @@ user input can select, extend or override an entry. There are exactly two HTTP
 call sites in the whole package, `session.get` and `session.post`, and both are
 inside that dispatcher.
 
+Neither call site follows redirects (`allow_redirects=False`), and a 3xx is
+reported as an error instead, so the allowlist binds every hop rather than only
+the first: a redirect cannot carry the `Authorization` header to a host outside
+the three above.
+
 **Why one of them is a POST, and why that is still a read.** Vercel exposes no
 GET equivalent for an observability query: Speed Insights has no query API of
 its own, and the general observability surface takes its query in a JSON request
@@ -202,10 +207,16 @@ Run `python3 -m vercel_insights --list-presets` for this table at any time.
 
 Any explicit flag overrides a preset value, with two exceptions. `overview`
 runs three queries of its own, so `--group-by`, `--event-property` and `--csv`
-are rejected there. `vitals` runs one query per web vital, so `--group-by` and
-`--csv` are rejected there too. Both exit with code 2 and name the preset to use
-instead: `trend`, `top-pages` or `referrers` for traffic, `vitals-trend`,
-`slowest-pages` or `vitals-by-country` for speed.
+are rejected there. `vitals` runs one query per web vital, so `--group-by`,
+`--csv` and `--metric` are rejected there too: it already reports all five, so
+there is no metric to pick and no single table to write. Both exit with code 2
+and name the preset to use instead: `trend`, `top-pages` or `referrers` for
+traffic, `vitals-trend`, `slowest-pages` or `vitals-by-country` for speed.
+
+The preset also fixes the surface, and the code enforces it both ways: a Speed
+Insights option on a Web Analytics preset is a configuration error, and a
+Web-Analytics-only option on a Speed Insights preset is one too. Neither is
+ignored, so never reach for a flag from the other column to "see if it helps".
 
 Groups past the limit are not dropped: they roll into a single `Others` row,
 and the table prints a line underneath saying so.
@@ -213,20 +224,26 @@ and the table prints a line underneath saying so.
 ## The flags worth remembering
 
 `--help` prints every one with its defaults. These are the ones that change an
-answer rather than its formatting:
+answer rather than its formatting. The **Surface** column is not advice, it is
+what the code enforces: a flag marked *Speed Insights only* exits 2 on any
+traffic preset, and a flag marked *Web Analytics only* exits 2 on any speed
+preset.
 
-| Flag | What it does |
-| --- | --- |
-| `--limit N` | How many groups to show, 1 to 100. The rest roll into `Others` on Web Analytics; on Speed Insights it bounds grouped results per time bucket. |
-| `--percentile {75,90,95,99}` | Speed Insights. 75 by default, as on the dashboard. Higher asks about the slow tail. |
-| `--aggregation NAME` | Speed Insights. `sum`, `count`, `min`, `max`, `p90` and so on, instead of a percentile. Not with `--percentile`. |
-| `--order-by {count,value}`, `--order {asc,desc}` | Speed Insights, grouped queries only. Default `count` and `desc`, so a group with few measurements does not lead. |
-| `--data-points` | Speed Insights. Report how many measurements were collected instead of the metric value, aggregated with `sum`. |
-| `--all` | Speed Insights. Every project in the team instead of one. Mutually exclusive with `--project`. |
-| `--bucket-timezone IANA` | Speed Insights. Aligns `1d` and `1mo` buckets; timestamps stay UTC and a sub-daily bucket ignores it, with a warning. |
-| `--timeout SECONDS`, `--max-retries N` | 30 seconds and 3 retries by default. Only 408, 429 and 5xx responses and network failures are retried. |
-| `--verbose` | Diagnostics on stderr. Never the token. |
-| `--list-presets`, `--version` | Print and exit 0, touching no network. |
+| Flag | Surface | What it does |
+| --- | --- | --- |
+| `--limit N` | both | How many groups to show, 1 to 100. The rest roll into `Others` on Web Analytics; on Speed Insights it bounds grouped results per time bucket. An ungrouped query (`total`, `vitals`) has nothing to limit, so it goes unused there. |
+| `--granularity BUCKET` | both | Time bucket, in either vocabulary. `week` and `year` are Web Analytics only and a configuration error on a speed preset. |
+| `--metric {lcp,inp,cls,fcp,ttfb}` | Speed Insights only | Which web vital to report. A configuration error on a traffic preset, and on `vitals`, which reports all five. |
+| `--percentile {75,90,95,99}` | Speed Insights only | 75 by default, as on the dashboard. Higher asks about the slow tail. |
+| `--aggregation NAME` | Speed Insights only | `sum`, `count`, `min`, `max`, `p90` and so on, instead of a percentile. Not with `--percentile`. |
+| `--order-by {count,value}`, `--order {asc,desc}` | Speed Insights only | Grouped queries only; on an ungrouped speed query they are an error too. Default `count` and `desc`, so a group with few measurements does not lead. |
+| `--data-points` | Speed Insights only | Report how many measurements were collected instead of the metric value, aggregated with `sum`. |
+| `--all` | Speed Insights only | Every project in the team instead of one. Mutually exclusive with `--project`. There is no equivalent on the traffic presets: compare those one `--project` at a time. |
+| `--bucket-timezone IANA` | Speed Insights only | Aligns `1d` and `1mo` buckets; timestamps stay UTC and a sub-daily bucket ignores it, with a warning. |
+| `--dataset {visits,events}`, `--event-property NAME` | Web Analytics only | Pick the custom events dataset and break it down by an event property. A configuration error on a speed preset, which has no datasets and no events. |
+| `--timeout SECONDS`, `--max-retries N` | both | 30 seconds and 3 retries by default. Only 408, 429 and 5xx responses and network failures are retried. |
+| `--verbose` | both | Diagnostics on stderr. Never the token. |
+| `--list-presets`, `--version` | both | Print and exit 0, touching no network. |
 
 ## Reading a Speed Insights answer
 
@@ -414,14 +431,15 @@ months.
 | Variable | Required | Meaning |
 | --- | --- | --- |
 | `VERCEL_TOKEN` | yes, except for `--dry-run` | Vercel access token, read scope is enough. Overridable with `--token`. |
-| `VERCEL_PROJECT_ID` | yes, except with `--all` | Project ID or project name. Overridable with `--project`. |
+| `VERCEL_PROJECT_ID` | yes, except on a Speed Insights preset run with `--all` | Project ID or project name. Overridable with `--project`. |
 | `VERCEL_TEAM_ID` | no | Team ID for a team-owned project. Overridable with `--team`. |
 | `VERCEL_TEAM_SLUG` | no | Team slug instead of the ID. Never set both; it is an error. |
 | `NO_COLOR` | no | Set to any value to disable colour. |
 
 These five are the only variables the code reads. `--all`, which queries every
-project in the team, is Speed Insights only and is mutually exclusive with
-`--project`.
+project in the team, is Speed Insights only: on a traffic preset it is a
+configuration error, so a project is always required there. It is also mutually
+exclusive with `--project`.
 
 ## Exit codes
 

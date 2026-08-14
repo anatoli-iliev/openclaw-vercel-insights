@@ -22,9 +22,11 @@ looking at it.
   shows a route list, but it cannot sort your routes by P75 LCP worst-first and
   hand you the top ten. `slowest-pages` is exactly that query, and
   `fastest-pages` is its mirror.
-- **Comparison across projects.** A dashboard is one project per tab. `--all`
-  queries every project in the team in one go, and `--json` makes two projects
-  diffable side by side.
+- **Comparison across projects.** A dashboard is one project per tab. On the
+  Speed Insights presets, `--all` queries every project in the team in one go.
+  It is a Speed Insights option only: on a traffic preset it is a configuration
+  error, so compare traffic by running the same command once per `--project`
+  and diffing the `--json`.
 - **Diffable between deploys.** Yesterday's CSV against today's CSV is a real
   answer to "did that ship make the site slower". Two screenshots are not. Put
   `vitals-trend --granularity 1d --csv` in a nightly job and the regression
@@ -322,8 +324,10 @@ scale would be invented rather than reported. The dashboard's colour bands
 describe a derived 0 to 100 score, not the raw millisecond value.
 
 `vitals` issues five requests, one per metric, because the API answers for one
-metric per request. That is why `--csv` and `--group-by` are rejected there:
-use `vitals-trend`, `slowest-pages` or `vitals-by-country` for a single table.
+metric per request. That is why `--csv`, `--group-by` and `--metric` are all
+configuration errors there: the preset already reports every vital, so there is
+no single metric to select and no single table to write. Use `vitals-trend`,
+`slowest-pages` or `vitals-by-country` when you want one metric in one table.
 
 ### Which routes are slowest, on mobile
 
@@ -580,8 +584,14 @@ the optional first positional argument; with no arguments the tool runs
 
 Any explicit flag overrides a preset value, with two exceptions. `overview`
 issues its own three queries, so `--group-by`, `--event-property` and `--csv`
-are rejected there. `vitals` issues one query per web vital, so `--group-by`
-and `--csv` are rejected there. Both exit 2 and name a preset to use instead.
+are rejected there. `vitals` issues one query per web vital, so `--group-by`,
+`--csv` and `--metric` are rejected there. Both exit 2 and name a preset to use
+instead.
+
+A preset also fixes which API is queried, and that is enforced rather than
+implied: every Speed Insights option is a configuration error on a Web Analytics
+preset, and every Web-Analytics-only option is a configuration error on a Speed
+Insights preset. The tables below say which is which for each flag.
 
 Groups past the limit are never dropped: they roll into a single `Others` row
 that still counts toward the total.
@@ -593,36 +603,39 @@ that still counts toward the total.
 | Flag | Env fallback | Default | Notes |
 | --- | --- | --- | --- |
 | `--token TOKEN` | `VERCEL_TOKEN` | none | Required for real requests, not for `--dry-run`. |
-| `--project ID_OR_NAME` | `VERCEL_PROJECT_ID` | none | Required, unless `--all`. Project ID or project name. |
+| `--project ID_OR_NAME` | `VERCEL_PROJECT_ID` | none | Project ID or project name. Required, except on a Speed Insights preset run with `--all`. |
 | `--team TEAM_ID` | `VERCEL_TEAM_ID` | none | Team-owned projects. Not with `--team-slug`. |
 | `--team-slug SLUG` | `VERCEL_TEAM_SLUG` | none | Sent as `slug`. Not with `--team`. |
 
 ### Query shape
 
-| Flag | Default | Notes |
-| --- | --- | --- |
-| `--dataset {visits,events}` | preset's choice, usually `visits` | Web Analytics only. `events` for custom events. Not with `--metric`. |
-| `--group-by DIM`, `--dimension DIM` | the preset's grouping | Repeatable, maximum 2. Web Analytics: at most one time bucket. Spellings differ per surface. |
-| `--granularity BUCKET` | none | `hour`, `1h`, `day`, `1d`, `week`, `month`, `1mo`, `year`. Both vocabularies accepted and translated per API; `week` and `year` are Web Analytics only. |
-| `--since WHEN` | `7d` | `30m`, `24h`, `7d`, `4w`, `now`, `today`, `yesterday`, `2026-08-01`, `2026-08-01T12:00:00Z`, or Unix ms. |
-| `--until WHEN` | `now` | Same forms. Must be strictly after `--since`. |
-| `--limit N` | preset's, usually 10 | 1 to 100. On Web Analytics the overflow becomes `Others`; on Speed Insights it bounds grouped results per time bucket. |
-| `--event-property NAME` | none | Adds `eventData/NAME` as a second grouping dimension next to `eventName`, and each dimension gets its own column. Events only. |
+| Flag | Surface | Default | Notes |
+| --- | --- | --- | --- |
+| `--dataset {visits,events}` | Web Analytics only | preset's choice, usually `visits` | `events` for custom events. Not with `--metric`, and a configuration error on a Speed Insights preset, which has no datasets. |
+| `--group-by DIM`, `--dimension DIM` | both | the preset's grouping | Repeatable, maximum 2. Web Analytics: at most one time bucket. The dimension *names* are not portable: a camelCase name on Speed Insights, or a snake_case one on Web Analytics, is a configuration error. |
+| `--granularity BUCKET` | both | none | `hour`, `1h`, `day`, `1d`, `week`, `month`, `1mo`, `year`. Both vocabularies accepted and translated per API; `week` and `year` are Web Analytics only, and a configuration error on Speed Insights. |
+| `--since WHEN` | both | `7d` | `30m`, `24h`, `7d`, `4w`, `now`, `today`, `yesterday`, `2026-08-01`, `2026-08-01T12:00:00Z`, or Unix ms. |
+| `--until WHEN` | both | `now` | Same forms. Must be strictly after `--since`. |
+| `--limit N` | both | preset's, usually 10 | 1 to 100, checked before the request. On Web Analytics the overflow becomes `Others`; on Speed Insights it bounds grouped results per time bucket. An ungrouped query (`total`, `vitals`) has nothing to limit, so the value is accepted and goes unused. |
+| `--event-property NAME` | Web Analytics, events dataset only | none | Adds `eventData/NAME` as a second grouping dimension next to `eventName`, and each dimension gets its own column. A configuration error on `visits`, on Speed Insights, and on `overview`. |
 
 ### Speed Insights
 
-Only meaningful with a Speed Insights preset. On a Web Analytics preset each one
-is a configuration error naming the presets that accept it.
+Every flag in this table is a Speed Insights option. None of them is universal:
+on a Web Analytics preset (`overview`, `trend`, `top-pages`, `top-routes`,
+`referrers`, `countries`, `devices`, `browsers`, `operating-systems`,
+`campaigns`, `events`, `total`) each one exits 2 with a message naming the seven
+presets that do accept it. That is enforced in code, not a convention.
 
 | Flag | Default | Notes |
 | --- | --- | --- |
-| `--metric NAME` | the preset's, usually `lcp` | `lcp`, `inp`, `cls`, `fcp`, `ttfb`. The full id (`vercel.speed_insights.lcp_ms`) and the human label are accepted too. Not with `--dataset`. |
+| `--metric NAME` | the preset's, usually `lcp` | `lcp`, `inp`, `cls`, `fcp`, `ttfb`. The full id (`vercel.speed_insights.lcp_ms`) and the human label are accepted too. Not with `--dataset`, and a configuration error on `vitals`, which reports all five. |
 | `--percentile N` | `75` | One of 75, 90, 95, 99. Sugar for `--aggregation p75` and friends. |
 | `--aggregation NAME` | the metric's default | Raw passthrough, for example `sum`, `count`, `min`, `max`, `p90`. Not with `--percentile`. |
 | `--order-by COLUMN` | `count` | `count` or `value`. Grouped queries only; without a grouping it is an error. |
 | `--order DIRECTION` | `desc` | `asc` or `desc`. Grouped queries only. |
 | `--bucket-timezone IANA` | none | Aligns `1d` and `1mo` buckets, for example `Europe/Paris`. Timestamps stay UTC; a sub-daily bucket ignores it and the tool warns. |
-| `--all` | off | Query every project in the team. Mutually exclusive with `--project`. |
+| `--all` | off | Query every project in the team, instead of one. Mutually exclusive with `--project`, and a configuration error on every Web Analytics preset: there is no team-wide traffic query, so compare those one `--project` at a time. |
 | `--data-points` | off | Report the number of measurements instead of the metric value. Defaults the aggregation to `sum`. |
 
 ### Filters
@@ -683,6 +696,12 @@ Exit codes: `0` success including an empty result, `1` API or network failure,
   a method and never a host, so no user input can select, extend or override an
   entry. There are exactly two HTTP call sites in the package, `session.get` and
   `session.post`, and both are inside that dispatcher.
+- **The allowlist binds every hop, not just the first.** Both call sites pass
+  `allow_redirects=False`, and any 3xx is turned into an error rather than
+  followed. That is what keeps a redirect from an allowlisted URL from carrying
+  the `Authorization` header off to whatever host a `Location` header names. The
+  error reports the location it refused, so a proxy or a captive network in the
+  way is visible rather than silent.
 - **Why one is a POST, and why it is still a read.** Vercel exposes no GET
   equivalent for an observability query. Speed Insights has no query API of its
   own, and the general observability surface takes its query in a JSON request
@@ -700,8 +719,12 @@ Exit codes: `0` success including an empty result, `1` API or network failure,
   the credential first.
 - **A malformed token is caught before a request exists.** A value carrying a
   newline, another control or non-ASCII character, or a leading or trailing
-  space is rejected with exit code 2, and the message reports the length, the
-  position and the character class only. The token itself is never printed.
+  space is rejected with exit code 2 before any request object is built, and the
+  message reports the length, the position and the character class only. The
+  token itself is never printed. One nuance worth knowing: surrounding
+  whitespace on `VERCEL_TOKEN` is trimmed as the environment is read, so a
+  trailing newline picked up from a shell here-doc is fixed rather than
+  reported; the same value passed with `--token` is reported instead.
 - **`--dry-run` proves it.** It prints the full request, including the encoded
   URL and, for the POST operation, the complete JSON body. It never constructs
   an HTTP session and works with no token in the environment. Run it first when

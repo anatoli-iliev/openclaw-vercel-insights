@@ -6,10 +6,15 @@ import csv
 import io
 import json
 
+import pytest
 from helpers import (
+    ANSI_CAMPAIGN,
+    CONTROL_CHARACTER_CAMPAIGN_PAYLOAD,
     COUNTRY_PAYLOAD,
     COUNTRY_WITH_OTHERS_PAYLOAD,
     DAILY_PAYLOAD,
+    ESCAPED_ANSI_CAMPAIGN,
+    ESCAPED_C1_CAMPAIGN,
     EVENTS_COUNT_PAYLOAD,
     PROJECT,
     REFERRERS_PAYLOAD,
@@ -17,15 +22,19 @@ from helpers import (
     TOP_PAGES_PAYLOAD,
     TWO_DIMENSION_PAYLOAD,
     TWO_DIMENSIONS,
+    UNICODE_CAMPAIGN,
     VISITS_COUNT_PAYLOAD,
     utc,
 )
 
 from vercel_insights.render import (
+    Result,
     format_csv,
     format_json,
     format_table,
     render_overview,
+    sanitize_label,
+    stringify_label,
 )
 from vercel_insights.webanalytics import normalize
 
@@ -231,6 +240,126 @@ def test_the_others_bucket_is_visible_and_annotated_on_a_time_only_grouping() ->
     assert "is not a real value" in text
     assert "--limit 2" in text
     assert "21" in text
+
+
+# ---------------------------------------------------------------------------
+# The untrusted input boundary
+# ---------------------------------------------------------------------------
+#
+# A UTM campaign is whatever a visitor typed into a query string, and request
+# paths, referrer hostnames, event names and routes are no better. Any of them
+# can carry an ANSI escape sequence that recolours the terminal, a carriage
+# return that rewrites the line already printed, or a byte that breaks a CSV
+# cell open. The whole control character class is escaped rather than any one
+# sequence being pattern matched.
+
+
+def campaign_result() -> Result:
+    return normalize(
+        CONTROL_CHARACTER_CAMPAIGN_PAYLOAD, "visits", ["utmCampaign"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw", "escaped"),
+    [
+        ("\x1b[31mred", "\\x1b[31mred"),
+        ("before\rafter", "before\\x0dafter"),
+        ("split\nline", "split\\x0aline"),
+        ("tab\there", "tab\\x09here"),
+        ("nul\x00byte", "nul\\x00byte"),
+        ("del\x7fchar", "del\\x7fchar"),
+        ("c1\x9bintroducer", "c1\\x9bintroducer"),
+        ("csi\x1b]0;title\x07", "csi\\x1b]0;title\\x07"),
+    ],
+    ids=["esc", "cr", "lf", "tab", "nul", "del", "c1", "osc"],
+)
+def test_sanitize_label_escapes_every_control_character_visibly(
+    raw: str, escaped: str
+) -> None:
+    assert sanitize_label(raw) == escaped
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["/pricing", "news.ycombinator.com", UNICODE_CAMPAIGN, "Ærø", "a b c", ""],
+)
+def test_sanitize_label_leaves_printable_text_exactly_as_it_arrived(
+    text: str,
+) -> None:
+    assert sanitize_label(text) == text
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, "(none)"),
+        (True, "true"),
+        (False, "false"),
+        (12, "12"),
+        (1.5, "1.5"),
+        ("", "(empty)"),
+        (ANSI_CAMPAIGN, ESCAPED_ANSI_CAMPAIGN),
+    ],
+    ids=["none", "true", "false", "int", "float", "empty", "control-chars"],
+)
+def test_stringify_label_is_the_one_boundary_every_label_crosses(
+    value: object, expected: str
+) -> None:
+    assert stringify_label(value) == expected
+
+
+def test_a_campaign_label_carrying_an_ansi_escape_is_neutralised_in_the_table() -> None:
+    text = format_table(campaign_result())
+    assert ESCAPED_ANSI_CAMPAIGN in text
+    assert ESCAPED_C1_CAMPAIGN in text
+    # Nothing raw survives: no escape, no carriage return, no NUL, no DEL.
+    for character in ("\x1b", "\r", "\x00", "\x07", "\x7f", "\x9b"):
+        assert character not in text
+    # And a legitimate label is untouched beside them.
+    assert UNICODE_CAMPAIGN in text
+
+
+def test_a_campaign_label_carrying_an_ansi_escape_is_neutralised_in_csv() -> None:
+    text = format_csv(campaign_result())
+    rows = list(csv.reader(io.StringIO(text)))
+    assert rows == [
+        ["utmCampaign", "pageviews", "visitors"],
+        [ESCAPED_ANSI_CAMPAIGN, "5", "4"],
+        [ESCAPED_C1_CAMPAIGN, "2", "2"],
+        [UNICODE_CAMPAIGN, "1", "1"],
+    ]
+    # A carriage return inside a cell would split one row across two lines.
+    assert len(text.splitlines()) == 4
+    for character in ("\x1b", "\r", "\x00", "\x7f"):
+        assert character not in text
+
+
+def test_a_campaign_label_carrying_an_ansi_escape_is_neutralised_in_json() -> None:
+    text = format_json(campaign_result(), CONTROL_CHARACTER_CAMPAIGN_PAYLOAD)
+    document = json.loads(text)
+    assert [row["key"] for row in document["rows"]] == [
+        ESCAPED_ANSI_CAMPAIGN,
+        ESCAPED_C1_CAMPAIGN,
+        UNICODE_CAMPAIGN,
+    ]
+    assert document["rows"][0]["groups"] == {"utmCampaign": ESCAPED_ANSI_CAMPAIGN}
+    # The escaping is in the value itself, not merely in the JSON encoding: the
+    # raw payload under "raw" is the only place the original bytes remain.
+    assert "\\u001b" not in json.dumps(document["rows"])
+    assert "\x1b" not in text
+
+
+def test_a_time_bucket_label_is_sanitized_like_any_other_label() -> None:
+    payload = {
+        "version": 1,
+        "query": {"groupBy": ["day"]},
+        "data": [{"timestamp": "2026-08-01\x1b[2J", "pageviews": 4, "visitors": 3}],
+    }
+    result = normalize(payload, "visits", ["day"])
+    assert result.rows[0].timestamp == "2026-08-01\\x1b[2J"
+    assert "\x1b" not in format_table(result)
+    assert "\x1b" not in format_csv(result)
 
 
 def test_an_others_row_without_a_label_never_renders_as_a_blank_cell() -> None:

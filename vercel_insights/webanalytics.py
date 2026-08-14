@@ -17,7 +17,8 @@ from typing import Any, TypeGuard
 from . import OTHERS_LABEL, ApiError, ConfigError
 from .http import PreparedRequest, default_headers, operation_url
 from .odata import validate_key_segments
-from .render import Result, Row
+from .render import Result, Row, sanitize_label
+from .render import stringify_label as _stringify
 from .timerange import TIME_GRANULARITIES, to_api_timestamp
 
 #: The operation key this surface uses. It is a key into ``http.OPERATIONS``,
@@ -305,17 +306,6 @@ def build_request(
 # ---------------------------------------------------------------------------
 
 
-def _stringify(value: Any) -> str:
-    """Render a group label value that may be a string, number, bool or null."""
-    if value is None:
-        return "(none)"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, str):
-        return value or "(empty)"
-    return str(value)
-
-
 def _is_number(value: Any) -> TypeGuard[float]:
     """True for a real JSON number. Booleans are not numbers for our purposes."""
     return isinstance(value, (int, float)) and not isinstance(value, bool)
@@ -460,7 +450,9 @@ def _normalize_row(
     remaining string field, so nothing is silently dropped.
     """
     raw_timestamp = entry.get("timestamp")
-    timestamp = raw_timestamp if isinstance(raw_timestamp, str) else None
+    # A bucket label is remote input like any other, and it is rendered in the
+    # same table cell, so it goes through the same sanitizer.
+    timestamp = sanitize_label(raw_timestamp) if isinstance(raw_timestamp, str) else None
 
     consumed: set[str] = set()
     claimed: list[str | None] = []

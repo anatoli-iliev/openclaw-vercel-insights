@@ -43,7 +43,9 @@ from .render import (
     UNIT_SCORE,
     Result,
     Row,
+    sanitize_label,
 )
+from .render import stringify_label as _stringify
 from .timerange import to_api_timestamp
 
 #: The operation keys this surface uses. Both are keys into
@@ -473,13 +475,22 @@ def build_scope(
     its inner shape is inferred from what ``vercel metrics`` exposes: a project
     selection (``--project``, defaulting to the linked project), an every
     project selection (``--all``), and the ambient team. Hence a discriminated
-    object with a ``type`` of ``project`` or ``owner``. The team is carried as
-    a query parameter instead, which is the convention every other endpoint in
-    this REST API follows.
+    object with a ``type`` of ``project`` or ``owner``.
+
+    The team travels on one channel only, and that channel is the ``teamId`` or
+    ``slug`` **query parameter**, never a field inside this object. That is
+    what every other endpoint in this REST API does, it is what the Web
+    Analytics surface here already does, and one channel used consistently for
+    both scope types is easier to correct than two used inconsistently. So the
+    scope names what to query and the query parameters name whose it is, for
+    ``--all`` and ``--project`` alike. The ``team`` and ``team_slug`` arguments
+    are accepted so that a caller passing the same keyword set to every scope
+    builder still works, and are deliberately unused.
 
     Raises:
         ConfigError: When neither a project nor ``--all`` was supplied.
     """
+    del team, team_slug  # The query parameters carry these; see above.
     if all_projects:
         return {"type": "owner"}
     if not project:
@@ -488,12 +499,7 @@ def build_scope(
             "set VERCEL_PROJECT_ID in the environment, or pass --all to query "
             "every project in the team"
         )
-    scope: dict[str, Any] = {"type": "project", "projectId": project}
-    if team:
-        scope["teamId"] = team
-    elif team_slug:
-        scope["slug"] = team_slug
-    return scope
+    return {"type": "project", "projectId": project}
 
 
 def build_granularity(interval: str) -> dict[str, Any]:
@@ -672,17 +678,6 @@ def _is_number(value: Any) -> TypeGuard[float]:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
-def _stringify(value: Any) -> str:
-    """Render a group label value that may be a string, number, bool or null."""
-    if value is None:
-        return "(none)"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, str):
-        return value or "(empty)"
-    return str(value)
-
-
 def _find_root(payload: Mapping[str, Any]) -> Any:
     """The part of the payload that actually carries the result.
 
@@ -789,7 +784,9 @@ def _row_from_entry(
     for key in _TIME_KEYS:
         candidate = entry.get(key)
         if isinstance(candidate, str) and candidate:
-            own_timestamp = candidate
+            # A bucket label is remote input and shares a table with the group
+            # labels, so it is sanitized exactly as they are.
+            own_timestamp = sanitize_label(candidate)
             used.add(key)
             break
         if _is_number(candidate):
@@ -850,7 +847,7 @@ def _rows_from_list(
             for key in _TIME_KEYS:
                 candidate = entry.get(key)
                 if isinstance(candidate, str) and candidate:
-                    timestamp = candidate
+                    timestamp = sanitize_label(candidate)
                     break
             for item in nested:
                 row = _row_from_entry(item, metric, aggregation, dimensions, timestamp)

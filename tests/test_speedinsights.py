@@ -29,6 +29,7 @@ from helpers import (
     SPEED_QUERY_URL,
     SPEED_ROLLUP_PAYLOAD,
     SPEED_ROUTE_PAYLOAD,
+    SPEED_ROUTE_WITH_OTHERS_PAYLOAD,
     SPEED_TREND_PAYLOAD,
     SPEED_VITALS_PAYLOADS,
     TOKEN,
@@ -396,6 +397,12 @@ def test_the_request_uses_the_observability_query_operation_and_its_url() -> Non
 def test_all_projects_scope_replaces_the_project_scope() -> None:
     body = build(project=None, all_projects=True).json_body
     assert body["scope"] == {"type": "owner"}
+    # An owner scope carries its team exactly as a project scope does: on the
+    # query parameter, never inside the scope object.
+    request = build(project=None, all_projects=True, team="team_abc")
+    assert request.params == [("teamId", "team_abc")]
+    assert request.json_body is not None
+    assert request.json_body["scope"] == {"type": "owner"}
 
 
 def test_no_project_and_no_all_is_refused_before_a_body_exists() -> None:
@@ -405,23 +412,55 @@ def test_no_project_and_no_all_is_refused_before_a_body_exists() -> None:
     assert "--project" in str(excinfo.value)
 
 
-def test_a_team_id_travels_as_a_query_parameter_and_inside_the_scope() -> None:
+def test_a_team_id_travels_as_a_query_parameter_and_never_inside_the_scope() -> None:
+    # One channel for the team, and it is the query parameter every other
+    # endpoint in this REST API uses. The scope says what to query; the query
+    # parameters say whose it is, for a project scope and an owner scope alike.
     request = build(team="team_abc")
     assert request.params == [("teamId", "team_abc")]
     assert request.json_body is not None
-    assert request.json_body["scope"] == {
-        "type": "project",
-        "projectId": PROJECT,
-        "teamId": "team_abc",
-    }
+    assert request.json_body["scope"] == {"type": "project", "projectId": PROJECT}
 
 
 def test_a_team_slug_travels_as_slug_rather_than_team_id() -> None:
     request = build(team_slug="acme")
     assert request.params == [("slug", "acme")]
     assert request.json_body is not None
-    assert request.json_body["scope"]["slug"] == "acme"
-    assert "teamId" not in request.json_body["scope"]
+    assert request.json_body["scope"] == {"type": "project", "projectId": PROJECT}
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        {"project": PROJECT},
+        {"project": None, "all_projects": True},
+    ],
+    ids=["project-scope", "owner-scope"],
+)
+@pytest.mark.parametrize(
+    ("team_kwargs", "expected_params"),
+    [
+        ({"team": "team_abc"}, [("teamId", "team_abc")]),
+        ({"team_slug": "acme"}, [("slug", "acme")]),
+        ({}, []),
+    ],
+    ids=["team-id", "team-slug", "no-team"],
+)
+def test_the_team_uses_one_channel_and_the_same_one_for_every_scope_type(
+    selection: dict[str, Any],
+    team_kwargs: dict[str, str],
+    expected_params: list[tuple[str, str]],
+) -> None:
+    # One channel used consistently is easier to correct than two used
+    # inconsistently, so the scope names what to query and the query parameters
+    # name whose it is, for --all and --project alike.
+    request = build(**selection, **team_kwargs)
+    assert request.params == expected_params
+    assert request.json_body is not None
+    scope = request.json_body["scope"]
+    assert set(scope) <= {"type", "projectId"}
+    for value in team_kwargs.values():
+        assert value not in json.dumps(scope)
 
 
 def test_every_optional_field_is_omitted_rather_than_sent_as_null() -> None:
@@ -637,6 +676,86 @@ def test_a_data_point_count_is_never_double_counted_as_the_value() -> None:
     metrics = result.rows[0].metrics
     assert metrics["p75_lcp"] == pytest.approx(12480)
     assert metrics.get("data_points", 0) == 0
+
+
+def test_the_others_overflow_bucket_is_marked_on_this_surface_too() -> None:
+    result = si.normalize(
+        SPEED_ROUTE_WITH_OTHERS_PAYLOAD,
+        metric=LCP,
+        aggregation="p75",
+        group_by=["route"],
+    )
+    assert [row.key for row in result.rows] == ["/blog/[slug]", "/pricing", "Others"]
+    assert [row.is_others for row in result.rows] == [False, False, True]
+
+
+def test_an_others_bucket_arriving_as_a_rollup_key_is_marked_as_well() -> None:
+    payload = {
+        "version": 1,
+        "query": {"metric": LCP_ID, "groupBy": ["country"]},
+        "data": {"US": 2100.0, "Others": 1800.0},
+    }
+    result = si.normalize(payload, metric=LCP, aggregation="p75", group_by=["country"])
+    assert [row.is_others for row in result.rows] == [False, True]
+
+
+# ---------------------------------------------------------------------------
+# 6. The last resort value probe, and the ambiguity it refuses to resolve
+# ---------------------------------------------------------------------------
+#
+# The observability API publishes no response schema, so a row whose value
+# arrived under a name none of the probes predicted is read anyway when there
+# is exactly one number to read. Two numbers is a guess, and guessing here
+# means printing a confidently formatted wrong web vital.
+
+
+def test_a_row_with_exactly_one_unrecognised_number_is_read_as_the_value() -> None:
+    payload = {"version": 1, "data": [{"route": "/", "p75Millis": 2412.0}]}
+    result = si.normalize(payload, metric=LCP, aggregation="p75", group_by=["route"])
+    assert [row.key for row in result.rows] == ["/"]
+    assert result.rows[0].metrics["p75_lcp"] == pytest.approx(2412.0)
+
+
+def test_an_ungrouped_row_with_one_unrecognised_number_is_read_too() -> None:
+    result = si.normalize(
+        {"version": 1, "data": {"p75Millis": 2412.0}}, metric=LCP, aggregation="p75"
+    )
+    assert result.rows[0].metrics["p75_lcp"] == pytest.approx(2412.0)
+
+
+def test_a_row_with_two_unrecognised_numbers_is_refused_rather_than_guessed() -> None:
+    payload = {
+        "version": 1,
+        "data": [{"route": "/", "p75Millis": 2412.0, "p90Millis": 3100.0}],
+    }
+    with pytest.raises(ApiError) as excinfo:
+        si.normalize(payload, metric=LCP, aggregation="p75", group_by=["route"])
+    assert excinfo.value.code == "invalid_response"
+    # Neither candidate is quoted back, and neither is silently chosen.
+    assert "2412" not in str(excinfo.value)
+    assert "3100" not in str(excinfo.value)
+
+
+def test_two_unrecognised_numbers_are_refused_even_with_a_recognised_label() -> None:
+    payload = {
+        "version": 1,
+        "data": [
+            {"route": "/", "value": 2412.0},
+            {"route": "/pricing", "alpha": 1.0, "beta": 2.0},
+        ],
+    }
+    # The readable row still parses; the ambiguous one is skipped rather than
+    # invented, so the table never carries a number nobody sent.
+    result = si.normalize(payload, metric=LCP, aggregation="p75", group_by=["route"])
+    assert [row.key for row in result.rows] == ["/"]
+
+
+def test_an_envelope_field_is_never_the_sole_number_a_row_is_read_from() -> None:
+    # {"version": 1} is one number under a name no probe predicted, and it is
+    # still not a P75 of 1 millisecond.
+    with pytest.raises(ApiError) as excinfo:
+        si.normalize({"version": 1}, metric=LCP, aggregation="p75")
+    assert excinfo.value.code == "invalid_response"
 
 
 def test_the_query_block_from_the_response_is_carried_through_untouched() -> None:

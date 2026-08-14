@@ -11,17 +11,23 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 from typing import Any
 
 import pytest
 from helpers import (
+    ANSI_BUCKET,
+    ANSI_ROUTE,
     CLS_ID,
+    ESCAPED_ANSI_BUCKET,
+    ESCAPED_ANSI_ROUTE,
     INP_ID,
     LCP_COUNT_ID,
     LCP_ID,
     PROJECT,
     SPEED_DATA_POINTS_PAYLOAD,
     SPEED_ROUTE_PAYLOAD,
+    SPEED_ROUTE_WITH_OTHERS_PAYLOAD,
     SPEED_TREND_PAYLOAD,
     SPEED_VITALS_PAYLOADS,
     speed_value_payload,
@@ -38,6 +44,7 @@ from vercel_insights.render import (
     VERDICT_UNKNOWN,
     Result,
     format_csv,
+    format_json,
     format_table,
     format_value,
     render_vitals,
@@ -364,3 +371,157 @@ def test_csv_of_a_speed_result_writes_raw_numbers_not_formatted_ones() -> None:
     assert rows[0] == ["route", "p75_lcp", "data_points"]
     assert rows[1] == ["/blog/[slug]", "4120.0", "1830.0"]
     assert all("s" not in cell for cell in rows[1][1:])
+
+
+# ---------------------------------------------------------------------------
+# 5. The Others overflow bucket, on this surface too
+# ---------------------------------------------------------------------------
+
+
+def others_result() -> Result:
+    return si.normalize(
+        SPEED_ROUTE_WITH_OTHERS_PAYLOAD,
+        metric=si.validate_metric("lcp"),
+        aggregation="p75",
+        group_by=["route"],
+    )
+
+
+def test_a_speed_table_labels_the_overflow_bucket_and_explains_it() -> None:
+    text = format_table(others_result(), time_range=TIME_RANGE, limit=2)
+    lines = text.splitlines()
+    assert lines[2].split() == ["route", "p75_lcp", "data_points"]
+    assert [line.split()[0] for line in lines[4:7]] == [
+        "/blog/[slug]",
+        "/pricing",
+        "Others",
+    ]
+    assert "Others is not a real value" in text
+    assert "--limit 2" in text
+    assert "collapsed by the API into one bucket" in text
+
+
+def test_a_speed_table_without_an_overflow_bucket_prints_no_such_note() -> None:
+    text = format_table(grouped_result(), time_range=TIME_RANGE, limit=10)
+    assert "Others" not in text
+    assert "is not a real value" not in text
+
+
+def test_the_speed_overflow_bucket_survives_csv_and_json_as_a_labelled_row() -> None:
+    rows = list(csv.reader(io.StringIO(format_csv(others_result()))))
+    assert rows[3] == ["Others", "1240.0", "8800.0"]
+    document = json.loads(format_json(others_result(), SPEED_ROUTE_WITH_OTHERS_PAYLOAD))
+    assert [row["key"] for row in document["rows"]] == [
+        "/blog/[slug]",
+        "/pricing",
+        "Others",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# 6. A vitals table of mixed metric kinds
+# ---------------------------------------------------------------------------
+#
+# render_vitals decides two things per table rather than per row: whether to
+# show the target and verdict columns at all, and which legend to print. A run
+# of all values and a run of all data point counts agree about both, so only a
+# mixed list tells the two rules apart.
+
+
+def mixed_results() -> list[Result]:
+    """One value metric and one data point count metric, in that order."""
+    return [
+        si.normalize(
+            speed_value_payload(LCP_ID, 2412.0, 12480),
+            metric=si.validate_metric("lcp"),
+            aggregation="p75",
+        ),
+        si.normalize(
+            speed_value_payload(LCP_COUNT_ID, 12480),
+            metric=si.metric_for("lcp", data_points=True),
+            aggregation="sum",
+        ),
+    ]
+
+
+def test_a_mixed_vitals_table_keeps_the_target_columns_for_the_metric_that_has_one() -> (
+    None
+):
+    # One published target among the results is enough to earn the columns: the
+    # metric that has none reads "n/a" rather than costing the other its verdict.
+    text = render_vitals(mixed_results(), project=PROJECT, time_range=TIME_RANGE)
+    header = text.splitlines()[3]
+    assert "target" in header
+    assert "verdict" in header
+    lines = {line.split("  ")[0].strip(): line for line in text.splitlines()[5:7]}
+    assert VERDICT_MEETS in lines["Largest Contentful Paint"]
+    assert "2.5 s" in lines["Largest Contentful Paint"]
+    assert VERDICT_UNKNOWN in lines["Largest Contentful Paint data points"]
+    assert "n/a" in lines["Largest Contentful Paint data points"]
+
+
+def test_a_mixed_vitals_table_keeps_the_web_vital_legend_not_the_count_one() -> None:
+    # The data point legend replaces the vitals one only when there is no metric
+    # value in the table at all; one value metric present means the reader still
+    # needs "lower is better" and the two tier verdict explained.
+    text = render_vitals(mixed_results(), project=PROJECT, time_range=TIME_RANGE)
+    assert "Lower is better for all five metrics." in text
+    assert "two tier" in text
+    assert "one data point is one measurement" not in text
+
+
+def test_a_vitals_table_of_only_counts_still_swaps_both_rules_together() -> None:
+    # The control for the two tests above: all counts, so no targets and the
+    # data point legend.
+    results = [mixed_results()[1]]
+    text = render_vitals(results, project=PROJECT, time_range=TIME_RANGE)
+    assert "target" not in text.splitlines()[3]
+    assert "verdict" not in text.splitlines()[3]
+    assert "one data point is one measurement" in text
+    assert "Lower is better for all five metrics." not in text
+
+
+# ---------------------------------------------------------------------------
+# 7. Control characters in a response derived label
+# ---------------------------------------------------------------------------
+
+
+def control_character_result() -> Result:
+    payload = {
+        "version": 1,
+        "query": {"metric": LCP_ID, "groupBy": ["route"]},
+        "data": [{"route": ANSI_ROUTE, "value": 1200.0}],
+    }
+    return si.normalize(
+        payload,
+        metric=si.validate_metric("lcp"),
+        aggregation="p75",
+        group_by=["route"],
+    )
+
+
+def test_a_route_label_carrying_an_escape_sequence_is_neutralised() -> None:
+    result = control_character_result()
+    assert result.rows[0].key == ESCAPED_ANSI_ROUTE
+    text = format_table(result, time_range=TIME_RANGE)
+    assert ESCAPED_ANSI_ROUTE in text
+    assert "\x1b[2J" not in text
+    rows = list(csv.reader(io.StringIO(format_csv(result))))
+    assert rows[1][0] == ESCAPED_ANSI_ROUTE
+
+
+def test_a_bucket_label_carrying_an_escape_sequence_is_neutralised_too() -> None:
+    # A timestamp is remote input rendered into the same cell as any label, and
+    # an unparseable one is printed through rather than dropped.
+    payload = {
+        "version": 1,
+        "query": {"metric": LCP_ID},
+        "data": [{"timestamp": ANSI_BUCKET, "value": 1200.0}],
+    }
+    result = si.normalize(
+        payload, metric=si.validate_metric("lcp"), aggregation="p75", granularity="1d"
+    )
+    assert result.rows[0].timestamp == ESCAPED_ANSI_BUCKET
+    text = format_table(result, time_range=TIME_RANGE)
+    assert ESCAPED_ANSI_BUCKET in text
+    assert "\x1b" not in text
