@@ -347,7 +347,11 @@ def test_a_time_bucketed_table_labels_its_rows_with_the_bucket_start() -> None:
         granularity="1d",
     )
     text = format_table(result, time_range=TIME_RANGE)
-    assert text.splitlines()[2].split()[0] == "1d"
+    # The header is the human spelling, so vitals-trend and the Web Analytics
+    # trend head this column identically; the machine spelling "1d" stays in the
+    # request body and in JSON output, where a consumer needs the real value.
+    assert text.splitlines()[2].split()[0] == "day"
+    assert result.granularity == "1d"
     assert "2026-08-10" in text and "2026-08-11" in text
     assert "T00:00:00.000Z" not in text
     assert "2.1 s" in text and "2.5 s" in text

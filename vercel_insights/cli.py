@@ -942,9 +942,7 @@ def _overview_granularity(settings: Settings) -> str:
     return "day"
 
 
-def _plan_requests(
-    settings: Settings, args: argparse.Namespace
-) -> list[PreparedRequest]:
+def _plan_requests(settings: Settings) -> list[PreparedRequest]:
     """Build every request a run needs: one, three for the overview, five for vitals."""
     if settings.is_speed:
         return _plan_speed_requests(settings)
@@ -1037,7 +1035,7 @@ def _run(
     for warning in settings.warnings:
         print(f"warning: {warning}", file=err)
 
-    requests_to_send = _plan_requests(settings, args)
+    requests_to_send = _plan_requests(settings)
 
     if args.dry_run:
         for index, prepared in enumerate(requests_to_send):

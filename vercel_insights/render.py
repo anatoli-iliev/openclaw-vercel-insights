@@ -28,7 +28,12 @@ from datetime import datetime
 from typing import Any
 
 from . import OTHERS_LABEL, sanitize_label
-from .timerange import TIME_GRANULARITIES, format_timestamp, to_api_timestamp
+from .timerange import (
+    GRANULARITY_ALIASES,
+    TIME_GRANULARITIES,
+    format_timestamp,
+    to_api_timestamp,
+)
 
 #: Number of table rows the overview preset shows per section.
 OVERVIEW_TABLE_LIMIT = 5
@@ -186,7 +191,9 @@ class Result:
 
         A surface that carries its buckets outside the grouping sets
         ``time_bucket`` instead, and that spelling wins because it is the one
-        that surface actually used.
+        that surface actually used. This is the machine spelling: it is what
+        goes into JSON output and what timestamps are formatted against. For
+        something to print as a column header, use :attr:`granularity_label`.
         """
         if self.time_bucket:
             return self.time_bucket
@@ -194,6 +201,21 @@ class Result:
             if dimension in TIME_GRANULARITIES:
                 return dimension
         return None
+
+    @property
+    def granularity_label(self) -> str | None:
+        """The time bucket as a human reads it, for a column header.
+
+        The two surfaces spell buckets differently (``1d`` against ``day``), and
+        a bare ``1d`` at the top of a column reads like a value rather than a
+        heading. Sibling presets should not disagree about what to call the same
+        thing, so ``trend`` and ``vitals-trend`` both head that column ``day``.
+        An unrecognised spelling is passed through rather than guessed at.
+        """
+        granularity = self.granularity
+        if granularity is None:
+            return None
+        return GRANULARITY_ALIASES.get(granularity, granularity)
 
     def totals(self) -> dict[str, float]:
         """Sum every metric across every row, including the ``Others`` bucket."""
@@ -406,7 +428,7 @@ def format_table(
     headers: list[str] = []
     aligns: list[str] = []
     if has_time:
-        headers.append(granularity or "time")
+        headers.append(result.granularity_label or "time")
         aligns.append("left")
     headers.extend(label_headers)
     aligns.extend("left" for _ in label_headers)
@@ -589,7 +611,7 @@ def format_csv(result: Result) -> str:
 
     header: list[str] = []
     if has_time:
-        header.append(granularity or "time")
+        header.append(result.granularity_label or "time")
     header.extend(label_headers)
     header.extend(names)
     writer.writerow(header)
@@ -681,7 +703,7 @@ def render_overview(
         )
 
     lines.append("")
-    lines.append(style.bold(f"By {daily.granularity or 'day'}"))
+    lines.append(style.bold(f"By {daily.granularity_label or 'day'}"))
     if daily.rows:
         lines.extend(_sparkline_rows(daily, style))
     else:
