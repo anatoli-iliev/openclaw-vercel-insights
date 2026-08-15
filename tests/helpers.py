@@ -287,7 +287,7 @@ def patch_retry_sleep(monkeypatch: pytest.MonkeyPatch) -> list[float]:
 
     def wrapper(
         request: PreparedRequest, session: Any, *args: Any, **kwargs: Any
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | list[Any]:
         kwargs.setdefault("sleep", delays.append)
         kwargs.setdefault("jitter", no_jitter)
         return real(request, session, *args, **kwargs)

@@ -520,6 +520,113 @@ def build_scope(
     return {"type": "project", "ownerId": owner_id, "projectIds": [project]}
 
 
+def build_schema_request(
+    *,
+    team: str | None = None,
+    team_slug: str | None = None,
+    token: str | None = None,
+) -> PreparedRequest:
+    """Build the request that lists queryable metrics for the current scope.
+
+    Vercel's own guidance is to read the schema before building a query: it is
+    the source of truth for which metrics, dimensions and aggregations an
+    account can actually reach. That makes it the right first move when a query
+    is refused, because it answers "does this metric exist for me" directly
+    rather than by inference.
+
+    The endpoint declares no query parameters, so the team is passed the same
+    way the rest of this client passes it and simply ignored if unread.
+    """
+    params: list[tuple[str, str]] = []
+    if team:
+        params.append(("teamId", team))
+    elif team_slug:
+        params.append(("slug", team_slug))
+    return PreparedRequest(
+        operation=SCHEMA_OPERATION,
+        url=operation_url(SCHEMA_OPERATION),
+        params=params,
+        headers=default_headers(token),
+    )
+
+
+def format_schema(payload: Any, prefix: str | None = None) -> str:
+    """Render whatever the schema endpoint returned, as readably as possible.
+
+    The response shape is not published, so this reads defensively: a list of
+    metric objects, or a mapping keyed by metric id, or a wrapper around either.
+    Anything it cannot interpret is reported as such rather than guessed at,
+    and the raw payload is still available through ``--json``.
+    """
+    entries = _schema_entries(payload)
+    if entries is None:
+        return (
+            "the schema response was not in a shape this client recognises; "
+            "run again with --json to see it verbatim"
+        )
+    if prefix:
+        entries = [e for e in entries if str(e.get("id", "")).startswith(prefix)]
+    if not entries:
+        scope = f" matching {prefix!r}" if prefix else ""
+        return (
+            f"no queryable metrics{scope} for this account. Speed Insights "
+            "metrics appear here only once Speed Insights is enabled on a "
+            "project and has collected data"
+        )
+
+    lines = [f"{len(entries)} queryable metric(s):", ""]
+    for entry in sorted(entries, key=lambda e: str(e.get("id", ""))):
+        metric_id = _stringify(entry.get("id"))
+        lines.append(metric_id)
+        unit = entry.get("unit")
+        if unit:
+            lines.append(f"    unit          {_stringify(unit)}")
+        aggregations = entry.get("aggregations")
+        if isinstance(aggregations, list) and aggregations:
+            lines.append(
+                "    aggregations  " + ", ".join(_stringify(a) for a in aggregations)
+            )
+        default = entry.get("defaultAggregation")
+        if default:
+            lines.append(f"    default       {_stringify(default)}")
+        dimensions = entry.get("dimensions")
+        if isinstance(dimensions, list) and dimensions:
+            names = [
+                _stringify(d.get("name") if isinstance(d, Mapping) else d)
+                for d in dimensions
+            ]
+            lines.append("    dimensions    " + ", ".join(names))
+        description = entry.get("description")
+        if description:
+            lines.append(f"    {_stringify(description)}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def _schema_entries(payload: Any) -> list[Mapping[str, Any]] | None:
+    """Find the list of metric descriptors in an unpublished response shape."""
+    candidates: list[Any] = [payload]
+    if isinstance(payload, Mapping):
+        for key in ("metrics", "data", "schema", "result"):
+            if key in payload:
+                candidates.append(payload[key])
+    for candidate in candidates:
+        if isinstance(candidate, list) and all(
+            isinstance(item, Mapping) for item in candidate
+        ):
+            return [item for item in candidate if isinstance(item, Mapping)]
+        if isinstance(candidate, Mapping):
+            values = list(candidate.values())
+            if values and all(isinstance(v, Mapping) for v in values):
+                merged: list[Mapping[str, Any]] = []
+                for key, value in candidate.items():
+                    entry = dict(value)
+                    entry.setdefault("id", key)
+                    merged.append(entry)
+                return merged
+    return None
+
+
 def warn_if_not_project_id(project: str | None) -> str | None:
     """Return a warning when ``project`` does not look like a project id.
 

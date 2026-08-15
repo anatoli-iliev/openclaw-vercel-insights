@@ -74,6 +74,8 @@ from .speedinsights import (
     SPEED_DIMENSIONS,
     VITAL_ORDER,
     Metric,
+    build_schema_request,
+    format_schema,
     metric_for,
     validate_aggregation,
     validate_metric,
@@ -202,6 +204,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--team-slug",
         metavar="SLUG",
         help="team slug instead of a team id; defaults to $VERCEL_TEAM_SLUG",
+    )
+    config.add_argument(
+        "--list-metrics",
+        nargs="?",
+        const="",
+        metavar="PREFIX",
+        help=(
+            "ask the API which metrics this account can actually query, "
+            "optionally filtered by a prefix such as vercel.speed_insights; "
+            "this is the source of truth when a query is refused"
+        ),
     )
     config.add_argument(
         "--owner-id",
@@ -971,6 +984,64 @@ def _plan_speed_requests(settings: Settings) -> list[PreparedRequest]:
 OWNER_PLACEHOLDER = "<read from the project at run time>"
 
 
+def _run_list_metrics(
+    args: argparse.Namespace,
+    env: Mapping[str, str],
+    style: Style,
+    out: TextIO,
+    err: TextIO,
+) -> int:
+    """Ask the API which metrics this account can actually query.
+
+    Vercel documents the schema as the source of truth for the metrics,
+    dimensions and aggregations available to an account, which makes it the
+    right thing to consult when a query is refused: it answers "does this metric
+    exist for me" outright instead of by inference. It needs no project and no
+    owner, only a token, so it works even when a query cannot be built at all.
+    """
+    token = args.token or _env_value(env, "VERCEL_TOKEN")
+    team = args.team or _env_value(env, "VERCEL_TEAM_ID")
+    team_slug = args.team_slug or _env_value(env, "VERCEL_TEAM_SLUG")
+    if not token and not args.dry_run:
+        raise ConfigError(
+            "no access token configured; pass --token or set VERCEL_TOKEN "
+            f"(create one at {DOCS_TOKEN_URL}). Use --dry-run to build the "
+            "request without a token"
+        )
+    if token:
+        token = validate_token(token)
+    prepared = build_schema_request(team=team, team_slug=team_slug, token=token)
+
+    if args.dry_run:
+        print(format_dry_run(prepared), file=out)
+        return 0
+
+    def on_retry(reason: str) -> None:
+        if args.verbose:
+            print(f"verbose: {reason}", file=err)
+
+    session = requests.Session()
+    try:
+        payload = execute(
+            prepared,
+            session,
+            max_retries=args.max_retries,
+            timeout=validate_timeout(args.timeout),
+            on_retry=on_retry,
+        )
+    finally:
+        session.close()
+
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True), file=out)
+        return 0
+    prefix = args.list_metrics or None
+    print(style.bold("Queryable metrics"), file=out)
+    print(file=out)
+    print(format_schema(payload, prefix), file=out)
+    return 0
+
+
 def _fetch_owner_id(
     session: Any,
     settings: Settings,
@@ -1017,6 +1088,12 @@ def _fetch_owner_id(
         timeout=settings.timeout,
         on_retry=on_retry,
     )
+    if not isinstance(payload, Mapping):
+        raise ConfigError(
+            f"the record for project {settings.project!r} was not a JSON object, "
+            "so the owner of a Speed Insights scope could not be read from it; "
+            "pass --owner-id explicitly, or set VERCEL_OWNER_ID"
+        )
     candidate = payload.get("accountId")
     if isinstance(candidate, str) and candidate:
         return candidate
@@ -1132,6 +1209,9 @@ def _run(
         print(format_presets(style), file=out)
         return 0
 
+    if args.list_metrics is not None:
+        return _run_list_metrics(args, env, style, out, err)
+
     settings = _resolve_settings(args, env)
     for warning in settings.warnings:
         print(f"warning: {warning}", file=err)
@@ -1180,15 +1260,23 @@ def _run(
                 print(f"verbose: headers {redact_headers(prepared.headers)}", file=err)
 
         for prepared in requests_to_send:
-            payloads.append(
-                execute(
-                    prepared,
-                    session,
-                    max_retries=args.max_retries,
-                    timeout=settings.timeout,
-                    on_retry=on_retry,
-                )
+            answer = execute(
+                prepared,
+                session,
+                max_retries=args.max_retries,
+                timeout=settings.timeout,
+                on_retry=on_retry,
             )
+            if not isinstance(answer, Mapping):
+                # Only the schema endpoint answers with a top level array; a
+                # query that does is a response this client cannot interpret.
+                raise ApiError(
+                    200,
+                    "invalid_response",
+                    "the query returned a JSON array, but a query response is "
+                    "an object carrying 'data'; run with --json to see it",
+                )
+            payloads.append(dict(answer))
     finally:
         session.close()
 
