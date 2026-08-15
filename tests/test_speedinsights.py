@@ -21,6 +21,7 @@ from helpers import (
     INP_ID,
     LCP_COUNT_ID,
     LCP_ID,
+    OWNER,
     PROJECT,
     SPEED_DATA_POINTS_PAYLOAD,
     SPEED_EMPTY_PAYLOAD,
@@ -371,6 +372,7 @@ def build(**overrides: Any) -> Any:
         "since": SINCE,
         "until": UNTIL,
         "project": PROJECT,
+        "owner_id": OWNER,
     }
     kwargs.update(overrides)
     return si.build_request(**kwargs)
@@ -380,7 +382,7 @@ def test_the_minimal_body_carries_only_the_five_required_fields() -> None:
     request = build()
     assert request.json_body == {
         "metric": "vercel.speed_insights.lcp_ms",
-        "scope": {"type": "project", "projectId": PROJECT},
+        "scope": {"ownerId": OWNER, "projectIds": [PROJECT]},
         "aggregation": "p75",
         "startTime": "2026-08-07T00:00:00Z",
         "endTime": "2026-08-14T00:00:00Z",
@@ -394,15 +396,15 @@ def test_the_request_uses_the_observability_query_operation_and_its_url() -> Non
     assert request.url == SPEED_QUERY_URL
 
 
-def test_all_projects_scope_replaces_the_project_scope() -> None:
+def test_all_projects_sends_an_empty_project_list_under_the_same_owner() -> None:
+    # VERIFIED shape: scope is {ownerId, projectIds} and both are required, so
+    # "every project" is an empty list rather than a different kind of scope.
     body = build(project=None, all_projects=True).json_body
-    assert body["scope"] == {"type": "owner"}
-    # An owner scope carries its team exactly as a project scope does: inside
-    # the scope object, with the inert query parameter sent as well.
-    request = build(project=None, all_projects=True, team="team_abc")
-    assert request.params == [("teamId", "team_abc")]
+    assert body["scope"] == {"ownerId": OWNER, "projectIds": []}
+    # The owner is whatever was resolved; a team id is simply used as one.
+    request = build(project=None, all_projects=True, owner_id="team_abc")
     assert request.json_body is not None
-    assert request.json_body["scope"] == {"type": "owner", "teamId": "team_abc"}
+    assert request.json_body["scope"] == {"ownerId": "team_abc", "projectIds": []}
 
 
 def test_no_project_and_no_all_is_refused_before_a_body_exists() -> None:
@@ -412,29 +414,21 @@ def test_no_project_and_no_all_is_refused_before_a_body_exists() -> None:
     assert "--project" in str(excinfo.value)
 
 
-def test_a_team_id_reaches_the_scope_object_and_the_query_parameter() -> None:
-    # This endpoint declares no query parameters at all, so the body is the only
-    # channel its schema offers; the query parameter rides along inert so both
-    # agree whichever one the server actually reads.
-    request = build(team="team_abc")
+def test_a_team_is_simply_the_owner_and_there_is_no_separate_team_key() -> None:
+    # The verified scope has exactly two keys. A team owned project is expressed
+    # by making the team the owner, not by adding a team field beside it: the
+    # 400 that revealed this shape named ownerId and projectIds and nothing else.
+    request = build(owner_id="team_abc")
+    assert request.json_body is not None
+    scope = request.json_body["scope"]
+    assert scope == {"ownerId": "team_abc", "projectIds": [PROJECT]}
+    assert set(scope) == {"ownerId", "projectIds"}
+
+
+def test_the_team_query_parameter_still_rides_along_inert() -> None:
+    # Harmless, and it costs nothing to let the two channels agree.
+    request = build(owner_id="team_abc", team="team_abc")
     assert request.params == [("teamId", "team_abc")]
-    assert request.json_body is not None
-    assert request.json_body["scope"] == {
-        "type": "project",
-        "projectId": PROJECT,
-        "teamId": "team_abc",
-    }
-
-
-def test_a_team_slug_travels_as_slug_rather_than_team_id() -> None:
-    request = build(team_slug="acme")
-    assert request.params == [("slug", "acme")]
-    assert request.json_body is not None
-    assert request.json_body["scope"] == {
-        "type": "project",
-        "projectId": PROJECT,
-        "slug": "acme",
-    }
 
 
 @pytest.mark.parametrize(
@@ -454,24 +448,22 @@ def test_a_team_slug_travels_as_slug_rather_than_team_id() -> None:
     ],
     ids=["team-id", "team-slug", "no-team"],
 )
-def test_the_team_reaches_the_scope_object_for_every_scope_type(
+def test_the_scope_carries_exactly_the_two_verified_keys_for_every_selection(
     selection: dict[str, Any],
     team_kwargs: dict[str, str],
     expected_params: list[tuple[str, str]],
 ) -> None:
-    # POST /v2/observability/query declares an empty `parameters` list in the
-    # OpenAPI document, so it takes no query parameters at all, while the Web
-    # Analytics endpoints explicitly declare teamId and slug. The body is the
-    # only channel this endpoint's schema offers, so a team that travelled only
-    # as a query parameter would resolve a team owned project against the
-    # personal account.
+    # The scope shape is verified, not inferred: a request carrying the old
+    # guess was answered with a 400 naming ownerId and projectIds. Whatever the
+    # selection, those two keys are the whole object, and the team query
+    # parameter is separate from it.
     request = build(**selection, **team_kwargs)
     assert request.params == expected_params
     assert request.json_body is not None
     scope = request.json_body["scope"]
-    assert set(scope) <= {"type", "projectId", "teamId", "slug"}
-    for value in team_kwargs.values():
-        assert value in json.dumps(scope), "the team must reach the scope object"
+    assert set(scope) == {"ownerId", "projectIds"}
+    assert scope["ownerId"] == OWNER
+    assert isinstance(scope["projectIds"], list)
 
 
 def test_every_optional_field_is_omitted_rather_than_sent_as_null() -> None:
@@ -505,7 +497,7 @@ def test_a_fully_specified_body_carries_every_field_in_its_documented_spelling()
     ).json_body
     assert body == {
         "metric": "vercel.speed_insights.inp_ms",
-        "scope": {"type": "project", "projectId": PROJECT},
+        "scope": {"ownerId": OWNER, "projectIds": [PROJECT]},
         "aggregation": "p90",
         "groupBy": ["route", "country"],
         "filter": "country eq 'US'",

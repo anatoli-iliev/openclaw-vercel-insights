@@ -359,25 +359,60 @@ Documented responses: 200, 400, 401, 402, 403, 408, 410. Note the 408, which
 Web Analytics does not have: a query can time out server-side, and that is worth
 retrying.
 
-### What the OpenAPI document does NOT pin down
+### The scope object: VERIFIED, and not what the schema suggested
 
-Be honest about this when changing request or response code. The published
-schema declares `scope`, `granularity`, and the entire 200 response body as bare
-`{"type": "object"}` with no inner properties. Their exact shapes are therefore
-inferred from the documented CLI behavior, not read from a schema:
+The published OpenAPI document declares `scope` as a bare `{"type": "object"}`
+with no inner properties, so its shape was originally inferred and **the
+inference was wrong**. A live request on 2026-08-15 carrying the guessed
+`{"type": "project", "projectId": "..."}` was answered with HTTP 400 naming both
+real fields:
 
-- `scope` carries the project or owner selection. `vercel metrics` exposes it as
-  `--project <name-or-id>` (defaulting to the linked project), `--all` for every
-  project in the current team, and the ambient team context. `--all` and
-  `--project` are mutually exclusive.
-- `granularity` carries the bucket size. The CLI spells these `1h`, `1d`, `1mo`,
-  and omitting it makes the server compute a granularity for the range.
-- The response is a metric result: grouped rollups and time buckets.
+```json
+[
+  {"expected": "string", "code": "invalid_type",
+   "path": ["scope", "ownerId"],
+   "message": "Invalid input: expected string, received undefined"},
+  {"expected": "array", "code": "invalid_type",
+   "path": ["scope", "projectIds"],
+   "message": "Invalid input: expected array, received undefined"}
+]
+```
 
-Parse the response defensively and never require a field the documentation does
-not show. The `security` block on these three endpoints is empty in the OpenAPI
-document, which is a generation artifact: the whole REST API is bearer
-authenticated and these endpoints are no exception.
+So the scope is:
+
+```json
+{"ownerId": "<account id>", "projectIds": ["prj_...", "..."]}
+```
+
+Both keys are required. There is no `type` discriminator, no singular
+`projectId`, and no team key of any kind.
+
+**The owner is the account that owns the project.** For a team owned project
+that is the team id, so a team is simply its own owner. For a personal project
+it is the user id, which nothing but the API knows, so this client reads it once
+from `GET /v2/user` per run unless `--owner-id` or `VERCEL_OWNER_ID` supplies it.
+That is why the operation allowlist carries a fourth, read-only entry.
+
+A team **slug** is a name, not an account id, so it cannot fill `ownerId`. A slug
+given alone on this surface is refused rather than quietly falling back to the
+personal account, which would answer confidently about the wrong account.
+
+`projectIds` is a list of project **ids**. The Web Analytics endpoints document
+their `projectId` parameter as "the project identifier or the project name", but
+this field asks for ids, and a name is likely to return an empty result rather
+than an error, so a value that does not look like `prj_...` is warned about.
+
+### Still not pinned down
+
+Two things remain inferred, both marked ASSUMPTION in the code:
+
+- **`granularity`.** Sent as `{"interval": "1d"}`. Never yet exercised by a
+  successful live call.
+- **The 200 response body.** Declared as a bare object, so `normalize` probes
+  for each plausible shape and reports a clear `invalid_response` rather than
+  raising on anything unexpected.
+- **`--all`.** Sends an empty `projectIds` list, on the reading that naming no
+  project means every project the owner has. Not confirmed.
 
 ## Aggregations
 

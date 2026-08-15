@@ -34,6 +34,12 @@ metadata:
       - name: VERCEL_TEAM_ID
         required: false
         description: Team ID for team-owned projects. Omit for personal accounts.
+      - name: VERCEL_OWNER_ID
+        required: false
+        description: >-
+          Account id owning the project, used as scope.ownerId by Speed
+          Insights presets. A team is its own owner, so VERCEL_TEAM_ID covers
+          team projects; otherwise it is read from the API once per run.
       - name: VERCEL_TEAM_SLUG
         required: false
         description: Team slug, an alternative to VERCEL_TEAM_ID. Never set both.

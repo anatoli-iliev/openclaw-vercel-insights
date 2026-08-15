@@ -24,6 +24,7 @@ from helpers import (
     INP_ID,
     LCP_COUNT_ID,
     LCP_ID,
+    OWNER,
     PROJECT,
     SPEED_EMPTY_PAYLOAD,
     SPEED_QUERY_URL,
@@ -53,7 +54,7 @@ from vercel_insights.timerange import (
 WINDOW = ["--since", "2026-08-07T00:00:00Z", "--until", "2026-08-14T00:00:00Z"]
 START = "2026-08-07T00:00:00Z"
 END = "2026-08-14T00:00:00Z"
-SCOPE: dict[str, Any] = {"type": "project", "projectId": PROJECT}
+SCOPE: dict[str, Any] = {"ownerId": OWNER, "projectIds": [PROJECT]}
 
 
 # ---------------------------------------------------------------------------
@@ -298,11 +299,14 @@ def test_an_ordered_grouped_query_names_both_the_column_and_the_direction(
 
 def test_all_projects_sends_an_owner_scope_and_no_project_id(cli: Cli) -> None:
     code, out, err = cli.run(
-        ["vitals-by-country", "--all", *WINDOW, "--dry-run"], env={}
+        ["vitals-by-country", "--all", *WINDOW, "--dry-run"],
+        env={"VERCEL_OWNER_ID": OWNER},
     )
     assert code == 0, err
     body = dry_run_bodies(out)[0]
-    assert body["scope"] == {"type": "owner"}
+    # "Every project" is an empty projectIds list under the same owner, not a
+    # different kind of scope: the verified shape has only these two keys.
+    assert body["scope"] == {"ownerId": OWNER, "projectIds": []}
     assert PROJECT not in json.dumps(body)
 
 
@@ -1107,28 +1111,25 @@ def test_a_single_metric_preset_still_accepts_the_metric_flag(cli: Cli) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 7. The team reaches the scope object, for both scope types
+# 7. A team is simply the owner
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("selection", "expected_scope"),
+    ("selection", "expected_project_ids"),
     [
-        (
-            ["--project", PROJECT],
-            {"type": "project", "projectId": PROJECT, "TEAM_KEY": "team_abc"},
-        ),
-        (["--all"], {"type": "owner", "TEAM_KEY": "team_abc"}),
+        (["--project", PROJECT], [PROJECT]),
+        (["--all"], []),
     ],
     ids=["project-scope", "owner-scope"],
 )
 @pytest.mark.parametrize(
-    ("flag", "parameter"), [("--team", "teamId"), ("--team-slug", "slug")]
+    ("flag", "parameter"), [("--team", "teamId")]
 )
-def test_both_scope_types_carry_the_team_inside_the_scope_object(
+def test_a_team_id_becomes_the_owner_for_both_scope_types(
     cli: Cli,
     selection: list[str],
-    expected_scope: dict[str, Any],
+    expected_project_ids: list[str],
     flag: str,
     parameter: str,
 ) -> None:
@@ -1140,19 +1141,17 @@ def test_both_scope_types_carry_the_team_inside_the_scope_object(
     )
     assert code == 0, err
     call = session.calls[0]
-    # This endpoint declares no query parameters, so the scope object is the
-    # only channel its schema offers for the team; both scope types carry it.
-    wanted = {
-        (parameter if key == "TEAM_KEY" else key): value
-        for key, value in expected_scope.items()
+    # A team is its own owner, so the team id lands in ownerId. There is no
+    # separate team key: the 400 that revealed this shape named ownerId and
+    # projectIds and nothing else. No lookup is needed either, which is why the
+    # queued response is the query itself rather than a user lookup.
+    assert call["json"]["scope"] == {
+        "ownerId": "team_abc",
+        "projectIds": expected_project_ids,
     }
-    assert call["json"]["scope"] == wanted
+    assert len(session.calls) == 1
     # The query parameter rides along inert, so both channels agree.
     assert call["params"] == [(parameter, "team_abc")]
-    # Exactly twice, and deliberately so: once in the scope object (the only
-    # channel this endpoint's schema offers) and once as the inert query
-    # parameter, so the two can never disagree.
-    assert json.dumps(call).count("team_abc") == 2
 
 
 def test_a_run_with_no_team_carries_no_team_channel_at_all(cli: Cli) -> None:
@@ -1163,7 +1162,7 @@ def test_a_run_with_no_team_carries_no_team_channel_at_all(cli: Cli) -> None:
     assert code == 0, err
     call = session.calls[0]
     assert call["params"] == []
-    assert call["json"]["scope"] == {"type": "project", "projectId": PROJECT}
+    assert call["json"]["scope"] == {"ownerId": OWNER, "projectIds": [PROJECT]}
 
 
 # ---------------------------------------------------------------------------

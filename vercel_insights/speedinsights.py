@@ -464,52 +464,80 @@ def validate_limit(limit: int) -> int:
 def build_scope(
     *,
     project: str | None,
+    owner_id: str | None,
     all_projects: bool = False,
-    team: str | None = None,
-    team_slug: str | None = None,
 ) -> dict[str, Any]:
     """Build the ``scope`` object for a query body.
 
-    ASSUMPTION. The OpenAPI document declares ``scope`` as a bare object, so
-    its inner shape is inferred from what ``vercel metrics`` exposes: a project
-    selection (``--project``, defaulting to the linked project), an every
-    project selection (``--all``), and the ambient team. Hence a discriminated
-    object with a ``type`` of ``project`` or ``owner``.
+    VERIFIED against the live API on 2026-08-15. The OpenAPI document declares
+    ``scope`` as a bare object with no inner schema, so the shape was originally
+    inferred and the inference was wrong. A request carrying the guessed
+    ``{"type": "project", "projectId": ...}`` was answered with HTTP 400 naming
+    both real fields:
 
-    The team goes **inside this object**, on both branches. That is not a style
-    choice: ``POST /v2/observability/query`` declares an empty ``parameters``
-    list in the OpenAPI document, meaning it takes no query parameters at all,
-    while the Web Analytics endpoints explicitly declare ``teamId`` and ``slug``
-    as query parameters. So on this endpoint the body is the only channel the
-    schema offers, and a team that travelled only as a query parameter would
-    likely be ignored, resolving a team owned project against the personal
-    account and returning 403 or an empty result.
+    .. code-block:: json
 
-    ``build_request`` also still sends the ``teamId``/``slug`` query parameter.
-    An undeclared query parameter is inert on every Vercel endpoint observed so
-    far, so carrying it costs nothing and covers the case where the server reads
-    the team from there instead. Both channels agree, so whichever one the
-    server honours gets the same answer.
+        [{"expected": "string", "code": "invalid_type",
+          "path": ["scope", "ownerId"],
+          "message": "Invalid input: expected string, received undefined"},
+         {"expected": "array", "code": "invalid_type",
+          "path": ["scope", "projectIds"],
+          "message": "Invalid input: expected array, received undefined"}]
+
+    So the scope is ``{"ownerId": <string>, "projectIds": [<string>, ...]}`` and
+    both keys are required. There is no ``type`` discriminator, no ``projectId``
+    singular, and no team key: the owner **is** the team for a team owned
+    project, and the personal account otherwise.
+
+    ``projectIds`` is a list of project **ids**. A project name works in the Web
+    Analytics ``projectId`` query parameter but is not known to work here, so
+    :func:`warn_if_not_project_id` flags a value that does not look like one.
+
+    ``all_projects`` sends an empty list, on the reading that naming no project
+    scopes the query to every project the owner has. That part is not yet
+    confirmed by a live call.
 
     Raises:
-        ConfigError: When neither a project nor ``--all`` was supplied.
+        ConfigError: When neither a project nor ``--all`` was supplied, or when
+            the owner could not be determined.
     """
-    scope: dict[str, Any]
+    if not owner_id:
+        raise ConfigError(
+            "no owner configured for a Speed Insights query; pass --owner-id, "
+            "set VERCEL_OWNER_ID, or pass --team (a team is its own owner). "
+            "Without a team this client reads the personal account id from "
+            "the API, so a token that cannot read the account needs --owner-id "
+            "given explicitly"
+        )
     if all_projects:
-        scope = {"type": "owner"}
+        project_ids: list[str] = []
     elif not project:
         raise ConfigError(
-            "no project configured; pass --project with a project id or name, "
+            "no project configured; pass --project with a project id, "
             "set VERCEL_PROJECT_ID in the environment, or pass --all to query "
-            "every project in the team"
+            "every project the owner has"
         )
     else:
-        scope = {"type": "project", "projectId": project}
-    if team:
-        scope["teamId"] = team
-    elif team_slug:
-        scope["slug"] = team_slug
-    return scope
+        project_ids = [project]
+    return {"ownerId": owner_id, "projectIds": project_ids}
+
+
+def warn_if_not_project_id(project: str | None) -> str | None:
+    """Return a warning when ``project`` does not look like a project id.
+
+    The Web Analytics endpoints accept "the project identifier or the project
+    name", but this surface takes ``projectIds``, and an id is what the name of
+    that field asks for. A project name is therefore likely to come back as an
+    empty result rather than an error, which is the worst kind of wrong.
+    """
+    if not project or project.startswith("prj_"):
+        return None
+    return (
+        f"--project {project!r} does not look like a project id (those start "
+        "with 'prj_'). Speed Insights scopes by projectIds, so a project name "
+        "may return nothing rather than an error; the id is on the project's "
+        "Settings, General page"
+    )
 
 
 def build_granularity(interval: str) -> dict[str, Any]:
@@ -541,6 +569,7 @@ def build_request(
     bucket_timezone: str | None = None,
     team: str | None = None,
     team_slug: str | None = None,
+    owner_id: str | None = None,
     token: str | None = None,
 ) -> PreparedRequest:
     """Build the request that answers one Speed Insights query. Pure: no I/O.
@@ -579,9 +608,8 @@ def build_request(
         "metric": metric.id,
         "scope": build_scope(
             project=project,
+            owner_id=owner_id,
             all_projects=all_projects,
-            team=team,
-            team_slug=team_slug,
         ),
         "aggregation": aggregation,
     }
