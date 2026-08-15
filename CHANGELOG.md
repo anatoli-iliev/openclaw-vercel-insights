@@ -152,6 +152,14 @@ none of these ever reached a published version. Each was reproduced first.
   `https` as `h<redacted><redacted>ps`. Substring matching now requires a
   credential long enough to be one; the whole header value is still scrubbed
   regardless of length, so nothing is exposed.
+- **A missing `requests` dumped a traceback as the tool's very first output.**
+  The documented invocation is `python3 -m vercel_insights`, so anyone whose
+  `python3` is a system interpreter without the dependency met a raw
+  `ModuleNotFoundError` before seeing anything else, which named the wrong
+  problem: the import line rather than the interpreter. The entry point now
+  explains it, names the interpreter it is running under, and, when a virtualenv
+  beside the package already has the dependency, names that interpreter as the
+  fix. Found by running the documented command on a clean shell.
 - **The stdlib shadowing repair covered only one invocation form.** This package
   contains `http.py`, which shadows the standard library `http` that `requests`
   imports. The repair was guarded to the plain-script path, leaving
