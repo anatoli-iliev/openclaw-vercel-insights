@@ -1,0 +1,40 @@
+# Code owners for openclaw-vercel-insights.
+#
+# GitHub matches these patterns bottom to top and applies the LAST match only,
+# so the catch-all comes first and the deliberate exceptions come after it.
+# A path listed here requires review from its owner before a pull request can
+# merge into main, which is enforced by the "main-protection" ruleset.
+
+# Everything, unless a rule further down claims it.
+*                               @anatoli-iliev
+
+# ---------------------------------------------------------------------------
+# The read-only guarantee
+# ---------------------------------------------------------------------------
+# http.py is the whole security surface: the operation allowlist that decides
+# which four endpoints exist and which verb each uses, the credential scrubbing,
+# the header redaction and the refusal to follow redirects. A change here can
+# quietly turn a read-only tool into something else, so it is called out
+# separately rather than left to the catch-all.
+/vercel_insights/http.py        @anatoli-iliev
+
+# ---------------------------------------------------------------------------
+# What the code is allowed to assume about Vercel's APIs
+# ---------------------------------------------------------------------------
+# api-notes.md separates what is verified against the live API from what is
+# still inferred. Editing it changes the basis for request and response code
+# elsewhere, and getting that wrong is how the scope object shipped wrong once
+# already. cli-contract.md is the interface the tests are written against.
+/docs/api-notes.md              @anatoli-iliev
+/docs/cli-contract.md           @anatoli-iliev
+
+# ---------------------------------------------------------------------------
+# Release and supply chain
+# ---------------------------------------------------------------------------
+# CI runs with no secrets and must stay that way. pyproject declares the single
+# runtime dependency. SKILL.md is the published manifest: its frontmatter must
+# keep declaring exactly the environment variables the code reads, because
+# ClawHub's analysis flags a mismatch between the two.
+/.github/                       @anatoli-iliev
+/pyproject.toml                 @anatoli-iliev
+/SKILL.md                       @anatoli-iliev
