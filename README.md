@@ -112,7 +112,26 @@ moment each one is turned on. Speed Insights does **not** need Observability
 Plus: its metrics are readable on the query surface without it. It does need a
 token that is not scoped to a single project; see the note in step 1.
 
-**3. Find the project ID.** Vercel dashboard, pick the project, Settings, then
+**3. Find the project.** One Vercel account holds many projects, and a query
+names exactly one, so start by seeing what you have:
+
+```console
+$ vercel-insights --list-projects
+name            project id                    traffic  speed
+--------------  ----------------------------  -------  -----
+my-site         prj_tjgvYZgQGYqNxBP1nQffcF1A  data     data
+marketing       prj_9xQ2vB7kLmT4dRnW          data     empty
+internal-tools  prj_Kd8sPqR2nX5vB             off      off
+```
+
+`data` means collected, `empty` means the feature is on but nothing has arrived
+yet, `off` means it is not enabled. Pass either the **name** or the **project
+id** to `--project`; both work on every preset.
+
+If you forget to name a project, the error prints this table rather than only
+telling you a flag is missing.
+
+**3b. Or find the ID by hand.** Vercel dashboard, pick the project, Settings, then
 General: the field is "Project ID" and looks like `prj_XXXXXXXXXXXXXXXX`. The
 project *name* works just as well anywhere the ID does.
 

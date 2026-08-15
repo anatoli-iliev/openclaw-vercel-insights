@@ -75,12 +75,15 @@ DOCUMENTED_OPERATIONS: dict[str, tuple[str, str]] = {
     # Read-only. A Speed Insights scope requires an ownerId, and the project's
     # own record carries it as accountId.
     "project": ("GET", "https://api.vercel.com/v9/projects/{project}"),
+    # Read-only. One account holds many projects, and naming the right one is
+    # the first thing any query needs.
+    "projects": ("GET", "https://api.vercel.com/v10/projects"),
 }
 
 
-def test_operations_holds_exactly_the_four_documented_entries() -> None:
+def test_operations_holds_exactly_the_five_documented_entries() -> None:
     assert set(OPERATIONS) == set(DOCUMENTED_OPERATIONS)
-    assert len(OPERATIONS) == 4
+    assert len(OPERATIONS) == 5
 
 
 @pytest.mark.parametrize("operation", sorted(DOCUMENTED_OPERATIONS))
@@ -92,7 +95,7 @@ def test_each_operation_has_exactly_its_documented_method_and_url(
 
 def test_only_one_operation_is_a_post_and_every_other_is_a_get() -> None:
     methods = sorted(method for method, _ in OPERATIONS.values())
-    assert methods == ["GET", "GET", "GET", "POST"]
+    assert methods == ["GET", "GET", "GET", "GET", "POST"]
 
 
 @pytest.mark.parametrize("operation", sorted(DOCUMENTED_OPERATIONS))
@@ -597,7 +600,12 @@ def test_the_read_endpoints_that_stay_gets_are_the_documented_ones() -> None:
     getting = sorted(
         operation for operation, (method, _url) in OPERATIONS.items() if method == "GET"
     )
-    assert getting == ["observability_schema", "project", "web_analytics"]
+    assert getting == [
+        "observability_schema",
+        "project",
+        "projects",
+        "web_analytics",
+    ]
 
 
 def test_a_speed_request_body_carries_the_query_and_never_the_token() -> None:
