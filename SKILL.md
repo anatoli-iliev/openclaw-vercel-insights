@@ -467,6 +467,25 @@ a wider `--since`, a looser filter, or checking that the feature is actually
 enabled on the project: Web Analytics and Speed Insights are separate
 per-project switches, and each only has data from the moment it was turned on.
 
+## Finding the right project
+
+One Vercel account holds many projects and every query names exactly one, so
+when the user's request does not identify a project, or names one loosely ("the
+blog", "our marketing site"), list them first:
+
+```bash
+python3 -m vercel_insights --list-projects
+```
+
+That returns each project's name, its `prj_` id, and whether Web Analytics and
+Speed Insights actually hold data. Match the user's words against the names,
+then pass either the name or the id to `--project`. Both work on every preset.
+
+If a project shows `off` or `empty` for the feature being asked about, say so
+rather than reporting an empty result as though the site had no traffic: `off`
+means the feature is not enabled, `empty` means it is enabled but has collected
+nothing yet, and they need different fixes.
+
 ## Gotchas worth knowing
 
 **A project scoped token cannot read Speed Insights.** Vercel's two APIs scope
