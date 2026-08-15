@@ -41,16 +41,27 @@ from .http import (
     DEFAULT_MAX_RETRIES,
     DEFAULT_TIMEOUT,
     PreparedRequest,
-    default_headers,
     execute,
     format_dry_run,
-    operation_url,
     redact_headers,
     validate_timeout,
     validate_token,
 )
 from .odata import build_clause, combine_filters, json_dimension
 from .presets import DEFAULT_METRIC, DEFAULT_PRESET, PRESETS, Preset, format_presets
+from .projects import (
+    build_list_request as build_projects_request,
+)
+from .projects import (
+    build_one_request as build_project_request,
+)
+from .projects import (
+    extract_projects,
+    format_projects,
+    looks_like_project_id,
+    owner_from_project,
+    resolve_project_id,
+)
 from .render import (
     DATA_POINTS_METRIC,
     OVERVIEW_TABLE_LIMIT,
@@ -205,6 +216,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--team-slug",
         metavar="SLUG",
         help="team slug instead of a team id; defaults to $VERCEL_TEAM_SLUG",
+    )
+    config.add_argument(
+        "--list-projects",
+        action="store_true",
+        help=(
+            "list the account's projects with their ids, and whether each has "
+            "Web Analytics and Speed Insights data; use it to find what to "
+            "pass to --project"
+        ),
     )
     config.add_argument(
         "--list-metrics",
@@ -793,7 +813,11 @@ def _resolve_settings(args: argparse.Namespace, env: Mapping[str, str]) -> Setti
     if args.all_projects:
         project = None
     if not project and not args.all_projects:
-        raise ConfigError(
+        # Raised as its own type so main() can answer the question the user
+        # actually has ("which projects do I have?") instead of only telling
+        # them a flag is missing. One account holds many projects, so that
+        # list is the whole answer.
+        raise MissingProject(
             "no project configured; pass --project with a project id or name, "
             "or set VERCEL_PROJECT_ID in the environment"
             + (", or pass --all to query every project in the team" if speed else "")
@@ -1028,6 +1052,130 @@ def _explain_observability_404(exc: ApiError) -> ApiError:
     )
 
 
+class MissingProject(ConfigError):
+    """No project was named, and one account may hold many.
+
+    Its own type only so the entry point can turn it into something useful: a
+    list of the projects available, which is the answer to the question behind
+    the error rather than a restatement of the error.
+    """
+
+
+def _with_project_list(
+    exc: MissingProject, args: argparse.Namespace, env: Mapping[str, str]
+) -> str:
+    """The missing-project message, with the account's projects appended.
+
+    Best effort by design: if the projects cannot be listed, for any reason,
+    the original message stands. An error path is the worst place to raise a
+    second error, and the first message is already correct on its own.
+    """
+    if args.dry_run:
+        return str(exc)
+    try:
+        token, team, team_slug = _credentials(args, env)
+        session = requests.Session()
+        try:
+            projects = _fetch_projects(
+                session,
+                token,
+                team,
+                team_slug,
+                args.max_retries,
+                validate_timeout(args.timeout),
+            )
+        finally:
+            session.close()
+    except Exception:
+        return str(exc)
+    if not projects:
+        return str(exc)
+    return f"{exc}\n\nThis account has:\n\n{format_projects(projects)}"
+
+
+def _credentials(
+    args: argparse.Namespace, env: Mapping[str, str]
+) -> tuple[str | None, str | None, str | None]:
+    """Token, team and team slug, from flags then environment."""
+    token = args.token or _env_value(env, "VERCEL_TOKEN")
+    if not token and not args.dry_run:
+        raise ConfigError(
+            "no access token configured; pass --token or set VERCEL_TOKEN "
+            f"(create one at {DOCS_TOKEN_URL}). Use --dry-run to build the "
+            "request without a token"
+        )
+    if token:
+        token = validate_token(token)
+    return (
+        token,
+        args.team or _env_value(env, "VERCEL_TEAM_ID"),
+        args.team_slug or _env_value(env, "VERCEL_TEAM_SLUG"),
+    )
+
+
+def _fetch_projects(
+    session: Any,
+    token: str | None,
+    team: str | None,
+    team_slug: str | None,
+    max_retries: int,
+    timeout: float,
+) -> list[dict[str, str]]:
+    """Every project the account holds, or an empty list if it cannot be read."""
+    prepared = build_projects_request(team=team, team_slug=team_slug, token=token)
+    payload = execute(
+        prepared, session, max_retries=max_retries, timeout=timeout
+    )
+    return extract_projects(payload)
+
+
+def _run_list_projects(
+    args: argparse.Namespace,
+    env: Mapping[str, str],
+    style: Style,
+    out: TextIO,
+    err: TextIO,
+) -> int:
+    """List the account's projects, so picking one does not need the dashboard.
+
+    One account holds many projects and a query has to name exactly one, so
+    this is the discovery step that everything else depends on. Every project
+    is shown, including those collecting nothing: "enabled but empty" and "not
+    enabled" both produce an empty query, and they need different fixes, so the
+    difference is worth seeing.
+    """
+    token, team, team_slug = _credentials(args, env)
+    prepared = build_projects_request(team=team, team_slug=team_slug, token=token)
+
+    if args.dry_run:
+        print(format_dry_run(prepared), file=out)
+        return 0
+
+    def on_retry(reason: str) -> None:
+        if args.verbose:
+            print(f"verbose: {reason}", file=err)
+
+    session = requests.Session()
+    try:
+        payload = execute(
+            prepared,
+            session,
+            max_retries=args.max_retries,
+            timeout=validate_timeout(args.timeout),
+            on_retry=on_retry,
+        )
+    finally:
+        session.close()
+
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True), file=out)
+        return 0
+    print(style.bold("Projects"), file=out)
+    print(file=out)
+    print(format_projects(extract_projects(payload)), file=out)
+    return 0
+
+
 def _run_list_metrics(
     args: argparse.Namespace,
     env: Mapping[str, str],
@@ -1088,27 +1236,31 @@ def _run_list_metrics(
     return 0
 
 
-def _fetch_owner_id(
+def _resolve_project_record(
     session: Any,
     settings: Settings,
     max_retries: int,
     on_retry: Callable[[str], None],
-) -> str:
-    """Read the owning account id off the project, for scope.ownerId.
+) -> tuple[str | None, str | None]:
+    """Read one project record, returning its canonical id and owning account.
 
-    Reached only when nothing else supplied an owner: an explicit --owner-id, a
-    team (a team is its own owner), or the environment. One extra GET per run.
+    Called for the Speed Insights surface when either piece is missing. Two
+    things come from the one request, which is why they resolve together:
 
-    The project's own record is the right place to ask. It carries ``accountId``
-    as a required field, it answers the same way whether the project is team
-    owned or personal, and the token must already be able to read it, since it
-    is the project being queried. The account endpoint was tried first and is
-    not equivalent: a team scoped token has no personal user to return, and it
-    answers 404 "User not found."
+    * The **owner**, because a scope requires ``ownerId`` and only the API knows
+      it for a personal account. The account endpoint is not equivalent: a team
+      scoped token has no personal user and it answers 404 "User not found."
+    * The **canonical project id**, because this surface scopes by
+      ``projectIds`` and wants identifiers, while Web Analytics happily accepts
+      a project name. Resolving the name here is what stops ``--project
+      my-site`` working for traffic and silently returning nothing for speed.
+
+    Returns:
+        ``(project_id, owner_id)``, either of which may be ``None`` when the
+        record did not carry it.
 
     Raises:
-        ConfigError: When there is no project to ask about, or the response
-            carries no account id, naming the flag to set instead.
+        ConfigError: When there is no project to ask about.
     """
     if not settings.project:
         raise ConfigError(
@@ -1116,16 +1268,11 @@ def _fetch_owner_id(
             "project to read one from; pass --owner-id, or --team (a team is "
             "its own owner), or set VERCEL_OWNER_ID"
         )
-    params: list[tuple[str, str]] = []
-    if settings.team:
-        params.append(("teamId", settings.team))
-    elif settings.team_slug:
-        params.append(("slug", settings.team_slug))
-    prepared = PreparedRequest(
-        operation="project",
-        url=operation_url("project", project=settings.project),
-        params=params,
-        headers=default_headers(settings.token),
+    prepared = build_project_request(
+        settings.project,
+        team=settings.team,
+        team_slug=settings.team_slug,
+        token=settings.token,
     )
     payload = execute(
         prepared,
@@ -1136,18 +1283,11 @@ def _fetch_owner_id(
     )
     if not isinstance(payload, Mapping):
         raise ConfigError(
-            f"the record for project {settings.project!r} was not a JSON object, "
-            "so the owner of a Speed Insights scope could not be read from it; "
-            "pass --owner-id explicitly, or set VERCEL_OWNER_ID"
+            f"the record for project {settings.project!r} was not a JSON "
+            "object, so neither its id nor its owning account could be read; "
+            "pass --owner-id and a prj_ identifier explicitly"
         )
-    candidate = payload.get("accountId")
-    if isinstance(candidate, str) and candidate:
-        return candidate
-    raise ConfigError(
-        f"project {settings.project!r} came back without an accountId, so the "
-        "owner of a Speed Insights scope could not be determined; pass "
-        "--owner-id explicitly, or set VERCEL_OWNER_ID"
-    )
+    return resolve_project_id(payload, settings.project), owner_from_project(payload)
 
 
 def _overview_granularity(settings: Settings) -> str:
@@ -1255,6 +1395,9 @@ def _run(
         print(format_presets(style), file=out)
         return 0
 
+    if args.list_projects:
+        return _run_list_projects(args, env, style, out, err)
+
     if args.list_metrics is not None:
         return _run_list_metrics(args, env, style, out, err)
 
@@ -1262,18 +1405,24 @@ def _run(
     for warning in settings.warnings:
         print(f"warning: {warning}", file=err)
 
-    needs_owner = settings.is_speed and not settings.owner_id
+    # Speed Insights needs both an owner and a real project id. A name is legal
+    # input and works as-is on Web Analytics, so it is only resolved here, where
+    # scope.projectIds would otherwise be handed something it cannot match.
+    needs_lookup = settings.is_speed and (
+        not settings.owner_id
+        or not (settings.all_projects or looks_like_project_id(settings.project))
+    )
 
     if args.dry_run:
         # A dry run sends nothing, including the GET that would resolve the
         # owner, so the body shows a placeholder and says where it comes from.
-        if needs_owner:
+        if needs_lookup and not settings.owner_id:
             settings.owner_id = OWNER_PLACEHOLDER
         for index, prepared in enumerate(_plan_requests(settings)):
             if index:
                 print(file=out)
             print(format_dry_run(prepared), file=out)
-        if needs_owner:
+        if needs_lookup and settings.owner_id == OWNER_PLACEHOLDER:
             print(
                 f"\nscope.ownerId shows {OWNER_PLACEHOLDER} because no --team "
                 "and no --owner-id were given. A real run reads it once from "
@@ -1290,12 +1439,26 @@ def _run(
     payloads: list[dict[str, Any]] = []
     session = requests.Session()
     try:
-        if needs_owner:
-            settings.owner_id = _fetch_owner_id(
+        if needs_lookup:
+            project_id, owner_id = _resolve_project_record(
                 session, settings, args.max_retries, on_retry
             )
+            if not settings.owner_id and owner_id:
+                settings.owner_id = owner_id
+            if project_id:
+                settings.project = project_id
             if args.verbose:
-                print("verbose: resolved scope.ownerId from the project record", file=err)
+                print(
+                    "verbose: resolved the project record "
+                    f"(id={settings.project}, owner={settings.owner_id})",
+                    file=err,
+                )
+            if not settings.owner_id:
+                raise ConfigError(
+                    f"project {settings.project!r} carried no owning account, "
+                    "so a Speed Insights scope could not be built; pass "
+                    "--owner-id explicitly, or set VERCEL_OWNER_ID"
+                )
 
         requests_to_send = _plan_requests(settings)
 
@@ -1553,6 +1716,11 @@ def main(
 
     try:
         return _run(args, environment, stdout, stderr)
+    except MissingProject as exc:
+        # Answer the question behind the error. Listing costs one request and
+        # only happens on this path, so a normal run pays nothing for it.
+        print(f"error: {_with_project_list(exc, args, environment)}", file=stderr)
+        return 2
     except ConfigError as exc:
         print(f"error: {exc}", file=stderr)
         return 2

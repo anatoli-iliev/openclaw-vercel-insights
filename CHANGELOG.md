@@ -53,6 +53,16 @@ match, and the single script becomes a package.
 
 ### Added
 
+- **`--list-projects`**, because one account holds many and every query names
+  exactly one. It shows each project's name and `prj_` id alongside whether Web
+  Analytics and Speed Insights hold data, told apart three ways: `data`
+  collected, `empty` for enabled but nothing yet, `off` for not enabled. Those
+  last two both produce an empty query and need different fixes, so they are
+  worth distinguishing. Needs no project of its own, which is the point.
+- Naming no project now prints that same table in the error, instead of only
+  restating which flag is missing. It costs one request, only on that path.
+
+
 - **Speed Insights support** through `POST /v2/observability/query`, the only
   way to read these metrics: Speed Insights has no dedicated query API. Ten
   queryable metrics, the five web vitals (`lcp`, `inp`, `cls`, `fcp`, `ttfb`)
@@ -116,6 +126,15 @@ match, and the single script becomes a package.
   parsed.
 
 ### Fixed
+
+- **A project name worked for traffic and silently returned nothing for speed.**
+  The Web Analytics endpoints accept "the project identifier or the project
+  name", but Speed Insights scopes by `projectIds` and wants identifiers, so
+  `--project my-site` produced real numbers on one surface and an empty result
+  on the other. A name is now resolved to its id from the project record this
+  client already reads for the owner, so one request answers both and both
+  surfaces behave the same. The previous warning about `prj_` prefixes is gone,
+  because the situation it warned about no longer arises.
 
 - **The `vitals` headline number was the first time bucket, not the window.**
   An ungrouped query comes back as a time series because the server picks a

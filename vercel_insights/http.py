@@ -63,6 +63,10 @@ OPERATIONS: dict[str, tuple[str, str]] = {
     # able to see, since that is the project being queried. Consulted at most
     # once per run, and only on the Speed Insights surface.
     "project": ("GET", BASE_URL + "/v9/projects/{project}"),
+    # Read-only. One Vercel account holds many projects, and picking the right
+    # one is the first thing anybody has to do, so listing them is part of the
+    # job rather than a convenience.
+    "projects": ("GET", BASE_URL + "/v10/projects"),
 }
 
 DEFAULT_TIMEOUT = 30.0
