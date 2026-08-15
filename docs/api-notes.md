@@ -359,33 +359,43 @@ Documented responses: 200, 400, 401, 402, 403, 408, 410. Note the 408, which
 Web Analytics does not have: a query can time out server-side, and that is worth
 retrying.
 
-### The scope object: VERIFIED, and not what the schema suggested
+### The scope object: VERIFIED in two steps
 
 The published OpenAPI document declares `scope` as a bare `{"type": "object"}`
-with no inner properties, so its shape was originally inferred and **the
-inference was wrong**. A live request on 2026-08-15 carrying the guessed
-`{"type": "project", "projectId": "..."}` was answered with HTTP 400 naming both
-real fields:
+with no inner properties, so the shape had to be learned from the API itself.
+Two 400s were needed, and each named one half of the answer.
+
+**First**, sending `{"type": "project", "projectId": "..."}`:
 
 ```json
-[
-  {"expected": "string", "code": "invalid_type",
-   "path": ["scope", "ownerId"],
-   "message": "Invalid input: expected string, received undefined"},
-  {"expected": "array", "code": "invalid_type",
-   "path": ["scope", "projectIds"],
-   "message": "Invalid input: expected array, received undefined"}
-]
+[{"expected": "string", "code": "invalid_type",
+  "path": ["scope", "ownerId"],
+  "message": "Invalid input: expected string, received undefined"},
+ {"expected": "array", "code": "invalid_type",
+  "path": ["scope", "projectIds"],
+  "message": "Invalid input: expected array, received undefined"}]
 ```
 
-So the scope is:
+**Then**, dropping `type` and sending `{"ownerId": ..., "projectIds": [...]}`:
 
 ```json
-{"ownerId": "<account id>", "projectIds": ["prj_...", "..."]}
+[{"code": "invalid_union", "errors": [], "note": "No matching discriminator",
+  "discriminator": "type", "path": ["scope", "type"], "message": "Invalid input"}]
 ```
 
-Both keys are required. There is no `type` discriminator, no singular
-`projectId`, and no team key of any kind.
+Put together: **`scope` is a union discriminated on `type`, and the `project`
+variant carries both `ownerId` and `projectIds`.**
+
+```json
+{"type": "project", "ownerId": "<account id>", "projectIds": ["prj_..."]}
+```
+
+The first response is what confirms `project` is a real discriminator value: a
+request carrying it got past the union and was judged on its fields instead.
+
+For `--all` this client sends `{"type": "owner", "ownerId": "..."}`, on the
+reading that a whole-owner scope names no projects. **That variant name is the
+one remaining guess** in the scope; the `project` variant is verified.
 
 **The owner is the account that owns the project.** For a team owned project
 that is the team id, so a team is simply its own owner. For a personal project

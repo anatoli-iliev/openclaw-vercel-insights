@@ -382,7 +382,7 @@ def test_the_minimal_body_carries_only_the_five_required_fields() -> None:
     request = build()
     assert request.json_body == {
         "metric": "vercel.speed_insights.lcp_ms",
-        "scope": {"ownerId": OWNER, "projectIds": [PROJECT]},
+        "scope": {"type": "project", "ownerId": OWNER, "projectIds": [PROJECT]},
         "aggregation": "p75",
         "startTime": "2026-08-07T00:00:00Z",
         "endTime": "2026-08-14T00:00:00Z",
@@ -400,11 +400,11 @@ def test_all_projects_sends_an_empty_project_list_under_the_same_owner() -> None
     # VERIFIED shape: scope is {ownerId, projectIds} and both are required, so
     # "every project" is an empty list rather than a different kind of scope.
     body = build(project=None, all_projects=True).json_body
-    assert body["scope"] == {"ownerId": OWNER, "projectIds": []}
+    assert body["scope"] == {"type": "owner", "ownerId": OWNER}
     # The owner is whatever was resolved; a team id is simply used as one.
     request = build(project=None, all_projects=True, owner_id="team_abc")
     assert request.json_body is not None
-    assert request.json_body["scope"] == {"ownerId": "team_abc", "projectIds": []}
+    assert request.json_body["scope"] == {"type": "owner", "ownerId": "team_abc"}
 
 
 def test_no_project_and_no_all_is_refused_before_a_body_exists() -> None:
@@ -421,8 +421,8 @@ def test_a_team_is_simply_the_owner_and_there_is_no_separate_team_key() -> None:
     request = build(owner_id="team_abc")
     assert request.json_body is not None
     scope = request.json_body["scope"]
-    assert scope == {"ownerId": "team_abc", "projectIds": [PROJECT]}
-    assert set(scope) == {"ownerId", "projectIds"}
+    assert scope == {"type": "project", "ownerId": "team_abc", "projectIds": [PROJECT]}
+    assert set(scope) <= {"type", "ownerId", "projectIds"}
 
 
 def test_the_team_query_parameter_still_rides_along_inert() -> None:
@@ -448,7 +448,7 @@ def test_the_team_query_parameter_still_rides_along_inert() -> None:
     ],
     ids=["team-id", "team-slug", "no-team"],
 )
-def test_the_scope_carries_exactly_the_two_verified_keys_for_every_selection(
+def test_the_scope_is_a_union_discriminated_on_type_for_every_selection(
     selection: dict[str, Any],
     team_kwargs: dict[str, str],
     expected_params: list[tuple[str, str]],
@@ -461,9 +461,15 @@ def test_the_scope_carries_exactly_the_two_verified_keys_for_every_selection(
     assert request.params == expected_params
     assert request.json_body is not None
     scope = request.json_body["scope"]
-    assert set(scope) == {"ownerId", "projectIds"}
     assert scope["ownerId"] == OWNER
-    assert isinstance(scope["projectIds"], list)
+    # A union discriminated on "type": the project variant names its projects,
+    # the owner variant names none.
+    if scope["type"] == "project":
+        assert set(scope) == {"type", "ownerId", "projectIds"}
+        assert isinstance(scope["projectIds"], list)
+    else:
+        assert scope["type"] == "owner"
+        assert set(scope) == {"type", "ownerId"}
 
 
 def test_every_optional_field_is_omitted_rather_than_sent_as_null() -> None:
@@ -497,7 +503,7 @@ def test_a_fully_specified_body_carries_every_field_in_its_documented_spelling()
     ).json_body
     assert body == {
         "metric": "vercel.speed_insights.inp_ms",
-        "scope": {"ownerId": OWNER, "projectIds": [PROJECT]},
+        "scope": {"type": "project", "ownerId": OWNER, "projectIds": [PROJECT]},
         "aggregation": "p90",
         "groupBy": ["route", "country"],
         "filter": "country eq 'US'",

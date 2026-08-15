@@ -42,6 +42,7 @@ __all__ = [
     "ConfigError",
     "RateLimitError",
     "sanitize_label",
+    "sanitize_message",
 ]
 
 
@@ -81,6 +82,34 @@ def sanitize_label(text: str) -> str:
     header and Vercel's own error message straight onto stderr.
     """
     return _CONTROL_CHARACTERS.sub(_escape_control, text)
+
+
+#: Same class as above minus the line feed, for text where line structure is
+#: part of the meaning.
+_CONTROL_EXCEPT_NEWLINE = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
+
+
+def sanitize_message(text: str) -> str:
+    """Neutralise a multi-line server message while keeping it readable.
+
+    An API error body is often pretty-printed JSON, and escaping its newlines
+    turns a legible complaint into one long line of ``\\x0a`` noise, which is
+    exactly when a reader most needs to read it. So line feeds survive here,
+    unlike in :func:`sanitize_label`.
+
+    The reason newlines are escaped elsewhere is that a server-supplied string
+    could otherwise start a line of its own and forge something plausible, for
+    example ``error: everything fine``, under this tool's own prefix. Indenting
+    every line after the first removes that: nothing the server sends can reach
+    column zero, so a forged line is visibly quoted rather than impersonating
+    the program's own output. Every other control character is still escaped.
+    """
+    escaped = _CONTROL_EXCEPT_NEWLINE.sub(_escape_control, text)
+    first, sep, rest = escaped.partition("\n")
+    if not sep:
+        return first
+    indented = "\n".join(f"  {line}" for line in rest.split("\n"))
+    return f"{first}\n{indented}"
 
 
 class ConfigError(Exception):

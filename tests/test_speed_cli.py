@@ -54,7 +54,7 @@ from vercel_insights.timerange import (
 WINDOW = ["--since", "2026-08-07T00:00:00Z", "--until", "2026-08-14T00:00:00Z"]
 START = "2026-08-07T00:00:00Z"
 END = "2026-08-14T00:00:00Z"
-SCOPE: dict[str, Any] = {"ownerId": OWNER, "projectIds": [PROJECT]}
+SCOPE: dict[str, Any] = {"type": "project", "ownerId": OWNER, "projectIds": [PROJECT]}
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +306,7 @@ def test_all_projects_sends_an_owner_scope_and_no_project_id(cli: Cli) -> None:
     body = dry_run_bodies(out)[0]
     # "Every project" is an empty projectIds list under the same owner, not a
     # different kind of scope: the verified shape has only these two keys.
-    assert body["scope"] == {"ownerId": OWNER, "projectIds": []}
+    assert body["scope"] == {"type": "owner", "ownerId": OWNER}
     assert PROJECT not in json.dumps(body)
 
 
@@ -1145,10 +1145,14 @@ def test_a_team_id_becomes_the_owner_for_both_scope_types(
     # separate team key: the 400 that revealed this shape named ownerId and
     # projectIds and nothing else. No lookup is needed either, which is why the
     # queued response is the query itself rather than a user lookup.
-    assert call["json"]["scope"] == {
-        "ownerId": "team_abc",
-        "projectIds": expected_project_ids,
-    }
+    expected_scope: dict[str, Any] = {"type": "owner", "ownerId": "team_abc"}
+    if expected_project_ids:
+        expected_scope = {
+            "type": "project",
+            "ownerId": "team_abc",
+            "projectIds": expected_project_ids,
+        }
+    assert call["json"]["scope"] == expected_scope
     assert len(session.calls) == 1
     # The query parameter rides along inert, so both channels agree.
     assert call["params"] == [(parameter, "team_abc")]
@@ -1162,7 +1166,7 @@ def test_a_run_with_no_team_carries_no_team_channel_at_all(cli: Cli) -> None:
     assert code == 0, err
     call = session.calls[0]
     assert call["params"] == []
-    assert call["json"]["scope"] == {"ownerId": OWNER, "projectIds": [PROJECT]}
+    assert call["json"]["scope"] == {"type": "project", "ownerId": OWNER, "projectIds": [PROJECT]}
 
 
 # ---------------------------------------------------------------------------
