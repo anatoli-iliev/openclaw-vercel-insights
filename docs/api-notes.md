@@ -389,9 +389,18 @@ Both keys are required. There is no `type` discriminator, no singular
 
 **The owner is the account that owns the project.** For a team owned project
 that is the team id, so a team is simply its own owner. For a personal project
-it is the user id, which nothing but the API knows, so this client reads it once
-from `GET /v2/user` per run unless `--owner-id` or `VERCEL_OWNER_ID` supplies it.
-That is why the operation allowlist carries a fourth, read-only entry.
+it is not knowable locally at all, so this client reads it once per run unless
+`--owner-id` or `VERCEL_OWNER_ID` supplies it. That is why the operation
+allowlist carries a fourth, read-only entry.
+
+**Where the owner is read from, and why not the obvious place.** The first
+attempt used `GET /v2/user`, which answered `404 User not found.` against a real
+token: a team scoped token has no personal user to return. The right source is
+the project's own record, `GET /v9/projects/{idOrName}`, whose `accountId` is a
+required top-level string. It answers the same way for a team owned and a
+personal project, and the token must already be able to read it, since it is the
+project being queried. `--all` has no single project to ask about, so it
+requires an explicit owner.
 
 A team **slug** is a name, not an account id, so it cannot fill `ownerId`. A slug
 given alone on this surface is refused rather than quietly falling back to the
