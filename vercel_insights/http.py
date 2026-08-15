@@ -55,6 +55,10 @@ OPERATIONS: dict[str, tuple[str, str]] = {
     "web_analytics": ("GET", BASE_URL + "/v1/query/web-analytics/{dataset}/{endpoint}"),
     "observability_query": ("POST", BASE_URL + "/v2/observability/query"),
     "observability_schema": ("GET", BASE_URL + "/v2/observability/schema"),
+    # Read-only, and needed because a Speed Insights scope requires an ownerId.
+    # For a team the team id IS the owner, so this is only consulted for a
+    # personal account, once per run, and only on the Speed Insights surface.
+    "user": ("GET", BASE_URL + "/v2/user"),
 }
 
 DEFAULT_TIMEOUT = 30.0

@@ -152,6 +152,23 @@ none of these ever reached a published version. Each was reproduced first.
   `https` as `h<redacted><redacted>ps`. Substring matching now requires a
   credential long enough to be one; the whole header value is still scrubbed
   regardless of length, so nothing is exposed.
+- **The Speed Insights `scope` was the wrong shape, confirmed against the live
+  API.** The OpenAPI document declares `scope` as a bare object, so the shape
+  was inferred, and the inference was wrong: a real query answered HTTP 400
+  naming `scope.ownerId` (a string) and `scope.projectIds` (an array) as the
+  required fields. There is no `type` discriminator and no team key. The scope
+  is now `{"ownerId": ..., "projectIds": [...]}`, a team is simply its own
+  owner, and a personal account id is read once per run from `GET /v2/user`,
+  which joins the operation allowlist as a fourth read-only entry. New
+  `--owner-id` / `VERCEL_OWNER_ID` skip that call.
+- **A team slug alone could have answered for the wrong account.** A slug names
+  a team but is not an account id, so it cannot fill `ownerId`; falling through
+  to the personal-account lookup would have returned confident numbers for the
+  wrong account. It is refused now, naming `--team` and `--owner-id` as the fix.
+  A slug still works for every Web Analytics preset.
+- A `--project` value that does not look like a project id now warns on the
+  Speed Insights surface, which scopes by `projectIds`. Web Analytics accepts a
+  project name there; this surface is likely to return nothing instead.
 - **A missing `requests` dumped a traceback as the tool's very first output.**
   The documented invocation is `python3 -m vercel_insights`, so anyone whose
   `python3` is a system interpreter without the dependency met a raw

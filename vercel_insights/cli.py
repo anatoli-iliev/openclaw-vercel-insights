@@ -22,7 +22,7 @@ import json
 import os
 import re
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, TextIO
@@ -41,8 +41,10 @@ from .http import (
     DEFAULT_MAX_RETRIES,
     DEFAULT_TIMEOUT,
     PreparedRequest,
+    default_headers,
     execute,
     format_dry_run,
+    operation_url,
     redact_headers,
     validate_timeout,
     validate_token,
@@ -76,6 +78,7 @@ from .speedinsights import (
     validate_aggregation,
     validate_metric,
     validate_percentile,
+    warn_if_not_project_id,
 )
 from .speedinsights import DATASET as SPEED_INSIGHTS_DATASET
 from .speedinsights import build_request as build_speed_request
@@ -143,6 +146,7 @@ environment:
   VERCEL_PROJECT_ID  project id or project name
   VERCEL_TEAM_ID     team id, for team owned projects
   VERCEL_TEAM_SLUG   team slug, an alternative to the team id
+  VERCEL_OWNER_ID    account id owning the project (Speed Insights scope)
   NO_COLOR           set to any value to disable colour
 
 exit codes:
@@ -198,6 +202,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--team-slug",
         metavar="SLUG",
         help="team slug instead of a team id; defaults to $VERCEL_TEAM_SLUG",
+    )
+    config.add_argument(
+        "--owner-id",
+        metavar="ID",
+        help=(
+            "account that owns the project, required by a Speed Insights scope; "
+            "defaults to $VERCEL_OWNER_ID, then to the team, then to the "
+            "personal account read from the API"
+        ),
     )
 
     shape = parser.add_argument_group("query shape")
@@ -449,6 +462,10 @@ class Settings:
     order_direction: str | None = None
     granularity: str | None = None
     bucket_timezone: str | None = None
+    #: Speed Insights only. A scope requires an ownerId, and for a team the
+    #: team id IS the owner. For a personal account it is read once from the
+    #: user endpoint at run time, because nothing else knows it.
+    owner_id: str | None = None
 
     @property
     def is_speed(self) -> bool:
@@ -782,6 +799,20 @@ def _resolve_settings(args: argparse.Namespace, env: Mapping[str, str]) -> Setti
 
     team = args.team or _env_value(env, "VERCEL_TEAM_ID")
     team_slug = args.team_slug or _env_value(env, "VERCEL_TEAM_SLUG")
+    # A team is its own owner, so a team id doubles as the ownerId a Speed
+    # Insights scope requires. Only a personal account needs the lookup.
+    owner_id = args.owner_id or _env_value(env, "VERCEL_OWNER_ID") or team
+    if preset.surface == SPEED_INSIGHTS and team_slug and not owner_id:
+        # A slug names a team but is not an account id, and scope.ownerId wants
+        # an id. Falling through to the personal account lookup here would
+        # silently answer for the wrong account rather than failing, which is
+        # the worst outcome available.
+        raise ConfigError(
+            f"--team-slug {team_slug!r} cannot scope a Speed Insights query on "
+            "its own: that surface needs the account id, and a slug is a name. "
+            "Pass --team with the team id (Team Settings, General), or "
+            "--owner-id. A slug still works for Web Analytics presets"
+        )
     if team and team_slug:
         raise ConfigError(
             f"--team ({team}) and --team-slug ({team_slug}) are mutually "
@@ -880,6 +911,13 @@ def _resolve_settings(args: argparse.Namespace, env: Mapping[str, str]) -> Setti
     if warning:
         warnings.append(warning)
 
+    if preset.surface == SPEED_INSIGHTS and not args.all_projects:
+        # This surface scopes by projectIds, so a project name is likely to come
+        # back empty rather than as an error, which is the worst kind of wrong.
+        id_warning = warn_if_not_project_id(project or None)
+        if id_warning:
+            warnings.append(id_warning)
+
     return Settings(
         preset=preset,
         dataset=dataset,
@@ -887,6 +925,7 @@ def _resolve_settings(args: argparse.Namespace, env: Mapping[str, str]) -> Setti
         token=token,
         team=team,
         team_slug=team_slug,
+        owner_id=owner_id,
         group_by=group_by,
         limit=limit,
         filter_expr=filter_expr,
@@ -921,9 +960,55 @@ def _plan_speed_requests(settings: Settings) -> list[PreparedRequest]:
         "bucket_timezone": settings.bucket_timezone,
         "team": settings.team,
         "team_slug": settings.team_slug,
+        "owner_id": settings.owner_id,
         "token": settings.token,
     }
     return [build_speed_request(metric=metric, **common) for metric in settings.metrics]
+
+
+#: Shown in a dry run when the owner is not known without asking the API. A dry
+#: run must send nothing, including the one GET that would resolve this.
+OWNER_PLACEHOLDER = "<read from /v2/user at run time>"
+
+
+def _fetch_owner_id(
+    session: Any,
+    settings: Settings,
+    max_retries: int,
+    on_retry: Callable[[str], None],
+) -> str:
+    """Read the personal account id, because a Speed Insights scope needs one.
+
+    Only reached when no team and no explicit owner were given: a team is its
+    own owner, so this costs nothing for team projects. One extra GET per run,
+    against an allowlisted read-only endpoint.
+
+    Raises:
+        ConfigError: When the response carries no id, with the flag to set
+            instead so the user is never stuck.
+    """
+    prepared = PreparedRequest(
+        operation="user",
+        url=operation_url("user"),
+        params=[],
+        headers=default_headers(settings.token),
+    )
+    payload = execute(
+        prepared,
+        session,
+        max_retries=max_retries,
+        timeout=settings.timeout,
+        on_retry=on_retry,
+    )
+    user = payload.get("user") if isinstance(payload.get("user"), Mapping) else payload
+    candidate = user.get("id") if isinstance(user, Mapping) else None
+    if isinstance(candidate, str) and candidate:
+        return candidate
+    raise ConfigError(
+        "could not read the account id from the API, and a Speed Insights "
+        "query needs one as scope.ownerId; pass --owner-id explicitly, or "
+        "set VERCEL_OWNER_ID"
+    )
 
 
 def _overview_granularity(settings: Settings) -> str:
@@ -1035,20 +1120,25 @@ def _run(
     for warning in settings.warnings:
         print(f"warning: {warning}", file=err)
 
-    requests_to_send = _plan_requests(settings)
+    needs_owner = settings.is_speed and not settings.owner_id
 
     if args.dry_run:
-        for index, prepared in enumerate(requests_to_send):
+        # A dry run sends nothing, including the GET that would resolve the
+        # owner, so the body shows a placeholder and says where it comes from.
+        if needs_owner:
+            settings.owner_id = OWNER_PLACEHOLDER
+        for index, prepared in enumerate(_plan_requests(settings)):
             if index:
                 print(file=out)
             print(format_dry_run(prepared), file=out)
+        if needs_owner:
+            print(
+                f"\nscope.ownerId shows {OWNER_PLACEHOLDER} because no --team "
+                "and no --owner-id were given. A real run reads it once from "
+                "GET /v2/user; pass --owner-id to skip that call.",
+                file=out,
+            )
         return 0
-
-    if args.verbose:
-        for prepared in requests_to_send:
-            print(f"verbose: {prepared.method} {prepared.url}", file=err)
-            print(f"verbose: params {prepared.params}", file=err)
-            print(f"verbose: headers {redact_headers(prepared.headers)}", file=err)
 
     def on_retry(reason: str) -> None:
         if args.verbose:
@@ -1057,6 +1147,21 @@ def _run(
     payloads: list[dict[str, Any]] = []
     session = requests.Session()
     try:
+        if needs_owner:
+            settings.owner_id = _fetch_owner_id(
+                session, settings, args.max_retries, on_retry
+            )
+            if args.verbose:
+                print("verbose: resolved scope.ownerId from /v2/user", file=err)
+
+        requests_to_send = _plan_requests(settings)
+
+        if args.verbose:
+            for prepared in requests_to_send:
+                print(f"verbose: {prepared.method} {prepared.url}", file=err)
+                print(f"verbose: params {prepared.params}", file=err)
+                print(f"verbose: headers {redact_headers(prepared.headers)}", file=err)
+
         for prepared in requests_to_send:
             payloads.append(
                 execute(

@@ -605,6 +605,7 @@ that still counts toward the total.
 | `--token TOKEN` | `VERCEL_TOKEN` | none | Required for real requests, not for `--dry-run`. |
 | `--project ID_OR_NAME` | `VERCEL_PROJECT_ID` | none | Project ID or project name. Required, except on a Speed Insights preset run with `--all`. |
 | `--team TEAM_ID` | `VERCEL_TEAM_ID` | none | Team-owned projects. Not with `--team-slug`. |
+| `--owner-id ID` | `VERCEL_OWNER_ID` | resolved | Account owning the project, required by a Speed Insights scope. A team is its own owner, so `--team` covers it; otherwise the personal account id is read once from the API. |
 | `--team-slug SLUG` | `VERCEL_TEAM_SLUG` | none | Sent as `slug`. Not with `--team`. |
 
 ### Query shape
