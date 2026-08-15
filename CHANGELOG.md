@@ -101,6 +101,20 @@ match, and the single script becomes a package.
   shape it found, never its content, when none of those fits. No `KeyError` ever
   reaches the user.
 
+### Added
+
+- **`--list-metrics`**, which asks the API which metrics an account can actually
+  query, optionally filtered by a prefix. Vercel documents the schema endpoint
+  as the source of truth for the metrics, dimensions and aggregations available
+  to an account, so this is what to reach for when a query is refused: it
+  answers "does this metric exist for me" outright instead of by inference. It
+  needs only a token, no project and no owner, so it works even when a query
+  cannot be built at all.
+- A top level JSON array is now accepted from the API. The schema endpoint
+  answers with one, while every query endpoint answers with an object, and a
+  query that returns an array is reported as an unusable response rather than
+  parsed.
+
 ### Fixed
 
 Found by two rounds of adversarial review before this version was released, so
