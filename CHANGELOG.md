@@ -53,6 +53,21 @@ match, and the single script becomes a package.
 
 ### Added
 
+- **`--budget NAME=VALUE`**, repeatable, which fails with exit code **3** when a
+  web vital exceeds the limit. The code is deliberately not 1: a blown budget is
+  a successful run reporting bad news, and a CI step usually wants to tell that
+  apart from the API being unreachable. A metric with no data does not fail,
+  because an empty window means the measurement is missing rather than the site
+  being slower, and failing on absent data trains people to ignore the check.
+  The boundary belongs to pass, matching how Vercel phrases its own targets
+  ("2.5 seconds or less"). A grouped query refuses a budget, since there is a
+  number per group rather than one to compare. Under `--json` or `--csv` the
+  report goes to stderr so machine output stays parseable.
+- `examples/github-action-budget.yml`, a copyable workflow. It is scheduled
+  rather than per-commit on purpose: real user measurements accumulate from
+  visitors and do not change the instant a deploy lands.
+
+
 - **`--list-projects`**, because one account holds many and every query names
   exactly one. It shows each project's name and `prj_` id alongside whether Web
   Analytics and Speed Insights hold data, told apart three ways: `data`

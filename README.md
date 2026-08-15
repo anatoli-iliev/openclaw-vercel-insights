@@ -581,6 +581,32 @@ Nothing was sent. No credential is printed above.
 The token is not in that body, and never is: it lives in the `Authorization`
 header and nowhere else, which is exactly why the body can be printed in full.
 
+## Guarding performance in CI
+
+`--budget` turns a measurement into a pass or a fail, so a regression can stop a
+build instead of being noticed later:
+
+```console
+$ vercel-insights vitals --since 7d --budget lcp=2500 --budget inp=200 --budget cls=0.1
+
+Budgets
+  pass    Largest Contentful Paint      2.4 s against 2.5 s
+  fail    Interaction to Next Paint    205 ms against 200 ms
+at least one budget was exceeded, so this run exits 3
+```
+
+Exit **3** means a budget was exceeded, which is deliberately not 1: a failing
+budget is a successful run reporting bad news, and a CI step usually wants to
+tell that apart from the API being down. A metric with no data does not fail,
+because an empty window means the measurement is missing rather than the site
+being slower.
+
+A ready-to-copy workflow is in
+[`examples/github-action-budget.yml`](examples/github-action-budget.yml). Note
+it is scheduled rather than run per commit: these are real user measurements,
+so they accumulate from visitors over time and do not change the moment a deploy
+lands.
+
 ## Presets
 
 `vercel-insights --list-presets` prints this table at any time. The preset is
