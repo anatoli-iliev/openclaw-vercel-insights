@@ -968,7 +968,7 @@ def _plan_speed_requests(settings: Settings) -> list[PreparedRequest]:
 
 #: Shown in a dry run when the owner is not known without asking the API. A dry
 #: run must send nothing, including the one GET that would resolve this.
-OWNER_PLACEHOLDER = "<read from /v2/user at run time>"
+OWNER_PLACEHOLDER = "<read from the project at run time>"
 
 
 def _fetch_owner_id(
@@ -977,20 +977,37 @@ def _fetch_owner_id(
     max_retries: int,
     on_retry: Callable[[str], None],
 ) -> str:
-    """Read the personal account id, because a Speed Insights scope needs one.
+    """Read the owning account id off the project, for scope.ownerId.
 
-    Only reached when no team and no explicit owner were given: a team is its
-    own owner, so this costs nothing for team projects. One extra GET per run,
-    against an allowlisted read-only endpoint.
+    Reached only when nothing else supplied an owner: an explicit --owner-id, a
+    team (a team is its own owner), or the environment. One extra GET per run.
+
+    The project's own record is the right place to ask. It carries ``accountId``
+    as a required field, it answers the same way whether the project is team
+    owned or personal, and the token must already be able to read it, since it
+    is the project being queried. The account endpoint was tried first and is
+    not equivalent: a team scoped token has no personal user to return, and it
+    answers 404 "User not found."
 
     Raises:
-        ConfigError: When the response carries no id, with the flag to set
-            instead so the user is never stuck.
+        ConfigError: When there is no project to ask about, or the response
+            carries no account id, naming the flag to set instead.
     """
+    if not settings.project:
+        raise ConfigError(
+            "--all needs an owner named explicitly, because there is no single "
+            "project to read one from; pass --owner-id, or --team (a team is "
+            "its own owner), or set VERCEL_OWNER_ID"
+        )
+    params: list[tuple[str, str]] = []
+    if settings.team:
+        params.append(("teamId", settings.team))
+    elif settings.team_slug:
+        params.append(("slug", settings.team_slug))
     prepared = PreparedRequest(
-        operation="user",
-        url=operation_url("user"),
-        params=[],
+        operation="project",
+        url=operation_url("project", project=settings.project),
+        params=params,
         headers=default_headers(settings.token),
     )
     payload = execute(
@@ -1000,14 +1017,13 @@ def _fetch_owner_id(
         timeout=settings.timeout,
         on_retry=on_retry,
     )
-    user = payload.get("user") if isinstance(payload.get("user"), Mapping) else payload
-    candidate = user.get("id") if isinstance(user, Mapping) else None
+    candidate = payload.get("accountId")
     if isinstance(candidate, str) and candidate:
         return candidate
     raise ConfigError(
-        "could not read the account id from the API, and a Speed Insights "
-        "query needs one as scope.ownerId; pass --owner-id explicitly, or "
-        "set VERCEL_OWNER_ID"
+        f"project {settings.project!r} came back without an accountId, so the "
+        "owner of a Speed Insights scope could not be determined; pass "
+        "--owner-id explicitly, or set VERCEL_OWNER_ID"
     )
 
 
@@ -1135,7 +1151,8 @@ def _run(
             print(
                 f"\nscope.ownerId shows {OWNER_PLACEHOLDER} because no --team "
                 "and no --owner-id were given. A real run reads it once from "
-                "GET /v2/user; pass --owner-id to skip that call.",
+                "the project's own record (its accountId); pass --owner-id to "
+                "skip that call.",
                 file=out,
             )
         return 0
@@ -1152,7 +1169,7 @@ def _run(
                 session, settings, args.max_retries, on_retry
             )
             if args.verbose:
-                print("verbose: resolved scope.ownerId from /v2/user", file=err)
+                print("verbose: resolved scope.ownerId from the project record", file=err)
 
         requests_to_send = _plan_requests(settings)
 

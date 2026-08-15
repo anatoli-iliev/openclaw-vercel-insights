@@ -159,8 +159,11 @@ none of these ever reached a published version. Each was reproduced first.
   required fields. There is no `type` discriminator and no team key. The scope
   is now `{"ownerId": ..., "projectIds": [...]}`, a team is simply its own
   owner, and a personal account id is read once per run from `GET /v2/user`,
-  which joins the operation allowlist as a fourth read-only entry. New
-  `--owner-id` / `VERCEL_OWNER_ID` skip that call.
+  read once per run from the project's own record (`GET /v9/projects/{idOrName}`,
+  whose `accountId` is the owner), which joins the operation allowlist as a
+  fourth read-only entry. New `--owner-id` / `VERCEL_OWNER_ID` skip that call.
+  The account endpoint was tried first and is not equivalent: a team scoped
+  token has no personal user, and it answers `404 User not found.`
 - **A team slug alone could have answered for the wrong account.** A slug names
   a team but is not an account id, so it cannot fill `ownerId`; falling through
   to the personal-account lookup would have returned confident numbers for the

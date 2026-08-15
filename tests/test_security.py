@@ -72,9 +72,9 @@ DOCUMENTED_OPERATIONS: dict[str, tuple[str, str]] = {
     ),
     "observability_query": ("POST", "https://api.vercel.com/v2/observability/query"),
     "observability_schema": ("GET", "https://api.vercel.com/v2/observability/schema"),
-    # Read-only. A Speed Insights scope requires an ownerId, and for a personal
-    # account nothing but the API knows it.
-    "user": ("GET", "https://api.vercel.com/v2/user"),
+    # Read-only. A Speed Insights scope requires an ownerId, and the project's
+    # own record carries it as accountId.
+    "project": ("GET", "https://api.vercel.com/v9/projects/{project}"),
 }
 
 
@@ -597,7 +597,7 @@ def test_the_read_endpoints_that_stay_gets_are_the_documented_ones() -> None:
     getting = sorted(
         operation for operation, (method, _url) in OPERATIONS.items() if method == "GET"
     )
-    assert getting == ["observability_schema", "user", "web_analytics"]
+    assert getting == ["observability_schema", "project", "web_analytics"]
 
 
 def test_a_speed_request_body_carries_the_query_and_never_the_token() -> None:

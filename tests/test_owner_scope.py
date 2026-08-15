@@ -25,7 +25,7 @@ from vercel_insights.cli import OWNER_PLACEHOLDER
 
 WINDOW = ["--since", "2026-08-07", "--until", "2026-08-14"]
 EMPTY = {"version": 1, "data": []}
-USER_PAYLOAD = {"user": {"id": "own_from_api", "username": "someone"}}
+PROJECT_PAYLOAD = {"id": PROJECT, "name": "demo", "accountId": "own_from_api"}
 
 
 def _bodies(out: str) -> list[dict[str, object]]:
@@ -92,10 +92,11 @@ def test_a_team_is_its_own_owner_and_needs_no_lookup(cli: Cli) -> None:
     assert session.calls[0]["json"]["scope"]["ownerId"] == "team_abc"
 
 
-def test_a_personal_account_owner_is_read_from_the_user_endpoint(cli: Cli) -> None:
-    # Two calls: the user lookup, then the query. The lookup is a GET against an
-    # allowlisted read-only endpoint.
-    session = FakeSession(FakeResponse(200, USER_PAYLOAD), FakeResponse(200, EMPTY))
+def test_an_unspecified_owner_is_read_off_the_project_record(cli: Cli) -> None:
+    # Two calls: the project lookup, then the query. The project record is the
+    # right source because it answers the same way for a team owned and a
+    # personal project, and the token must already be able to read it.
+    session = FakeSession(FakeResponse(200, PROJECT_PAYLOAD), FakeResponse(200, EMPTY))
     code, _out, err = cli.run(
         ["slowest-pages", "--project", PROJECT, *WINDOW],
         env={"VERCEL_TOKEN": TOKEN},
@@ -104,12 +105,12 @@ def test_a_personal_account_owner_is_read_from_the_user_endpoint(cli: Cli) -> No
     assert code == 0, err
     assert len(session.calls) == 2
     assert session.calls[0]["method"] == "GET"
-    assert session.calls[0]["url"].endswith("/v2/user")
+    assert session.calls[0]["url"].endswith(f"/v9/projects/{PROJECT}")
     assert session.calls[1]["json"]["scope"]["ownerId"] == "own_from_api"
 
 
-def test_a_user_response_without_an_id_fails_with_the_flag_to_set(cli: Cli) -> None:
-    session = FakeSession(FakeResponse(200, {"user": {"username": "someone"}}))
+def test_a_project_without_an_account_id_fails_with_the_flag_to_set(cli: Cli) -> None:
+    session = FakeSession(FakeResponse(200, {"id": PROJECT, "name": "demo"}))
     code, _out, err = cli.run(
         ["slowest-pages", "--project", PROJECT, *WINDOW],
         env={"VERCEL_TOKEN": TOKEN},
@@ -175,7 +176,7 @@ def test_a_dry_run_shows_a_placeholder_owner_and_explains_it(cli: Cli) -> None:
     assert isinstance(scope, dict)
     assert scope["ownerId"] == OWNER_PLACEHOLDER
     assert scope["projectIds"] == [PROJECT]
-    assert "/v2/user" in out
+    assert "accountId" in out or "project" in out
     assert "--owner-id" in out
 
 
