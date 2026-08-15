@@ -34,6 +34,11 @@ metadata:
       - name: VERCEL_TEAM_ID
         required: false
         description: Team ID for team-owned projects. Omit for personal accounts.
+      - name: VERCEL_ORG_ID
+        required: false
+        description: >-
+          Vercel's own name for the owning account, written by `vercel link`.
+          Read as the Speed Insights scope owner when VERCEL_OWNER_ID is unset.
       - name: VERCEL_OWNER_ID
         required: false
         description: >-
@@ -463,6 +468,16 @@ enabled on the project: Web Analytics and Speed Insights are separate
 per-project switches, and each only has data from the moment it was turned on.
 
 ## Gotchas worth knowing
+
+**A project scoped token cannot read Speed Insights.** Vercel's two APIs scope
+differently: Web Analytics takes a `projectId` and is project-level, while Speed
+Insights is served by the observability API and scopes by account. A token
+scoped to a single project therefore reads traffic fine and answers every Speed
+Insights preset with `404 Observability Data not found.` That message reads like
+"no data" but means "this token cannot ask". The tool says so when it happens.
+If a user hits it, tell them to create an account or team scoped token at
+<https://vercel.com/account/tokens>; `npx vercel@latest metrics schema` shows
+what the current one can reach.
 
 - `requestPath` is the literal URL path (`/blog/my-post`). `route` is the
   framework pattern (`/blog/[slug]`), which rolls many URLs into one row. Use

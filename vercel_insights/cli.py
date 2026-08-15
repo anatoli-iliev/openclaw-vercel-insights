@@ -83,6 +83,7 @@ from .speedinsights import (
     warn_if_not_project_id,
 )
 from .speedinsights import DATASET as SPEED_INSIGHTS_DATASET
+from .speedinsights import OPERATION as OBSERVABILITY_QUERY
 from .speedinsights import build_request as build_speed_request
 from .speedinsights import normalize as normalize_speed
 from .speedinsights import validate_group_by as validate_speed_group_by
@@ -814,7 +815,16 @@ def _resolve_settings(args: argparse.Namespace, env: Mapping[str, str]) -> Setti
     team_slug = args.team_slug or _env_value(env, "VERCEL_TEAM_SLUG")
     # A team is its own owner, so a team id doubles as the ownerId a Speed
     # Insights scope requires. Only a personal account needs the lookup.
-    owner_id = args.owner_id or _env_value(env, "VERCEL_OWNER_ID") or team
+    # VERCEL_ORG_ID is Vercel's own name for the owning account, set by `vercel
+    # link` and used across their tooling, so it is read before falling back to
+    # the team. VERCEL_OWNER_ID is accepted too because it names what the API
+    # field is actually called.
+    owner_id = (
+        args.owner_id
+        or _env_value(env, "VERCEL_OWNER_ID")
+        or _env_value(env, "VERCEL_ORG_ID")
+        or team
+    )
     if preset.surface == SPEED_INSIGHTS and team_slug and not owner_id:
         # A slug names a team but is not an account id, and scope.ownerId wants
         # an id. Falling through to the personal account lookup here would
@@ -984,6 +994,40 @@ def _plan_speed_requests(settings: Settings) -> list[PreparedRequest]:
 OWNER_PLACEHOLDER = "<read from the project at run time>"
 
 
+#: Appended to a 404 from the observability API. That surface scopes by account
+#: (``scope.ownerId``), so a token bound to a single project has no account to
+#: resolve and is refused. Web Analytics takes a ``projectId`` instead, which is
+#: why a project scoped token can read traffic but not web vitals, and why the
+#: bare API message is so misleading here.
+OBSERVABILITY_SCOPE_HINT = (
+    "This usually means the access token is scoped to a single project. "
+    "Speed Insights is served by Vercel's observability API, which scopes by "
+    "account rather than by project, so it needs a token with account (or "
+    "team) scope. Web Analytics presets keep working with a project scoped "
+    "token. Create an account scoped token at "
+    "https://vercel.com/account/tokens, or confirm the scope of the current "
+    "one with: npx vercel@latest metrics schema"
+)
+
+
+def _explain_observability_404(exc: ApiError) -> ApiError:
+    """Turn a bare observability 404 into something a user can act on.
+
+    Vercel answers ``404 Observability Data not found.`` when a credential
+    cannot reach that surface at all, which reads as "your project has no data"
+    when it usually means "this token cannot ask". The distinction costs real
+    debugging time, so it is spelled out rather than left to the API's wording.
+    """
+    if exc.status != 404:
+        return exc
+    return ApiError(
+        exc.status,
+        exc.code,
+        f"{exc.message}\n{OBSERVABILITY_SCOPE_HINT}",
+        attempts=exc.attempts,
+    )
+
+
 def _run_list_metrics(
     args: argparse.Namespace,
     env: Mapping[str, str],
@@ -1029,6 +1073,8 @@ def _run_list_metrics(
             timeout=validate_timeout(args.timeout),
             on_retry=on_retry,
         )
+    except ApiError as exc:
+        raise _explain_observability_404(exc) from None
     finally:
         session.close()
 
@@ -1260,13 +1306,18 @@ def _run(
                 print(f"verbose: headers {redact_headers(prepared.headers)}", file=err)
 
         for prepared in requests_to_send:
-            answer = execute(
-                prepared,
-                session,
-                max_retries=args.max_retries,
-                timeout=settings.timeout,
-                on_retry=on_retry,
-            )
+            try:
+                answer = execute(
+                    prepared,
+                    session,
+                    max_retries=args.max_retries,
+                    timeout=settings.timeout,
+                    on_retry=on_retry,
+                )
+            except ApiError as exc:
+                if prepared.operation == OBSERVABILITY_QUERY:
+                    raise _explain_observability_404(exc) from None
+                raise
             if not isinstance(answer, Mapping):
                 # Only the schema endpoint answers with a top level array; a
                 # query that does is a response this client cannot interpret.

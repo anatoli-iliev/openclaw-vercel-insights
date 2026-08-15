@@ -530,6 +530,35 @@ the `*_count` metrics matter: a P75 over a handful of data points is not
 comparable to one over thousands, and grouped queries default to ordering by
 count for exactly that reason.
 
+## Token scope: the two APIs scope differently
+
+VERIFIED against the live API on 2026-08-15, by comparing the same account under
+two credentials.
+
+| API | Scoped by | Project scoped token |
+| --- | --- | --- |
+| Web Analytics `/v1/query/web-analytics/...` | `projectId` query parameter | **200** |
+| Observability `/v2/observability/*` | `scope.ownerId` in the body | **404** |
+
+A token bound to a single project has no account context, and the observability
+API is account-level, so Vercel answers `404 Observability Data not found.` The
+same account with an account-scoped credential returns 96 metrics from
+`/v2/observability/schema`, Speed Insights among them, which is what isolates
+this to credential scope rather than entitlement or missing data.
+
+Three things this rules out, each of which looked plausible on the way:
+
+- **Not Observability Plus.** The docs' exemption for Speed Insights holds.
+- **Not a disabled feature.** The project reported `speedInsights.hasData: true`.
+- **Not the request shape.** The query endpoint validated the body first, and
+  only then answered 404.
+
+Note also that `/v2/user` answers `404 User not found.` for a project scoped
+token, which is why the owner is read from the project record instead. Vercel's
+own CLI hits the same wall, and prefers `VERCEL_TOKEN` over its own OAuth
+session, so `vercel whoami` fails the same way when that variable is set. That
+is worth knowing before concluding anything from a CLI comparison.
+
 ## Plan access
 
 Speed Insights metrics are available through this query surface **without**
