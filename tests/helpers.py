@@ -38,8 +38,18 @@ SPEED_QUERY_URL = "https://api.vercel.com/v2/observability/query"
 
 TOKEN = "vercel-token-that-must-never-be-printed"
 PROJECT = "prj_demo"
-BASE_ENV = {"VERCEL_TOKEN": TOKEN, "VERCEL_PROJECT_ID": PROJECT}
-DRY_RUN_ENV = {"VERCEL_PROJECT_ID": PROJECT}
+#: A Speed Insights scope requires an ownerId. Supplying it here keeps the CLI
+#: tests to the one request under test: without it a personal-account run spends
+#: its first request resolving the owner from /v2/user, which every queued fake
+#: response would then be off by one against.
+OWNER = "own_demo"
+
+BASE_ENV = {
+    "VERCEL_TOKEN": TOKEN,
+    "VERCEL_PROJECT_ID": PROJECT,
+    "VERCEL_OWNER_ID": OWNER,
+}
+DRY_RUN_ENV = {"VERCEL_PROJECT_ID": PROJECT, "VERCEL_OWNER_ID": OWNER}
 
 NOW = datetime(2026, 8, 14, 12, 30, 45, tzinfo=timezone.utc)
 
@@ -206,6 +216,7 @@ def speed_request(**overrides: Any) -> PreparedRequest:
     kwargs: dict[str, Any] = {
         "metric": validate_metric("lcp"),
         "project": PROJECT,
+        "owner_id": OWNER,
         "since": utc(2026, 8, 7),
         "until": utc(2026, 8, 14),
         "token": TOKEN,
