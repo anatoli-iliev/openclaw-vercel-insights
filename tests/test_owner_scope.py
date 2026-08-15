@@ -188,7 +188,11 @@ def test_a_dry_run_with_a_known_owner_prints_no_placeholder_note(cli: Cli) -> No
     )
     assert code == 0, err
     assert OWNER_PLACEHOLDER not in out
-    assert _bodies(out)[0]["scope"] == {"ownerId": "own_x", "projectIds": [PROJECT]}
+    assert _bodies(out)[0]["scope"] == {
+        "type": "project",
+        "ownerId": "own_x",
+        "projectIds": [PROJECT],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -227,13 +231,16 @@ def test_a_real_project_id_warns_about_nothing(cli: Cli) -> None:
 @pytest.mark.parametrize(
     ("selection", "expected"),
     [
-        (["--project", PROJECT], [PROJECT]),
-        (["--all"], []),
+        (
+            ["--project", PROJECT],
+            {"type": "project", "ownerId": "own_x", "projectIds": [PROJECT]},
+        ),
+        (["--all"], {"type": "owner", "ownerId": "own_x"}),
     ],
     ids=["one-project", "all-projects"],
 )
-def test_the_scope_has_exactly_the_two_verified_keys(
-    cli: Cli, selection: list[str], expected: list[str]
+def test_the_scope_is_a_union_discriminated_on_type(
+    cli: Cli, selection: list[str], expected: dict[str, object]
 ) -> None:
     code, out, err = cli.run(
         ["vitals-by-country", *selection, "--owner-id", "own_x", *WINDOW, "--dry-run"],
@@ -241,5 +248,7 @@ def test_the_scope_has_exactly_the_two_verified_keys(
         session=None,
     )
     assert code == 0, err
-    scope = _bodies(out)[0]["scope"]
-    assert scope == {"ownerId": "own_x", "projectIds": expected}
+    # Two live 400s pinned this: the first named ownerId and projectIds as
+    # required, the second refused a body with no "type" as having no matching
+    # discriminator. Both halves are needed.
+    assert _bodies(out)[0]["scope"] == expected
