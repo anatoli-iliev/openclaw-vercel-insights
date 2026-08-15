@@ -56,9 +56,12 @@ OPERATIONS: dict[str, tuple[str, str]] = {
     "observability_query": ("POST", BASE_URL + "/v2/observability/query"),
     "observability_schema": ("GET", BASE_URL + "/v2/observability/schema"),
     # Read-only, and needed because a Speed Insights scope requires an ownerId.
-    # For a team the team id IS the owner, so this is only consulted for a
-    # personal account, once per run, and only on the Speed Insights surface.
-    "user": ("GET", BASE_URL + "/v2/user"),
+    # The project's own record carries it as accountId, which is a better
+    # source than the account endpoint: it works for a team owned and a
+    # personal project alike, and it reads a resource the token must already be
+    # able to see, since that is the project being queried. Consulted at most
+    # once per run, and only on the Speed Insights surface.
+    "project": ("GET", BASE_URL + "/v9/projects/{project}"),
 }
 
 DEFAULT_TIMEOUT = 30.0
