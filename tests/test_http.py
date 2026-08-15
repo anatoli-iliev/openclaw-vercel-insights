@@ -646,14 +646,28 @@ def test_an_unexpected_request_exception_is_not_retried() -> None:
     assert sleeps.delays == []
 
 
-def test_a_valid_json_body_that_is_not_an_object_is_a_clean_error() -> None:
-    session = FakeSession(FakeResponse(200, text="[1, 2, 3]"))
+@pytest.mark.parametrize("body", ['"a string"', "42", "true", "null"], ids=str)
+def test_a_json_body_that_is_neither_object_nor_array_is_a_clean_error(
+    body: str,
+) -> None:
+    # An object or an array is accepted at this layer: query endpoints answer
+    # with an object and the schema endpoint answers with a top level array.
+    # Anything else is not a response this client has a use for.
+    session = FakeSession(FakeResponse(200, text=body))
     with pytest.raises(ApiError) as excinfo:
         vi_http.execute(
             prepared(), session, sleep=Recorder(), jitter=no_jitter, max_retries=0
         )
     assert excinfo.value.code == "invalid_response"
-    assert "not a JSON object" in str(excinfo.value)
+    assert "not a JSON object or array" in str(excinfo.value)
+
+
+def test_a_top_level_array_is_accepted_because_the_schema_endpoint_returns_one() -> None:
+    session = FakeSession(FakeResponse(200, text='[{"id": "a"}]'))
+    answer = vi_http.execute(
+        prepared(), session, sleep=Recorder(), jitter=no_jitter, max_retries=0
+    )
+    assert answer == [{"id": "a"}]
 
 
 def test_an_empty_response_body_is_a_clean_error() -> None:

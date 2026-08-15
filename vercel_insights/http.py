@@ -575,8 +575,13 @@ def _reject_non_finite(value: Any) -> None:
             _reject_non_finite(item)
 
 
-def _parse_body(text: str) -> dict[str, Any] | None:
-    """Parse a response body, returning ``None`` when it is not a JSON object.
+def _parse_body(text: str) -> dict[str, Any] | list[Any] | None:
+    """Parse a response body, returning ``None`` when it is not JSON we accept.
+
+    A JSON object or a JSON array is accepted: the schema endpoint answers with
+    a top level array, while every query endpoint answers with an object, and
+    both are legitimate. Anything else, a bare string or number for instance, is
+    not a response this client has any use for.
 
     ``None`` also covers a body that is syntactically JSON but carries a
     non-standard literal or a non-finite number; see
@@ -589,7 +594,7 @@ def _parse_body(text: str) -> dict[str, Any] | None:
         _reject_non_finite(parsed)
     except ValueError:
         return None
-    if isinstance(parsed, dict):
+    if isinstance(parsed, (dict, list)):
         return parsed
     return None
 
@@ -682,7 +687,7 @@ def execute(
     *,
     now: Callable[[], float] = time.time,
     on_retry: Callable[[str], None] | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | list[Any]:
     """Perform the request, retrying only what is safe to retry.
 
     This is the one and only dispatcher, and the only place in the package
@@ -761,6 +766,9 @@ def execute(
         status = int(response.status_code)
         text = str(response.text)
         body = _parse_body(text)
+        # Only an object can carry an error envelope or a rate limit block;
+        # a top level array (the schema endpoint) carries neither.
+        envelope = body if isinstance(body, Mapping) else None
 
         if 300 <= status < 400:
             raise _redirect_error(status, response, request, safe, attempt + 1)
@@ -771,9 +779,9 @@ def execute(
                     status,
                     "invalid_response",
                     safe(
-                        "the response was not a JSON object (a body carrying "
-                        "NaN, Infinity or -Infinity is refused here too: none "
-                        "of the three is JSON)"
+                        "the response was not a JSON object or array (a body "
+                        "carrying NaN, Infinity or -Infinity is refused here "
+                        "too: none of the three is JSON)"
                     ),
                     attempts=attempt + 1,
                 )
@@ -781,7 +789,7 @@ def execute(
 
         if _is_retryable(status) and not is_last:
             delay = _delay_with_jitter(
-                retry_delay(attempt, response, body, now()), jitter
+                retry_delay(attempt, response, envelope, now()), jitter
             )
             if on_retry:
                 on_retry(f"HTTP {status}; retrying in {delay:.2f}s")
@@ -790,7 +798,7 @@ def execute(
 
         raise _api_error(
             status,
-            body,
+            envelope,
             text,
             attempt + 1 if not is_last else attempts,
             safe,

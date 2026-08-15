@@ -1317,9 +1317,11 @@ def test_a_keyboard_interrupt_between_two_vitals_queries_still_exits_one_thirty(
 @pytest.mark.parametrize(
     ("body", "fragment"),
     [
-        ("<html>gateway timeout</html>", "not a JSON object"),
-        ("", "not a JSON object"),
-        ("[1, 2, 3]", "not a JSON object"),
+        ("<html>gateway timeout</html>", "not a JSON object or array"),
+        ("", "not a JSON object or array"),
+        # A top level array parses, since the schema endpoint answers with one,
+        # but a query response has to be an object carrying "data".
+        ("[1, 2, 3]", "returned a JSON array"),
         ('{"version": 1, "data": {"value": NaN}}', "NaN"),
     ],
     ids=["html", "empty", "json-array", "nan"],
