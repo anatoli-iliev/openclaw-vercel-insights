@@ -421,6 +421,70 @@ their `projectId` parameter as "the project identifier or the project name", but
 this field asks for ids, and a name is likely to return an empty result rather
 than an error, so a value that does not look like `prj_...` is warned about.
 
+### The response body: VERIFIED
+
+A successful query returns:
+
+```json
+{
+  "query": { ... echo of the interpreted query ... },
+  "data":    [ {"timestamp": "...", "<rollup key>": 3868}, ... ],
+  "summary": [ {"<rollup key>": 2908} ],
+  "orderBy": "<rollup key>",
+  "orderDirection": "desc",
+  "queryId": "1048351860",
+  "statistics": {"bytesRead": 2452137, "rowsRead": 50284, "dbTimeSeconds": 0.067}
+}
+```
+
+**The rollup key is computable**, not something to probe for: it is the metric
+id with dots replaced by underscores, then the aggregation. So
+`vercel.speed_insights.lcp_ms` at `p75` is `vercel_speed_insights_lcp_ms_p75`,
+and that key names the value in both `data` rows and `summary`.
+
+**`summary` is the window aggregate and the only correct ungrouped answer.** It
+cannot be derived from `data`: a percentile does not average, so the P75 of 168
+hourly P75s is not the P75 of the week. On a real project the first bucket read
+6708 ms while the true window figure was 2908 ms, which is the difference
+between "over target" by a lot and "over target" by a little.
+
+An ungrouped query still comes back as a time series, because the server picks a
+granularity when none is given (hourly over a week). `summaryOnly: true` in the
+request is **ignored**: it appears in the echoed query as `false` regardless, so
+it is an output field rather than an input.
+
+### Granularity: VERIFIED
+
+The earlier `{"interval": "1d"}` was refused outright:
+
+> Granularity `{"interval":"1d"}` is not valid. It must divide a day evenly or
+> be a single week, month or year.
+
+The real shape is a unit and a count. Confirmed by live probes over a 7 day
+range:
+
+| Sent | Result |
+| --- | --- |
+| nothing | 168 rows, server echoes `{"hours": 1}` |
+| `{"hours": 1}` | 168 rows |
+| `{"hours": 24}` | 7 rows |
+| `{"days": 1}` | 7 rows |
+| `{"weeks": 1}` | refused, but on a **plan** limit, not a shape error |
+
+This client sends `{"hours": 1}`, `{"days": 1}`, `{"weeks": 1}`,
+`{"months": 1}` and `{"years": 1}`.
+
+### Plan limits on this surface differ from Web Analytics
+
+A live Hobby account answered:
+
+> Invalid request: the hobby plan only grants access to the latest 7 days of
+> data.
+
+So observability on Hobby is **7 days**, not the 1 month Web Analytics allows.
+The reporting-window warning in this client is calibrated to the Web Analytics
+figures and will not catch this.
+
 ### Still not pinned down
 
 Two things remain inferred, both marked ASSUMPTION in the code:

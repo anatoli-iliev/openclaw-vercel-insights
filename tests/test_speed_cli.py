@@ -152,7 +152,7 @@ PRESET_BODIES: list[tuple[str, list[str], list[dict[str, Any]]]] = [
                 "metric": LCP_ID,
                 "scope": SCOPE,
                 "aggregation": "p75",
-                "granularity": {"interval": "1d"},
+                "granularity": {"days": 1},
                 "startTime": START,
                 "endTime": END,
             }
@@ -196,7 +196,7 @@ PRESET_BODIES: list[tuple[str, list[str], list[dict[str, Any]]]] = [
                 "metric": INP_ID,
                 "scope": SCOPE,
                 "aggregation": "p75",
-                "granularity": {"interval": "1mo"},
+                "granularity": {"months": 1},
                 "startTime": START,
                 "endTime": END,
             }
@@ -482,16 +482,23 @@ def test_normalize_granularity_refuses_a_spelling_neither_surface_knows() -> Non
 
 @pytest.mark.parametrize(
     ("value", "interval"),
-    [("hour", "1h"), ("1h", "1h"), ("day", "1d"), ("1d", "1d"), ("month", "1mo"), ("1mo", "1mo")],
+    [
+        ("hour", {"hours": 1}),
+        ("1h", {"hours": 1}),
+        ("day", {"days": 1}),
+        ("1d", {"days": 1}),
+        ("month", {"months": 1}),
+        ("1mo", {"months": 1}),
+    ],
 )
-def test_either_vocabulary_reaches_the_speed_body_as_the_interval(
-    cli: Cli, value: str, interval: str
+def test_either_vocabulary_reaches_the_speed_body_as_a_granularity_object(
+    cli: Cli, value: str, interval: dict[str, int]
 ) -> None:
     code, out, err = cli.run(
         ["vitals-trend", "--granularity", value, "--dry-run"], env=dict(DRY_RUN_ENV)
     )
     assert code == 0, err
-    assert dry_run_bodies(out)[0]["granularity"] == {"interval": interval}
+    assert dry_run_bodies(out)[0]["granularity"] == interval
 
 
 @pytest.mark.parametrize(("value", "expected"), [("1h", "hour"), ("1d", "day"), ("1mo", "month")])

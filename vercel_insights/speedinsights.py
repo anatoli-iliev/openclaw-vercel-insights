@@ -645,16 +645,85 @@ def warn_if_not_project_id(project: str | None) -> str | None:
     )
 
 
+#: The ``granularity`` object, VERIFIED against the live API. The earlier guess
+#: of ``{"interval": "1d"}`` was refused outright:
+#:
+#:     Granularity '{"interval":"1d"}' is not valid. It must divide a day
+#:     evenly or be a single week, month or year.
+#:
+#: A unit and a count is the real shape. ``{"hours": 24}`` and ``{"days": 1}``
+#: were both accepted and both returned 7 buckets over a 7 day range, and the
+#: server echoes its own default as ``{"hours": 1}``.
+GRANULARITY_OBJECTS: dict[str, dict[str, int]] = {
+    "1h": {"hours": 1},
+    "1d": {"days": 1},
+    "1w": {"weeks": 1},
+    "1mo": {"months": 1},
+    "1y": {"years": 1},
+}
+
+
 def build_granularity(interval: str) -> dict[str, Any]:
     """Build the ``granularity`` object for a query body.
 
-    ASSUMPTION. The OpenAPI document declares ``granularity`` as a bare object
-    too. The values ``1h``, ``1d`` and ``1mo`` are documented verbatim by the
-    CLI; the key they sit under is not, and ``interval`` is this client's best
-    reading of it. Omitting granularity entirely, which is what every preset
-    but the trend does, makes the server choose a bucket size for the range.
+    Omitting granularity entirely makes the server choose a bucket size, which
+    is what every preset but the trend does. Note that the server's choice is
+    hourly for a week-long range, so an ungrouped query is a time series unless
+    something asks otherwise: see :func:`summary_value`.
+
+    Raises:
+        ConfigError: On an interval this surface has no object for.
     """
-    return {"interval": interval}
+    granularity = GRANULARITY_OBJECTS.get(interval)
+    if granularity is None:
+        raise ConfigError(
+            f"granularity {interval!r} has no Speed Insights equivalent; this "
+            f"surface accepts {', '.join(sorted(GRANULARITY_OBJECTS))}"
+        )
+    return dict(granularity)
+
+
+def rollup_key(metric: Metric, aggregation: str) -> str:
+    """The column name the API uses for one metric under one aggregation.
+
+    VERIFIED: a response for ``vercel.speed_insights.lcp_ms`` at ``p75`` keys
+    both its rows and its summary by ``vercel_speed_insights_lcp_ms_p75``. The
+    rule is the metric id with dots replaced by underscores, then the
+    aggregation. Computing it beats probing a row for a lone number, which is
+    what this client did before and which cannot tell two numbers apart.
+    """
+    return f"{metric.id.replace('.', '_')}_{aggregation.replace('/', '_')}"
+
+
+def summary_value(payload: Any, metric: Metric, aggregation: str) -> float | None:
+    """The window-level aggregate, which is the only correct ungrouped answer.
+
+    VERIFIED: alongside ``data`` the response carries
+    ``summary: [{"<rollup key>": <number>}]``, and that is the aggregate over
+    the whole requested range.
+
+    This matters more than it looks. A percentile does not average: the P75 of
+    168 hourly P75s is not the P75 of the week. Before this existed the vitals
+    preset showed the first bucket, which on one real project read 6.7 seconds
+    where the true window figure was 2.9 seconds, on the wrong side of the
+    published target. Reading the server's own summary is the only honest way
+    to produce a single number here.
+    """
+    if not isinstance(payload, Mapping):
+        return None
+    summary = payload.get("summary")
+    if isinstance(summary, Mapping):
+        summary = [summary]
+    if not isinstance(summary, list) or not summary:
+        return None
+    first = summary[0]
+    if not isinstance(first, Mapping):
+        return None
+    value = first.get(rollup_key(metric, aggregation))
+    if _is_number(value):
+        return float(value)
+    numbers = [v for v in first.values() if _is_number(v)]
+    return float(numbers[0]) if len(numbers) == 1 else None
 
 
 def build_request(
@@ -854,8 +923,17 @@ def _lookup(entry: Mapping[str, Any], names: Sequence[str]) -> tuple[str, float]
 
 
 def _value_keys(metric: Metric, aggregation: str) -> tuple[str, ...]:
-    """Every key the value of one row might sit under, most specific first."""
+    """Every key the value of one row might sit under, most specific first.
+
+    The rollup key leads because it is the one the API actually uses and it can
+    be computed rather than guessed: a response for ``vercel.speed_insights.lcp_ms``
+    at ``p75`` keys its rows and its summary by
+    ``vercel_speed_insights_lcp_ms_p75``. Everything after it is a fallback for
+    a shape this client has not seen, and the last resort refuses to choose
+    between two numbers rather than guessing.
+    """
     return (
+        rollup_key(metric, aggregation),
         metric.id,
         metric.id.split(".")[-1],
         aggregation,
@@ -1148,6 +1226,29 @@ def normalize(
         raise ApiError(status, "invalid_response", _shape_error(_describe(root)))
 
     value_column = metric.column(aggregation)
+
+    # The window aggregate, when the response carries one. This is what an
+    # ungrouped query is really asking for, and it is not derivable from the
+    # rows: a percentile does not average, so the P75 of 168 hourly P75s is not
+    # the P75 of the week. Without this the first bucket was shown as though it
+    # were the window, which on a real project read 6.7 seconds where the true
+    # figure was 2.9 seconds.
+    # Only when nothing asked for a time series. vitals-trend passes a
+    # granularity precisely because it wants the buckets, and collapsing those
+    # into one number would defeat the preset.
+    window_value = summary_value(payload, metric, aggregation)
+    if window_value is not None and not dimensions and granularity is None:
+        summary_row = Row(metrics={value_column: window_value})
+        counts = [
+            row.metrics[DATA_POINTS_METRIC]
+            for row in rows
+            if DATA_POINTS_METRIC in row.metrics
+        ]
+        if counts:
+            # Data points do add up, unlike the value they support.
+            summary_row.metrics[DATA_POINTS_METRIC] = float(sum(counts))
+        rows = [summary_row]
+        dimensions = []
     metric_names = [value_column]
     if any(DATA_POINTS_METRIC in row.metrics for row in rows):
         metric_names.append(DATA_POINTS_METRIC)
