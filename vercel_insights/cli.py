@@ -37,6 +37,7 @@ from . import (
     ConfigError,
     RateLimitError,
 )
+from .budgets import BUDGET_EXCEEDED, any_failed, evaluate, parse_budgets
 from .http import (
     DEFAULT_MAX_RETRIES,
     DEFAULT_TIMEOUT,
@@ -71,6 +72,7 @@ from .render import (
     format_csv,
     format_json,
     format_table,
+    format_value,
     render_overview,
     render_vitals,
 )
@@ -216,6 +218,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--team-slug",
         metavar="SLUG",
         help="team slug instead of a team id; defaults to $VERCEL_TEAM_SLUG",
+    )
+    config.add_argument(
+        "--budget",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        help=(
+            "fail with exit code 3 when a web vital exceeds VALUE, for example "
+            "--budget lcp=2500 or --budget cls=0.1; repeatable, and intended "
+            "for CI. A metric with no data does not fail"
+        ),
     )
     config.add_argument(
         "--list-projects",
@@ -1495,10 +1508,72 @@ def _run(
         session.close()
 
     if settings.is_speed:
-        return _emit_speed(settings, args, payloads, style, out)
+        return _emit_speed(settings, args, payloads, style, out, err)
     if settings.preset.name == "overview":
         return _emit_overview(settings, args, payloads, style, out)
     return _emit_single(settings, args, payloads[0], style, out)
+
+
+def _measured(
+    results: Sequence[Result], metrics: Sequence[Metric], aggregation: str
+) -> dict[str, float | None]:
+    """The single value measured for each metric, keyed by its short name."""
+    measured: dict[str, float | None] = {}
+    for result, metric in zip(results, metrics):
+        column = metric.column(aggregation)
+        value: float | None = None
+        for row in result.rows:
+            if column in row.metrics:
+                value = row.metrics[column]
+                break
+        measured[metric.short] = value
+    return measured
+
+
+def _emit_budgets(
+    settings: Settings,
+    args: argparse.Namespace,
+    results: Sequence[Result],
+    style: Style,
+    out: TextIO,
+    err: TextIO,
+) -> int:
+    """Report each budget and return the exit code the run should use.
+
+    The report goes to stderr whenever the real output is machine readable, so
+    a ``--json`` run stays parseable while a human still sees why the build
+    failed.
+    """
+    if not args.budget:
+        return 0
+    if settings.group_by:
+        raise ConfigError(
+            "--budget compares one number against a limit, but this query is "
+            "grouped, so there is a number per group. Drop --group-by, or use "
+            "the vitals preset"
+        )
+    budgets = parse_budgets(args.budget, VITAL_ORDER)
+    outcomes = evaluate(budgets, _measured(results, settings.metrics, settings.aggregation))
+
+    stream = err if (args.json or args.csv) else out
+    print(file=stream)
+    print(style.bold("Budgets"), file=stream)
+    for budget, value, verdict in outcomes:
+        metric = metric_for(budget.metric)
+        shown = format_value(value, metric.unit) if value is not None else "no data"
+        limit = format_value(budget.limit, metric.unit)
+        print(
+            f"  {verdict:<7} {metric.label:<26} {shown:>8} against {limit}",
+            file=stream,
+        )
+    if any_failed(outcomes):
+        print(
+            "at least one budget was exceeded, so this run exits "
+            f"{BUDGET_EXCEEDED}",
+            file=stream,
+        )
+        return BUDGET_EXCEEDED
+    return 0
 
 
 def _emit_speed(
@@ -1507,6 +1582,7 @@ def _emit_speed(
     payloads: Sequence[dict[str, Any]],
     style: Style,
     out: TextIO,
+    err: TextIO,
 ) -> int:
     """Render one Speed Insights result, or compose five into the vitals table."""
     results = [
@@ -1538,10 +1614,10 @@ def _emit_speed(
                 },
             }
             print(json.dumps(document, indent=2), file=out)
-            return 0
+            return _emit_budgets(settings, args, results, style, out, err)
         if all(_is_empty(result) for result in results):
             print(_empty_message(settings, settings.group_by), file=out)
-            return 0
+            return _emit_budgets(settings, args, results, style, out, err)
         print(
             render_vitals(
                 results,
@@ -1553,20 +1629,20 @@ def _emit_speed(
             ),
             file=out,
         )
-        return 0
+        return _emit_budgets(settings, args, results, style, out, err)
 
     result = results[0]
     if args.json:
         print(
             format_json(result, payloads[0], time_range=settings.time_range), file=out
         )
-        return 0
+        return _emit_budgets(settings, args, results, style, out, err)
     if args.csv:
         print(format_csv(result), end="", file=out)
-        return 0
+        return _emit_budgets(settings, args, results, style, out, err)
     if _is_empty(result):
         print(_empty_message(settings, settings.group_by), file=out)
-        return 0
+        return _emit_budgets(settings, args, results, style, out, err)
 
     title = (
         f"Vercel Speed Insights: {settings.project_label} "
@@ -1583,7 +1659,7 @@ def _emit_speed(
         ),
         file=out,
     )
-    return 0
+    return _emit_budgets(settings, args, results, style, out, err)
 
 
 def _emit_single(
