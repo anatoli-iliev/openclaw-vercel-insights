@@ -117,6 +117,25 @@ match, and the single script becomes a package.
 
 ### Fixed
 
+- **The `vitals` headline number was the first time bucket, not the window.**
+  An ungrouped query comes back as a time series because the server picks a
+  granularity when none is given, and this client showed row zero as though it
+  were the aggregate. On a real project that read 6.7 seconds where the true
+  P75 for the week was 2.9. The response carries a `summary` block holding the
+  window aggregate, and that is now what an ungrouped result reports. It cannot
+  be computed locally: a percentile does not average, so the P75 of 168 hourly
+  P75s is not the P75 of the week. A requested granularity still returns its
+  buckets, so `vitals-trend` is unaffected.
+- **`--granularity` never worked on Speed Insights.** The object was sent as
+  `{"interval": "1d"}`, which the API refuses: a granularity "must divide a day
+  evenly or be a single week, month or year". The real shape is a unit and a
+  count, verified live: `{"hours": 1}`, `{"days": 1}`, `{"weeks": 1}`,
+  `{"months": 1}`, `{"years": 1}`.
+- Row values are read from the computed rollup key (the metric id with dots as
+  underscores, then the aggregation) rather than by probing for a lone number.
+  That is deterministic, and it lets a row carrying both a value and a data
+  point count be read at all, which the previous ambiguity guard refused.
+
 - **A project scoped token now says why Speed Insights is unavailable.** Vercel
   answers `404 Observability Data not found.` when a credential cannot reach the
   observability API at all, which reads as "your project has no data" and sends

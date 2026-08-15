@@ -510,18 +510,32 @@ def test_a_fully_specified_body_carries_every_field_in_its_documented_spelling()
         "limit": 25,
         "orderBy": "value",
         "orderDirection": "asc",
-        "granularity": {"interval": "1d"},
+        "granularity": {"days": 1},
         "startTime": "2026-08-07T00:00:00Z",
         "endTime": "2026-08-14T00:00:00Z",
         "bucketTimezone": "Europe/Paris",
     }
 
 
-@pytest.mark.parametrize(("interval", "expected"), [("1h", "1h"), ("1d", "1d"), ("1mo", "1mo")])
-def test_granularity_travels_as_an_interval_object(interval: str, expected: str) -> None:
+@pytest.mark.parametrize(
+    ("interval", "expected"),
+    [
+        ("1h", {"hours": 1}),
+        ("1d", {"days": 1}),
+        ("1w", {"weeks": 1}),
+        ("1mo", {"months": 1}),
+        ("1y", {"years": 1}),
+    ],
+)
+def test_granularity_travels_as_a_unit_and_count_object(
+    interval: str, expected: dict[str, int]
+) -> None:
+    # VERIFIED: {"interval": "1d"} was refused outright by the API, which said
+    # a granularity "must divide a day evenly or be a single week, month or
+    # year". A unit and a count is the real shape.
     body = build(granularity=interval).json_body
     assert body is not None
-    assert body["granularity"] == {"interval": expected}
+    assert body["granularity"] == expected
 
 
 def test_the_token_reaches_the_authorization_header_and_never_the_body() -> None:
