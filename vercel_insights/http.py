@@ -46,6 +46,7 @@ from . import (
     ConfigError,
     RateLimitError,
     sanitize_label,
+    sanitize_message,
 )
 
 #: Every operation this client can perform, and nothing else. The key is what
@@ -612,7 +613,9 @@ def _api_error(
     # The message is quoted verbatim from the response, so it is remote input:
     # an error body carrying an ANSI escape could blank the screen and forge a
     # convincing second line ("error: everything fine") under our own prefix.
-    message_text = sanitize_label(scrub(message_text))
+    # Newlines survive, indented, because these bodies are often pretty-printed
+    # JSON and escaping them makes the one thing worth reading unreadable.
+    message_text = sanitize_message(scrub(message_text))
     if status == 429 or code_text == "rate_limited":
         limit = _error_field(body, "limit")
         return RateLimitError(

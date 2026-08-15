@@ -469,33 +469,33 @@ def build_scope(
 ) -> dict[str, Any]:
     """Build the ``scope`` object for a query body.
 
-    VERIFIED against the live API on 2026-08-15. The OpenAPI document declares
-    ``scope`` as a bare object with no inner schema, so the shape was originally
-    inferred and the inference was wrong. A request carrying the guessed
-    ``{"type": "project", "projectId": ...}`` was answered with HTTP 400 naming
-    both real fields:
+    VERIFIED against the live API, in two steps, because the OpenAPI document
+    declares ``scope`` as a bare object with no inner schema and each attempt
+    revealed one more half of the answer.
+
+    Sending ``{"type": "project", "projectId": ...}`` was answered with:
 
     .. code-block:: json
 
-        [{"expected": "string", "code": "invalid_type",
-          "path": ["scope", "ownerId"],
-          "message": "Invalid input: expected string, received undefined"},
-         {"expected": "array", "code": "invalid_type",
-          "path": ["scope", "projectIds"],
-          "message": "Invalid input: expected array, received undefined"}]
+        [{"path": ["scope", "ownerId"],    "message": "expected string, received undefined"},
+         {"path": ["scope", "projectIds"], "message": "expected array, received undefined"}]
 
-    So the scope is ``{"ownerId": <string>, "projectIds": [<string>, ...]}`` and
-    both keys are required. There is no ``type`` discriminator, no ``projectId``
-    singular, and no team key: the owner **is** the team for a team owned
-    project, and the personal account otherwise.
+    Dropping ``type`` and sending ``{"ownerId": ..., "projectIds": [...]}`` was
+    then answered with:
 
-    ``projectIds`` is a list of project **ids**. A project name works in the Web
-    Analytics ``projectId`` query parameter but is not known to work here, so
-    :func:`warn_if_not_project_id` flags a value that does not look like one.
+    .. code-block:: json
 
-    ``all_projects`` sends an empty list, on the reading that naming no project
-    scopes the query to every project the owner has. That part is not yet
-    confirmed by a live call.
+        [{"code": "invalid_union", "note": "No matching discriminator",
+          "discriminator": "type", "path": ["scope", "type"]}]
+
+    Put together: ``scope`` is a union discriminated on ``type``, and the
+    ``project`` variant carries **both** ``ownerId`` and ``projectIds``. The
+    first response is what confirms ``project`` is a real discriminator value,
+    since a request carrying it got past the union and was judged on its fields.
+
+    ``owner`` is used for ``--all`` on the reading that a whole-owner scope
+    names no projects. That value is not yet confirmed by a live call, and is
+    the one remaining guess in this function.
 
     Raises:
         ConfigError: When neither a project nor ``--all`` was supplied, or when
@@ -505,21 +505,19 @@ def build_scope(
         raise ConfigError(
             "no owner configured for a Speed Insights query; pass --owner-id, "
             "set VERCEL_OWNER_ID, or pass --team (a team is its own owner). "
-            "Without a team this client reads the personal account id from "
-            "the API, so a token that cannot read the account needs --owner-id "
-            "given explicitly"
+            "Without one this client reads the owning account from the "
+            "project's own record, so a token that cannot read the project "
+            "needs --owner-id given explicitly"
         )
     if all_projects:
-        project_ids: list[str] = []
-    elif not project:
+        return {"type": "owner", "ownerId": owner_id}
+    if not project:
         raise ConfigError(
             "no project configured; pass --project with a project id, "
             "set VERCEL_PROJECT_ID in the environment, or pass --all to query "
             "every project the owner has"
         )
-    else:
-        project_ids = [project]
-    return {"ownerId": owner_id, "projectIds": project_ids}
+    return {"type": "project", "ownerId": owner_id, "projectIds": [project]}
 
 
 def warn_if_not_project_id(project: str | None) -> str | None:

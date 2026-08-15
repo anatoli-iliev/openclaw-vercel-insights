@@ -157,7 +157,10 @@ none of these ever reached a published version. Each was reproduced first.
   was inferred, and the inference was wrong: a real query answered HTTP 400
   naming `scope.ownerId` (a string) and `scope.projectIds` (an array) as the
   required fields. There is no `type` discriminator and no team key. The scope
-  is now `{"ownerId": ..., "projectIds": [...]}`, a team is simply its own
+  is now `{"type": "project", "ownerId": ..., "projectIds": [...]}`: a union
+  discriminated on `type` whose project variant carries both fields, which took
+  two 400s to pin down because the OpenAPI document describes none of it. A team
+  is simply its own
   owner, and a personal account id is read once per run from `GET /v2/user`,
   read once per run from the project's own record (`GET /v9/projects/{idOrName}`,
   whose `accountId` is the owner), which joins the operation allowlist as a
@@ -169,6 +172,11 @@ none of these ever reached a published version. Each was reproduced first.
   to the personal-account lookup would have returned confident numbers for the
   wrong account. It is refused now, naming `--team` and `--owner-id` as the fix.
   A slug still works for every Web Analytics preset.
+- Multi-line API error bodies keep their line structure instead of being
+  flattened into `\x0a` escapes. These bodies are usually pretty-printed JSON,
+  and escaping the newlines made the one thing worth reading unreadable. Lines
+  after the first are indented, so a server supplied string still cannot reach
+  column zero and forge a line that looks like this tool's own output.
 - A `--project` value that does not look like a project id now warns on the
   Speed Insights surface, which scopes by `projectIds`. Web Analytics accepts a
   project name there; this surface is likely to return nothing instead.
