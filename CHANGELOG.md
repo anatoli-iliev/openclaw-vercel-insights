@@ -117,6 +117,19 @@ match, and the single script becomes a package.
 
 ### Fixed
 
+- **A project scoped token now says why Speed Insights is unavailable.** Vercel
+  answers `404 Observability Data not found.` when a credential cannot reach the
+  observability API at all, which reads as "your project has no data" and sends
+  the reader looking in the wrong place entirely. Web Analytics scopes by
+  project and works with such a token; Speed Insights scopes by account and does
+  not. The tool now explains that, names the fix, and says which presets still
+  work. Only a 404 from the observability surface is annotated: a 403 is a
+  different problem with a different answer.
+- `VERCEL_ORG_ID` is read as the Speed Insights scope owner. It is Vercel's own
+  name for the owning account and `vercel link` writes it, so a standard setup
+  often supplies the owner already. `VERCEL_OWNER_ID` and `--owner-id` still
+  take precedence.
+
 Found by two rounds of adversarial review before this version was released, so
 none of these ever reached a published version. Each was reproduced first.
 

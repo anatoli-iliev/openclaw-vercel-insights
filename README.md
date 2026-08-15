@@ -90,13 +90,27 @@ Python 3.10 or newer. `requests` is the only thing outside the standard library.
 <https://vercel.com/account/tokens>. Read scope is enough; this tool never
 writes. Copy it, Vercel shows it once.
 
+> **Scope it to the account or team, not to a single project**, if you want
+> Speed Insights. Vercel's two APIs scope differently, and a project scoped
+> token silently reaches only one of them:
+>
+> | Preset family | API | Project scoped token |
+> | --- | --- | --- |
+> | Web Analytics (`overview`, `top-pages`, `events`, ...) | scoped by `projectId` | works |
+> | Speed Insights (`vitals`, `slowest-pages`, ...) | scoped by account | `404 Observability Data not found.` |
+>
+> That 404 reads like "your project has no data" but means "this token cannot
+> ask". To see what the current token can reach:
+> `npx vercel@latest metrics schema`
+
 **2. Make sure the feature you want is enabled** on the project. Web Analytics
 and Speed Insights are two separate per-project switches, each with its own
 package in the app: `@vercel/analytics`
 (<https://vercel.com/docs/analytics/quickstart>) and `@vercel/speed-insights`
 (<https://vercel.com/docs/speed-insights/quickstart>). Data only exists from the
 moment each one is turned on. Speed Insights does **not** need Observability
-Plus: its metrics are readable on the query surface without it.
+Plus: its metrics are readable on the query surface without it. It does need a
+token that is not scoped to a single project; see the note in step 1.
 
 **3. Find the project ID.** Vercel dashboard, pick the project, Settings, then
 General: the field is "Project ID" and looks like `prj_XXXXXXXXXXXXXXXX`. The
@@ -108,6 +122,7 @@ project *name* works just as well anywhere the ID does.
 export VERCEL_TOKEN="vercel_tok_xxxxxxxxxxxxxxxxxxxxxxxx"
 export VERCEL_PROJECT_ID="prj_XXXXXXXXXXXXXXXX"
 # export VERCEL_TEAM_ID="team_XXXXXXXXXXXXXXXX"   # team-owned projects only
+# export VERCEL_ORG_ID="team_XXXXXXXXXXXXXXXX"    # written by `vercel link`; read as the owner
 ```
 
 Copy `.env.example` if you prefer keeping them in a file; the two team
