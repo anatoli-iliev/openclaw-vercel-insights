@@ -29,6 +29,16 @@
 /docs/cli-contract.md           @anatoli-iliev
 
 # ---------------------------------------------------------------------------
+# Instructions users paste into a shell
+# ---------------------------------------------------------------------------
+# The setup sections of these two files are copy-paste blocks, including a
+# chmod and a pip install. A change here runs on a reader's machine as surely
+# as a change to the code does, and it is read by people who are trusting the
+# instructions precisely because they cannot audit them.
+/README.md                      @anatoli-iliev
+/docs/openclaw-setup.md         @anatoli-iliev
+
+# ---------------------------------------------------------------------------
 # Release and supply chain
 # ---------------------------------------------------------------------------
 # CI runs with no secrets and must stay that way. pyproject declares the single

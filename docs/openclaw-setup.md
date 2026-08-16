@@ -9,6 +9,22 @@ enough. This page is for running it as a skill an agent can call.
 
 ## The short version
 
+From ClawHub, which is the shortest route:
+
+```bash
+clawhub install vercel-insights
+
+SKILL=~/.openclaw/workspace/skills/vercel-insights
+chmod +x "$SKILL/bin/vercel-insights"                       # exec bit is not preserved
+python3 -m venv "$SKILL/.venv" && "$SKILL/.venv/bin/python" -m pip install requests
+
+openclaw config set skills.entries.vercel-insights.apiKey YOUR_TOKEN
+openclaw config set skills.entries.vercel-insights.env.VERCEL_TEAM_ID team_...   # team projects only
+openclaw skills check
+```
+
+From a local checkout, which preserves the exec bit and so needs no `chmod`:
+
 ```bash
 git clone https://github.com/anatoli-iliev/openclaw-vercel-insights.git
 openclaw skills install ./openclaw-vercel-insights --as vercel-insights
@@ -19,6 +35,12 @@ openclaw skills check
 
 The rest of this page explains each step, and what to do when one of them does
 not behave.
+
+> **Both blockers above were found by installing the published skill and running
+> it**, not by reading the code. A ClawHub install arrives with
+> `bin/vercel-insights` at mode 644 rather than 755, so it fails with
+> `Permission denied`; and `requests` is not present on most system
+> interpreters. Neither shows up when testing from a source checkout.
 
 ---
 
@@ -214,6 +236,7 @@ Every row here is a failure hit during real setup, not a hypothetical.
 | `404 User not found.` | Same cause, seen through a different endpoint. A project scoped token has no account context. | As above |
 | `openclaw skills check` says "needs setup" | `VERCEL_TOKEN` has not resolved | Step 4. Remember the gateway may not see your shell's exports |
 | `error: 'requests' is not importable by this interpreter` | The interpreter running the skill lacks the dependency. The message names which one it tried. | Step 3 |
+| `Permission denied` running `bin/vercel-insights` | A ClawHub install does not preserve the executable bit, so the launcher arrives at mode 644 | `chmod +x ~/.openclaw/workspace/skills/vercel-insights/bin/vercel-insights` |
 | `Permission denied: .../\.venv/bin/activate.csh` | A `.venv` was copied in by the install and is read-only | It probably already works. Test it before rebuilding, per step 3 |
 | `openclaw configure --section skills` prompts for nothing | It reports status; it does not prompt | Use step 4 |
 | `403` or `404` on a traffic preset | Often a team owned project queried without its team | Step 5. The error says this when no team is configured |
