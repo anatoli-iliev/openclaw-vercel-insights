@@ -60,6 +60,16 @@ declares them as bare objects; each is marked VERIFIED in `docs/api-notes.md`.
 
 ### Added
 
+- **`bin/vercel-insights`**, a launcher that works from any working directory.
+  `python3 -m vercel_insights` needs the caller's working directory to be the
+  skill root and `requests` importable by the first `python3` on `PATH`, and
+  neither holds when an agent invokes the skill from its own workspace. The
+  launcher resolves its own location, following symlinks, prefers a virtualenv
+  sitting beside the skill, and hands off to the entry point. `SKILL.md` now
+  documents it as the way to run this when the skill is installed rather than
+  checked out.
+
+
 - **Any observability metric is queryable by id**, not only the five web vitals:
   `--metric vercel.function_invocation.count` and the other ninety-odd the API
   serves. Naming a metric selects the right surface on its own, so no unrelated
