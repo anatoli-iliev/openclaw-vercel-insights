@@ -59,6 +59,7 @@ command to see the exact request without sending it, no token required.
 | Query something other than traffic and vitals | [Beyond web vitals](#beyond-web-vitals) |
 | Understand what this can and cannot reach | [Plans, windows and what is out of reach](#plans-windows-and-what-is-out-of-reach) |
 | Check the security posture | [Security and permissions](#security-and-permissions) |
+| Set it up as an OpenClaw skill | [docs/openclaw-setup.md](docs/openclaw-setup.md) |
 
 ## Why not just open the dashboard
 
@@ -128,6 +129,9 @@ openclaw skills check          # confirms the requirement resolved
 
 The Control UI does the same thing under Skills, vercel-insights, Save key, and
 `openclaw skills info vercel-insights` prints both routes.
+
+Full walkthrough, including every failure worth recognising and how to tell them
+apart: **[docs/openclaw-setup.md](docs/openclaw-setup.md)**.
 
 The gateway runs as its own process, so a variable exported in an interactive
 shell may not reach it. `openclaw configure` writes it where the gateway reads
