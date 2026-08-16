@@ -307,6 +307,22 @@ none of these ever reached a published version. Each was reproduced first.
 
 ### Documentation
 
+- `SKILL.md` opens with the flow an agent actually follows: check configuration,
+  identify the project, then run and read back. It says when to prefer `--json`
+  (only when a figure has to be computed rather than relayed), what each exit
+  code means for what to tell the user, and that an empty result is a success to
+  be reported as "no data" rather than a failure. It also says outright never to
+  state a number that was not measured, which is the most damaging thing an
+  agent could do with this tool.
+- The decision table covers project discovery, budgets, the metric listing and
+  arbitrary metrics, none of which it previously mentioned.
+- The endpoint allowlist in `SKILL.md` listed three of five entries, because a
+  find-and-replace corrected the sentence above it and left the table alone.
+  Corrected, and now pinned by tests that compare the documented operations,
+  their methods and the declared environment variables against the code, in both
+  directions.
+
+
 - `SKILL.md` describes both surfaces and when to use each, extends the
   phrasing-to-command decision table with performance questions, states the
   read-only guarantee in its allowlist form with the POST explained, and covers

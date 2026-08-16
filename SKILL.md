@@ -66,6 +66,49 @@ Insights) from one command line: page views, visitors, top pages and routes,
 referrers, countries, devices, browsers, UTM campaigns, custom events, and the
 five Core Web Vitals against Vercel's published targets.
 
+## How to answer a question with this
+
+Three steps, in order. Most questions only need the third.
+
+**1. Is it configured?** `VERCEL_TOKEN` is required. If it is missing, say so and
+point at <https://vercel.com/account/tokens>, and tell the user to scope the
+token to the **account or team**, not to a single project, or Speed Insights
+will not work for them. Do not guess a token or ask them to paste one into the
+conversation.
+
+**2. Which project?** One account holds many, and every query names exactly one.
+If the user did not name one and `VERCEL_PROJECT_ID` is unset, or they named it
+loosely ("the blog", "our marketing site"), run:
+
+```bash
+python3 -m vercel_insights --list-projects
+```
+
+Match their words against the names, then pass the name or the `prj_` id to
+`--project`. If several could match, ask rather than picking. That listing also
+shows whether each project has traffic and speed data at all.
+
+**3. Run the preset and read the answer back.** Use the decision table below.
+The table output is already formatted for a person, so quote it rather than
+re-typesetting it, then add the one sentence of interpretation the numbers
+support.
+
+**When to add `--json`.** Prefer the table when you are relaying an answer. Add
+`--json` when you need to *compute* something the table does not state: compare
+two runs, rank across a dimension the preset did not group by, or pull a single
+figure into a sentence. Do not show raw JSON to a user who asked a plain
+question.
+
+**What the exit code means.** `0` succeeded, and an empty result is a success:
+say "no data in that window", not "it failed". `1` the API returned an error,
+and the message is Vercel's own, so quote it. `2` the command was wrong, and the
+message names the fix, so apply it and retry rather than reporting it verbatim.
+`3` only from `--budget`: the query worked and a threshold was exceeded.
+
+**Never invent a number.** If a query comes back empty, or a metric is missing,
+say so. The most damaging failure available here is a confidently worded figure
+that was not measured.
+
 ## Two surfaces, one command
 
 These are two different Vercel APIs with different vocabularies, and the preset
@@ -97,13 +140,15 @@ before any request is built, with a message naming the preset to use instead.
 
 **Read-only against a five-endpoint allowlist.** One module-level table in
 `vercel_insights/http.py` maps an operation key to a fixed method and URL, and
-it has exactly three entries:
+it has exactly five entries:
 
 | Operation | Method | Endpoint |
 | --- | --- | --- |
 | `web_analytics` | GET | `/v1/query/web-analytics/{dataset}/{endpoint}` |
 | `observability_query` | POST | `/v2/observability/query` |
 | `observability_schema` | GET | `/v2/observability/schema` |
+| `project` | GET | `/v9/projects/{project}` |
+| `projects` | GET | `/v10/projects` |
 
 The dispatcher takes an operation key, never a method and never a host, so no
 user input can select, extend or override an entry. There are exactly two HTTP
@@ -165,6 +210,7 @@ Traffic questions:
 | "how many signups", "custom events", "conversions" | `python3 -m vercel_insights events --since 30d` |
 | "which campaign drove signups" | `python3 -m vercel_insights events --event-name signup --since 30d --group-by utmCampaign` |
 | "how many visitors in total", "unique visitors for the month" | `python3 -m vercel_insights total --since 30d` |
+| "which projects do I have", "what can you see", "is analytics even on" | `python3 -m vercel_insights --list-projects` |
 | "how did /pricing do" | `python3 -m vercel_insights trend --path /pricing --since 30d` |
 
 Performance questions:
@@ -175,6 +221,7 @@ Performance questions:
 | "what is my LCP", "what is my CLS", "is my CLS bad", "how is my INP" | `python3 -m vercel_insights vitals` and read that row against its target |
 | "which pages are slowest", "what is dragging the site down", "worst routes" | `python3 -m vercel_insights slowest-pages --since 30d` |
 | "which pages are fastest", "what is already fine" | `python3 -m vercel_insights fastest-pages --since 30d` |
+| "fail the build if it gets slower", "set a performance budget", "check against a threshold" | `python3 -m vercel_insights vitals --budget lcp=2500 --budget cls=0.1` (exit 3 when exceeded) |
 | "did my performance regress", "is it getting worse", "LCP over time", "since the last deploy" | `python3 -m vercel_insights vitals-trend --since 30d --granularity 1d` |
 | "why is it slow on mobile", "mobile vs desktop speed" | `python3 -m vercel_insights vitals-by-device --since 30d` |
 | "is it slow abroad", "speed by country", "how is it in India" | `python3 -m vercel_insights vitals-by-country --since 30d` |
@@ -193,6 +240,17 @@ Applies to both:
 | "give me a CSV", "put it in a spreadsheet" | add `--csv` (not available on `overview` or `vitals`) |
 | "give me JSON", "pipe it to jq" | add `--json` |
 | "what would that request look like" | add `--dry-run` |
+
+Anything else on the account:
+
+| The user says | Run |
+| --- | --- |
+| "what else can you measure", "what metrics are available" | `python3 -m vercel_insights --list-metrics` |
+| "how many function invocations", "edge requests", "cache hit rate", "firewall blocks" | `python3 -m vercel_insights --metric <id from --list-metrics> --aggregation sum` |
+
+Those last ones need the Observability Plus add-on; Web Analytics and Speed
+Insights do not. Without it they return an error no flag can fix, so say that
+rather than retrying.
 
 ## Presets
 
@@ -268,20 +326,19 @@ five answers into one table:
 
 ```console
 $ python3 -m vercel_insights vitals
-Vercel Speed Insights: prj_demo
-Range: 2026-08-07T09:00:00Z to 2026-08-14T09:00:00Z (UTC)
+Vercel Speed Insights: prj_9RkQm2vT7xLpN4dWbYcF3sJz
+Range: 2026-08-09T05:33:49Z to 2026-08-16T05:33:49Z (UTC)
 
-metric                        p75  target  verdict       data points
--------------------------  ------  ------  ------------  -----------
-Largest Contentful Paint    2.4 s   2.5 s  meets target       18,204
-Interaction to Next Paint  176 ms  200 ms  meets target       12,110
-Cumulative Layout Shift     0.072   0.100  meets target       18,204
-First Contentful Paint      1.2 s   1.8 s  meets target       18,204
-Time to First Byte         918 ms  800 ms  over target        18,204
+metric                        p75  target  verdict
+-------------------------  ------  ------  ------------
+Largest Contentful Paint    2.9 s   2.5 s  over target
+Interaction to Next Paint  184 ms  200 ms  meets target
+Cumulative Layout Shift     0.128   0.100  over target
+First Contentful Paint      1.6 s   1.8 s  meets target
+Time to First Byte         412 ms  800 ms  meets target
 
 Lower is better for all five metrics.
 The target is Vercel's published 'good' threshold, so the verdict is two tier: meets target or over target.
-A percentile over few data points is not comparable to one over many, so read the value next to its data point count.
 Real Experience Score is not queryable through this API; read it on the Speed Insights dashboard.
 ```
 
