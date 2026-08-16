@@ -61,8 +61,35 @@ five Core Web Vitals against Vercel's published targets.
 Only `VERCEL_TOKEN` is required. Everything else is discoverable: without a
 project configured this skill lists the account's projects and asks which one.
 
-Configure it in `~/.openclaw/openclaw.json` under `skills.entries`, so the
-credential lives with the skill rather than in a shell profile:
+**Get the token at <https://vercel.com/account/tokens>, scoped to the account or
+team rather than to a single project.** A project scoped token reads traffic but
+not speed: Vercel serves Speed Insights from an account scoped API, and the
+symptom is `404 Observability Data not found.`, which reads like "no data" but
+means "this token cannot ask".
+
+### The easy way
+
+```bash
+openclaw configure --section skills
+```
+
+That prompts for the credential and writes it for you. This skill declares
+`primaryEnv: VERCEL_TOKEN`, which is what maps the prompted key onto
+`skills.entries.vercel-insights.apiKey`, so no hand editing is needed.
+
+### Without storing the secret in the config file
+
+`apiKey` also accepts a reference, so the token can stay in the environment or a
+secrets provider:
+
+```bash
+openclaw config set skills.entries.vercel-insights.apiKey \
+  --ref-provider default --ref-source env --ref-id VERCEL_TOKEN
+```
+
+### By hand
+
+`~/.openclaw/openclaw.json`, under `skills.entries`:
 
 ```json
 {
@@ -81,16 +108,19 @@ credential lives with the skill rather than in a shell profile:
 }
 ```
 
-`apiKey` supplies `VERCEL_TOKEN`, because that is this skill's `primaryEnv`. The
-`env` map is optional and takes `"${SOME_VAR}"` to read from the environment
-instead of storing a value. `openclaw skills check` reports what is still
-missing.
+The `env` map is optional and takes `"${SOME_VAR}"` to read from the environment
+instead of storing a value.
 
-**Get the token at <https://vercel.com/account/tokens>, scoped to the account or
-team rather than to a single project.** A project scoped token reads traffic but
-not speed: Vercel serves Speed Insights from an account scoped API, and the
-symptom is `404 Observability Data not found.`, which reads like "no data" but
-means "this token cannot ask".
+### Checking it worked
+
+```bash
+openclaw skills check
+```
+
+The skill moves out of "Missing requirements" once the token resolves. Note that
+the gateway runs as its own process, so exporting a variable in an interactive
+shell may not reach it: configuring it through `openclaw configure` or the
+config file is the reliable route.
 
 Set `VERCEL_TEAM_ID` if the project belongs to a team. It is also the account
 that owns it, which saves a lookup on every speed query.
