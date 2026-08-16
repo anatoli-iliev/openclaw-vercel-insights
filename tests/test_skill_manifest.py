@@ -80,3 +80,29 @@ def test_the_declared_version_matches_the_package() -> None:
     from vercel_insights import VERSION
 
     assert re.search(rf"^version:\s*{re.escape(VERSION)}\s*$", FRONTMATTER, re.M)
+
+
+def test_the_launcher_is_executable_and_documented() -> None:
+    # An agent invoking this skill has its own working directory and no reason
+    # to change it, so the entry point it is told to use must not depend on one.
+    launcher = SKILL.parent / "bin" / "vercel-insights"
+    assert launcher.exists(), "the documented launcher is missing"
+    assert launcher.stat().st_mode & 0o111, "the launcher is not executable"
+    assert "bin/vercel-insights" in TEXT
+
+
+def test_the_launcher_runs_from_an_unrelated_directory() -> None:
+    import subprocess
+
+    from vercel_insights import VERSION
+
+    launcher = SKILL.parent / "bin" / "vercel-insights"
+    result = subprocess.run(
+        [str(launcher), "--version"],
+        capture_output=True,
+        text=True,
+        cwd="/",
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert VERSION in result.stdout

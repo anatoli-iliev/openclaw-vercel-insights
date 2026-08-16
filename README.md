@@ -98,6 +98,17 @@ looking at it.
 The quick start above is the whole of it for most people. This section covers
 the parts that vary.
 
+### Running it from anywhere
+
+`bin/vercel-insights` works from any directory and prefers a `.venv` beside the
+checkout, so an installed copy needs no `PATH` or working-directory setup:
+
+```bash
+/path/to/openclaw-vercel-insights/bin/vercel-insights vitals
+```
+
+`python3 -m vercel_insights` is equivalent from inside the checkout.
+
 ### Installing
 
 From ClawHub:

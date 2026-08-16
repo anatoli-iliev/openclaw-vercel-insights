@@ -179,9 +179,25 @@ body, a log line, an error message, or any output this skill prints.
 
 ## Running it
 
+Use the launcher at the skill's own directory. It works from any working
+directory and picks an interpreter that can import `requests`, so neither the
+caller's location nor its `PATH` has to be right:
+
 ```bash
-python3 -m vercel_insights [PRESET] [OPTIONS]
+<skill-dir>/bin/vercel-insights [PRESET] [OPTIONS]
 ```
+
+`<skill-dir>` is wherever this skill is installed. From inside a checkout,
+`python3 -m vercel_insights` is equivalent and shorter, but it needs the working
+directory to be the skill root and `requests` importable by the first `python3`
+on `PATH`, which is why the launcher exists. Every example below writes
+`python3 -m vercel_insights` for readability; substitute the launcher path when
+running from elsewhere.
+
+If neither interpreter can import `requests`, the tool says so and names the one
+it tried, rather than failing with an import traceback. The fix is a virtualenv
+beside the skill: `python3 -m venv .venv && .venv/bin/python -m pip install
+requests`, which the launcher then prefers automatically.
 
 With no arguments at all it runs the `overview` preset for the last 7 days.
 
