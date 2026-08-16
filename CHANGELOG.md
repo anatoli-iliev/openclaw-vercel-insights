@@ -13,6 +13,13 @@ Speed Insights arrives, and with it the project's scope grows from traffic to
 traffic and speed. The skill, the repository and the module are renamed to
 match, and the single script becomes a package.
 
+In summary: Core Web Vitals with published targets, a project listing so the
+right project is easy to find, performance budgets that can fail a build, any
+Vercel observability metric queryable by id, and a metric listing that asks the
+API what an account can actually reach. Several request and response shapes were
+corrected against the live API along the way, since the OpenAPI document
+declares them as bare objects; each is marked VERIFIED in `docs/api-notes.md`.
+
 ### Changed
 
 - **Renamed.** The skill is now `vercel-insights` (was `vercel-analytics`), the
