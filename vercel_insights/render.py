@@ -76,8 +76,14 @@ VITALS_LEGEND: tuple[str, ...] = (
     "Lower is better for all five metrics.",
     "The target is Vercel's published 'good' threshold, so the verdict is two "
     "tier: meets target or over target.",
+)
+
+#: Printed only when a data point count is actually shown. Explaining a column
+#: that is not on screen sends the reader looking for something that is not
+#: there, so this is appended rather than always included.
+DATA_POINTS_NOTE = (
     "A percentile over few data points is not comparable to one over many, so "
-    "read the value next to its data point count.",
+    "read the value next to its data point count."
 )
 
 
@@ -497,7 +503,11 @@ def _vitals_notes(result: Result, style: Style) -> list[str]:
                     f"Target: {format_value(result.target, result.unit)} or less"
                 )
             )
-    legend = DATA_POINTS_LEGEND if result.unit == UNIT_COUNT else VITALS_LEGEND
+    legend = list(
+        DATA_POINTS_LEGEND if result.unit == UNIT_COUNT else VITALS_LEGEND
+    )
+    if result.unit != UNIT_COUNT and DATA_POINTS_METRIC in result.metric_names:
+        legend.append(DATA_POINTS_NOTE)
     lines.extend(style.dim(note) for note in legend)
     return lines
 
@@ -822,7 +832,11 @@ def render_vitals(
 
     lines.extend(render_grid(headers, aligns, body, None, style))
     lines.append("")
-    legend = DATA_POINTS_LEGEND if counts_only else VITALS_LEGEND
+    legend = list(DATA_POINTS_LEGEND if counts_only else VITALS_LEGEND)
+    if not counts_only and any(
+        DATA_POINTS_METRIC in result.metric_names for result in results
+    ):
+        legend.append(DATA_POINTS_NOTE)
     lines.extend(style.dim(note) for note in legend)
     lines.append(
         style.dim(

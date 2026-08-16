@@ -3,12 +3,62 @@
 Your Vercel traffic **and** your Core Web Vitals, answered in one command line.
 
 ```console
-$ python3 -m vercel_insights top-pages --since 30d --country US
-$ python3 -m vercel_insights vitals --since 30d
+$ vercel-insights vitals
+
+metric                        p75  target  verdict
+-------------------------  ------  ------  ------------
+Largest Contentful Paint    2.9 s   2.5 s  over target
+Interaction to Next Paint  184 ms  200 ms  meets target
+Cumulative Layout Shift     0.128   0.100  over target
+First Contentful Paint      1.6 s   1.8 s  meets target
+Time to First Byte         412 ms  800 ms  meets target
 ```
 
 Two Vercel APIs, one CLI: Web Analytics for how many people came and where from,
 Speed Insights for how fast the site felt when they got there.
+
+## Start here
+
+Four commands, about a minute.
+
+```bash
+# 1. Get it
+git clone https://github.com/anatoli-iliev/openclaw-vercel-insights.git
+cd openclaw-vercel-insights
+python3 -m venv .venv && .venv/bin/python -m pip install requests
+
+# 2. A token, from https://vercel.com/account/tokens
+#    Scope it to the ACCOUNT or TEAM, not to a single project. See the note below.
+export VERCEL_TOKEN="..."
+
+# 3. Which project? This lists them, and needs nothing else configured.
+.venv/bin/python -m vercel_insights --list-projects
+
+# 4. Ask it something. Use the name or the prj_ id from step 3.
+.venv/bin/python -m vercel_insights vitals --project acme-docs
+.venv/bin/python -m vercel_insights --project acme-docs        # last 7 days of traffic
+```
+
+> **The one thing that trips people up.** A token scoped to a *single project*
+> reads traffic fine but cannot read Speed Insights, because Vercel serves those
+> from an account-scoped API. Symptom: `404 Observability Data not found.`, which
+> reads like "no data" but means "this token cannot ask". An account or team
+> scoped token does both.
+
+Nothing to configure beyond that, and nothing is written to disk. Set
+`VERCEL_PROJECT_ID` if you get tired of `--project`. Add `--dry-run` to any
+command to see the exact request without sending it, no token required.
+
+**Where to go next**
+
+| I want to | Read |
+| --- | --- |
+| See what the output looks like, for everything | [examples/example_outputs.md](examples/example_outputs.md) |
+| Know which presets exist | [Presets](#presets), or run `--list-presets` |
+| Fail a build when the site gets slower | [Guarding performance in CI](#guarding-performance-in-ci) |
+| Query something other than traffic and vitals | [Beyond web vitals](#beyond-web-vitals) |
+| Understand what this can and cannot reach | [Plans, windows and what is out of reach](#plans-windows-and-what-is-out-of-reach) |
+| Check the security posture | [Security and permissions](#security-and-permissions) |
 
 ## Why not just open the dashboard
 
@@ -39,11 +89,16 @@ looking at it.
 - **Agent-native.** It ships as an OpenClaw skill, so "how did the blog do this
   week" or "which pages are slowest on mobile" inside a conversation becomes a
   real query with a real table, not a guess.
-- **Safe by construction.** Read-only against a three-endpoint allowlist, and
+- **Safe by construction.** Read-only against a five-endpoint allowlist, and
   the token never leaves the `Authorization` header. See
   [Security and permissions](#security-and-permissions).
 
-## Install
+## Setup in detail
+
+The quick start above is the whole of it for most people. This section covers
+the parts that vary.
+
+### Installing
 
 From ClawHub:
 
@@ -51,535 +106,182 @@ From ClawHub:
 clawhub install vercel-insights
 ```
 
-Or clone it and run the package directly, no packaging step:
+Python 3.10 or newer, and `requests` is the only thing outside the standard
+library. The virtualenv in the quick start is not ceremony: Debian 12+, Ubuntu
+23.04+, Fedora and Homebrew Python all mark the system interpreter as externally
+managed (PEP 668), so a bare `pip install requests` there stops with
+`error: externally-managed-environment` before installing anything. If you would
+rather not keep a `.venv`, `pip install --user requests` works where user
+installs are still permitted, as does your distribution's own package
+(`apt install python3-requests`).
 
-```bash
-git clone https://github.com/anatoli-iliev/openclaw-vercel-insights.git
-cd openclaw-vercel-insights
-python3 -m venv .venv
-.venv/bin/python -m pip install requests   # the only runtime dependency
-.venv/bin/python -m vercel_insights --help
-```
-
-The virtualenv is not ceremony. Debian 12+, Ubuntu 23.04+, Fedora and Homebrew
-Python all mark the system interpreter as externally managed (PEP 668), so a
-bare `python3 -m pip install requests` there stops with
-`error: externally-managed-environment` before installing anything.
-
-Two alternatives if you would rather not keep a `.venv` in the checkout:
-`python3 -m pip install --user requests`, on platforms that still permit a user
-install, or your distribution's own package (`apt install python3-requests`,
-`dnf install python3-requests`), which adds it to the system interpreter through
-the package manager rather than around it. `pipx` is worth knowing about but is
-not the tool for this step: it installs applications that ship console scripts,
-and `requests` is a library. Reach for it when you want a packaged CLI in its
-own isolated environment.
-
-Already have `requests` importable? Then `python3 -m vercel_insights` works from
-the repository root as is, with no installation. From anywhere else,
+Already have `requests` importable? `python3 -m vercel_insights` works from the
+repository root as is. From anywhere else,
 `python3 /abs/path/to/vercel_insights/__main__.py` works too: the entry point
-repairs `sys.path` before importing anything. And `pip install -e .` adds a
+repairs `sys.path` before importing. And `pip install -e .` adds a
 `vercel-insights` console script on `PATH`, which is the same entry point.
 
-Python 3.10 or newer. `requests` is the only thing outside the standard library.
-`CONTRIBUTING.md` uses the same virtualenv flow, plus the test and lint tools.
+### The token, and why its scope matters
 
-## 60-second setup
+Create one at <https://vercel.com/account/tokens>. Read scope is enough; this
+tool never writes.
 
-**1. Create a Vercel access token** at
-<https://vercel.com/account/tokens>. Read scope is enough; this tool never
-writes. Copy it, Vercel shows it once.
+Vercel's two APIs scope differently, and a project scoped token silently reaches
+only one of them:
 
-> **Scope it to the account or team, not to a single project**, if you want
-> Speed Insights. Vercel's two APIs scope differently, and a project scoped
-> token silently reaches only one of them:
->
-> | Preset family | API | Project scoped token |
-> | --- | --- | --- |
-> | Web Analytics (`overview`, `top-pages`, `events`, ...) | scoped by `projectId` | works |
-> | Speed Insights (`vitals`, `slowest-pages`, ...) | scoped by account | `404 Observability Data not found.` |
->
-> That 404 reads like "your project has no data" but means "this token cannot
-> ask". To see what the current token can reach:
-> `npx vercel@latest metrics schema`
+| Preset family | API scoped by | Project scoped token |
+| --- | --- | --- |
+| Web Analytics (`overview`, `top-pages`, `events`, ...) | `projectId` | works |
+| Speed Insights (`vitals`, `slowest-pages`, ...) | account | `404 Observability Data not found.` |
 
-**2. Make sure the feature you want is enabled** on the project. Web Analytics
-and Speed Insights are two separate per-project switches, each with its own
-package in the app: `@vercel/analytics`
+To see what the current token can actually reach:
+`npx vercel@latest metrics schema`.
+
+### Turning the features on
+
+Web Analytics and Speed Insights are two separate per-project switches, each
+with its own package in the app: `@vercel/analytics`
 (<https://vercel.com/docs/analytics/quickstart>) and `@vercel/speed-insights`
-(<https://vercel.com/docs/speed-insights/quickstart>). Data only exists from the
-moment each one is turned on. Speed Insights does **not** need Observability
-Plus: its metrics are readable on the query surface without it. It does need a
-token that is not scoped to a single project; see the note in step 1.
+(<https://vercel.com/docs/speed-insights/quickstart>). Data exists only from the
+moment each is turned on, and only from deployed builds, not local development.
 
-**3. Find the project.** One Vercel account holds many projects, and a query
-names exactly one, so start by seeing what you have:
+`--list-projects` reports both per project: `data` collected, `empty` for
+enabled but nothing yet, `off` for not enabled.
 
-```console
-$ vercel-insights --list-projects
-name            project id                    traffic  speed
---------------  ----------------------------  -------  -----
-my-site         prj_tjgvYZgQGYqNxBP1nQffcF1A  data     data
-marketing       prj_9xQ2vB7kLmT4dRnW          data     empty
-internal-tools  prj_Kd8sPqR2nX5vB             off      off
-```
+### Environment variables
 
-`data` means collected, `empty` means the feature is on but nothing has arrived
-yet, `off` means it is not enabled. Pass either the **name** or the **project
-id** to `--project`; both work on every preset.
-
-If you forget to name a project, the error prints this table rather than only
-telling you a flag is missing.
-
-**3b. Or find the ID by hand.** Vercel dashboard, pick the project, Settings, then
-General: the field is "Project ID" and looks like `prj_XXXXXXXXXXXXXXXX`. The
-project *name* works just as well anywhere the ID does.
-
-**4. Export the environment variables:**
+Every one has a matching flag that takes precedence.
 
 ```bash
 export VERCEL_TOKEN="vercel_tok_xxxxxxxxxxxxxxxxxxxxxxxx"
-export VERCEL_PROJECT_ID="prj_XXXXXXXXXXXXXXXX"
-# export VERCEL_TEAM_ID="team_XXXXXXXXXXXXXXXX"   # team-owned projects only
-# export VERCEL_ORG_ID="team_XXXXXXXXXXXXXXXX"    # written by `vercel link`; read as the owner
+export VERCEL_PROJECT_ID="prj_XXXXXXXXXXXXXXXX"   # or just use --project
+# export VERCEL_TEAM_ID="team_XXXXXXXXXXXXXXXX"   # team-owned projects
+# export VERCEL_ORG_ID="team_XXXXXXXXXXXXXXXX"    # written by `vercel link`
 ```
 
-Copy `.env.example` if you prefer keeping them in a file; the two team
-variables are commented out there for the same reason. On a personal account
-leave `VERCEL_TEAM_ID` unset: any value you give it is sent verbatim as the
-`teamId` query parameter, placeholder or not.
+`.env.example` documents all of them. Nothing is read from or written to a file
+by the tool itself, so load them however you like:
+`set -a; . ./.env; set +a`.
 
-**5. Check it without spending a request:**
+## What it looks like
 
-```bash
-.venv/bin/python -m vercel_insights --dry-run
-```
+Real output from the code, with synthetic data. The full set for every preset is
+in [examples/example_outputs.md](examples/example_outputs.md).
 
-That prints the request and sends nothing. It works even before the token is
-set, as long as a project is configured.
+### Traffic, at a glance
 
-## Examples
-
-> Every block below was captured verbatim from a real run of the tool, driven
-> through `main()` against a stub API session, so the layout, the column names,
-> the percentages, the units and the footnotes are exactly what you get. Only
-> the numbers, the project name and the clock are invented. `vercel-insights` is
-> shorthand for `.venv/bin/python -m vercel_insights` (or
-> `python3 -m vercel_insights` wherever `requests` is already importable).
-
-### The 7-day overview (this is the default)
+Bare `vercel-insights` gives you the last 7 days.
 
 ```console
-$ vercel-insights
-Vercel Web Analytics: prj_demo
-Range: 2026-08-07T09:00:00Z to 2026-08-14T09:00:00Z (UTC)
+$ vercel-insights --since 7d
+Vercel Web Analytics: prj_9RkQm2vT7xLpN4dWbYcF3sJz
+Range: 2026-08-09T05:23:38Z to 2026-08-16T05:23:38Z (UTC)
 
-  pageviews  14,622
-  visitors    9,016
+  pageviews  48,072
+  visitors   32,280
   visitors is a sum of the buckets below, so someone who came on two days counts twice;
   run the total preset for distinct visitors over the window
 
 By day
-  2026-08-07  1,840  ███████████████
-  2026-08-08  1,512  ████████████
-  2026-08-09  1,097  █████████
-  2026-08-10  2,604  █████████████████████
-  2026-08-11  2,988  ████████████████████████
-  2026-08-12  2,415  ███████████████████
-  2026-08-13  2,166  █████████████████
+  2026-08-08  6,120  ██████████████████
+  2026-08-09  4,980  ██████████████
+  2026-08-10  7,840  ███████████████████████
+  2026-08-11  8,310  ████████████████████████
+  2026-08-12  7,905  ███████████████████████
+  2026-08-13  7,402  █████████████████████
+  2026-08-14  5,515  ████████████████
 
 Top pages (top 5)
 requestPath            pageviews  visitors  % pageviews
 ---------------------  ---------  --------  -----------
-/                          4,821     3,110        33.0%
-/pricing                   2,740     1,988        18.7%
-/docs/getting-started      1,866     1,204        12.8%
-/blog/shipping-faster      1,402     1,121         9.6%
-/changelog                   903       640         6.2%
-Others                     2,890     1,702        19.8%
+/                         18,420    11,930        38.3%
+/docs/getting-started      9,310     6,845        19.4%
+/pricing                   7,204     5,588        15.0%
+/blog/shipping-faster      4,126     3,390         8.6%
+/changelog                 2,870     2,115         6.0%
+Others                     6,142     4,102        12.8%
 ---------------------  ---------  --------  -----------
-TOTAL                     14,622     9,765       100.0%
+TOTAL                     48,072    33,970       100.0%
 
 Others is not a real value: it is every group beyond --limit 5, collapsed by the API into one bucket.
 
 Top referrers (top 5)
 referrerHostname      pageviews  visitors  % pageviews
 --------------------  ---------  --------  -----------
-(direct)                  6,120     4,002        41.9%
-news.ycombinator.com      3,411     2,870        23.3%
-google.com                2,588     1,930        17.7%
-x.com                     1,204       998         8.2%
-github.com                  742       611         5.1%
-Others                      557       405         3.8%
+(none)                   21,044    13,980        43.8%
+google.com               14,310     9,720        29.8%
+news.ycombinator.com      6,890     6,012        14.3%
+github.com                3,402     2,560         7.1%
+x.com                     2,426     1,798         5.0%
 --------------------  ---------  --------  -----------
-TOTAL                    14,622    10,816       100.0%
-
-Others is not a real value: it is every group beyond --limit 5, collapsed by the API into one bucket.
+TOTAL                    48,072    34,070       100.0%
 ```
 
-### Top pages last month, US traffic only
-
-```console
-$ vercel-insights top-pages --since 30d --country US
-Vercel Web Analytics: prj_demo (top-pages)
-Range: 2026-07-15T09:00:00Z to 2026-08-14T09:00:00Z (UTC)
-Filter: country eq 'US'
-
-requestPath                   pageviews  visitors  % pageviews
-----------------------------  ---------  --------  -----------
-/                                18,422    11,903        28.3%
-/pricing                          9,884     7,120        15.2%
-/docs/getting-started             6,551     4,302        10.1%
-/blog/shipping-faster             5,218     4,110         8.0%
-/changelog                        3,907     2,544         6.0%
-/docs/api                         3,122     2,011         4.8%
-/blog/analytics-from-the-cli      2,840     2,266         4.4%
-/login                            2,013     1,502         3.1%
-/about                            1,655     1,288         2.5%
-/docs/cli                         1,471       966         2.3%
-Others                            9,930     6,104        15.3%
-----------------------------  ---------  --------  -----------
-TOTAL                            65,013    44,116       100.0%
-
-Others is not a real value: it is every group beyond --limit 10, collapsed by the API into one bucket.
-```
-
-### Mobile vs desktop
-
-```console
-$ vercel-insights devices --since 30d
-Vercel Web Analytics: prj_demo (devices)
-Range: 2026-07-15T09:00:00Z to 2026-08-14T09:00:00Z (UTC)
-
-deviceType  pageviews  visitors  % pageviews
-----------  ---------  --------  -----------
-mobile          8,221     5,410        56.2%
-desktop         6,104     3,902        41.7%
-tablet            297       188         2.0%
-----------  ---------  --------  -----------
-TOTAL          14,622     9,500       100.0%
-```
-
-### A weekly trend, straight into a spreadsheet
-
-```console
-$ vercel-insights trend --granularity week --since 8w --csv
-week,pageviews,visitors
-2026-06-22,10422,6810
-2026-06-29,11877,7203
-2026-07-06,9640,6122
-2026-07-13,13288,8004
-```
-
-### Custom events, broken down by an event property
-
-`--event-property plan` groups by the event name *and* the property, and each
-dimension gets its own column:
-
-```console
-$ vercel-insights events --event-property plan --since 30d
-Vercel Web Analytics: prj_demo (events)
-Range: 2026-07-15T09:00:00Z to 2026-08-14T09:00:00Z (UTC)
-
-eventName  eventData/plan  count  visitors  % count
----------  --------------  -----  --------  -------
-signup     free            1,904     1,755    80.4%
-signup     pro               412       388    17.4%
-signup     enterprise         51        47     2.2%
----------  --------------  -----  --------  -------
-TOTAL                      2,367     2,190   100.0%
-```
-
-The same grouping in CSV, one column per dimension:
-
-```console
-$ vercel-insights events --event-property plan --since 30d --csv
-eventName,eventData/plan,count,visitors
-signup,free,1904,1755
-signup,pro,412,388
-signup,enterprise,51,47
-```
-
-To drop the event name column, group by the property on its own with
-`events --group-by eventData/plan`.
-
-### Distinct visitors for the month, and the same number in JSON
-
-```console
-$ vercel-insights total --since 30d
-Vercel Web Analytics: prj_demo (total)
-Range: 2026-07-15T09:00:00Z to 2026-08-14T09:00:00Z (UTC)
-
-  pageviews  62,704
-  visitors   38,915
-```
-
-The same number, machine readable:
-
-```console
-$ vercel-insights total --since 30d --json | jq '.rows[0].metrics'
-{
-  "pageviews": 62704,
-  "visitors": 38915
-}
-```
-
-## Core Web Vitals examples
-
-Speed Insights answers a different question from the same command line: not how
-many people came, but how fast the site was for them. Every value is a
-percentile over real user measurements, P75 by default, which is what the
-dashboard shows.
-
-### All five vitals against Vercel's published targets
+### Your Core Web Vitals against Vercel's targets
 
 ```console
 $ vercel-insights vitals
-Vercel Speed Insights: prj_demo
-Range: 2026-08-07T09:00:00Z to 2026-08-14T09:00:00Z (UTC)
+Vercel Speed Insights: prj_9RkQm2vT7xLpN4dWbYcF3sJz
+Range: 2026-08-08T00:00:00Z to 2026-08-15T00:00:00Z (UTC)
 
-metric                        p75  target  verdict       data points
--------------------------  ------  ------  ------------  -----------
-Largest Contentful Paint    2.4 s   2.5 s  meets target       18,204
-Interaction to Next Paint  176 ms  200 ms  meets target       12,110
-Cumulative Layout Shift     0.072   0.100  meets target       18,204
-First Contentful Paint      1.2 s   1.8 s  meets target       18,204
-Time to First Byte         918 ms  800 ms  over target        18,204
+metric                        p75  target  verdict
+-------------------------  ------  ------  ------------
+Largest Contentful Paint    2.9 s   2.5 s  over target
+Interaction to Next Paint  184 ms  200 ms  meets target
+Cumulative Layout Shift     0.128   0.100  over target
+First Contentful Paint      1.6 s   1.8 s  meets target
+Time to First Byte         412 ms  800 ms  meets target
 
 Lower is better for all five metrics.
 The target is Vercel's published 'good' threshold, so the verdict is two tier: meets target or over target.
-A percentile over few data points is not comparable to one over many, so read the value next to its data point count.
 Real Experience Score is not queryable through this API; read it on the Speed Insights dashboard.
 ```
 
-The verdict is two tier by design. Vercel publishes one "good" threshold per
-metric and no boundary above it, so a three-band good / needs improvement / poor
-scale would be invented rather than reported. The dashboard's colour bands
-describe a derived 0 to 100 score, not the raw millisecond value.
-
-`vitals` issues five requests, one per metric, because the API answers for one
-metric per request. That is why `--csv`, `--group-by` and `--metric` are all
-configuration errors there: the preset already reports every vital, so there is
-no single metric to select and no single table to write. Use `vitals-trend`,
-`slowest-pages` or `vitals-by-country` when you want one metric in one table.
-
-### Which routes are slowest, on mobile
+### Which pages are slow, and for whom
 
 ```console
-$ vercel-insights slowest-pages --device mobile --limit 5
-Vercel Speed Insights: prj_demo (slowest-pages, p75)
-Range: 2026-08-07T09:00:00Z to 2026-08-14T09:00:00Z (UTC)
-Filter: device_type eq 'mobile'
+$ vercel-insights slowest-pages
+Vercel Speed Insights: prj_9RkQm2vT7xLpN4dWbYcF3sJz (slowest-pages, p75)
+Range: 2026-08-08T00:00:00Z to 2026-08-15T00:00:00Z (UTC)
 
-route              p75_lcp  data_points
------------------  -------  -----------
-/blog/[slug]         4.1 s        1,830
-/pricing             3.0 s        2,240
-/dashboard/[id]      2.5 s          902
-/docs/[[...slug]]    2.0 s        4,410
-/                    1.2 s        8,822
+route         p75_lcp
+------------  -------
+/blog/[slug]    5.0 s
+/docs/[slug]    3.2 s
+/pricing        2.7 s
+/               2.2 s
 
 Metric: vercel.speed_insights.lcp_ms (Largest Contentful Paint)
 Target: 2.5 s or less
 Lower is better for all five metrics.
 The target is Vercel's published 'good' threshold, so the verdict is two tier: meets target or over target.
-A percentile over few data points is not comparable to one over many, so read the value next to its data point count.
 ```
-
-Two things to notice. `--device mobile` compiled to `device_type eq 'mobile'`,
-the Speed Insights spelling of the dimension: the shorthand flags translate
-per surface so you never have to remember which API is camelCase. And there is
-no totals row and no share column, because summing percentiles is meaningless.
-
-### Speed by country, and by device
-
 ```console
-$ vercel-insights vitals-by-country --since 30d
-Vercel Speed Insights: prj_demo (vitals-by-country, p75)
-Range: 2026-07-15T09:00:00Z to 2026-08-14T09:00:00Z (UTC)
+$ vercel-insights vitals-by-device
+Vercel Speed Insights: prj_9RkQm2vT7xLpN4dWbYcF3sJz (vitals-by-device, p75)
+Range: 2026-08-08T00:00:00Z to 2026-08-15T00:00:00Z (UTC)
 
-country  p75_lcp  data_points
--------  -------  -----------
-US         1.8 s        8,140
-DE         2.1 s        3,020
-GB         2.3 s        2,470
-IN         3.5 s        1,990
-BR         3.9 s        1,180
+device_type  p75_lcp
+-----------  -------
+mobile         4.1 s
+tablet         3.0 s
+desktop        2.1 s
 
 Metric: vercel.speed_insights.lcp_ms (Largest Contentful Paint)
 Target: 2.5 s or less
 Lower is better for all five metrics.
 The target is Vercel's published 'good' threshold, so the verdict is two tier: meets target or over target.
-A percentile over few data points is not comparable to one over many, so read the value next to its data point count.
 ```
 
-```console
-$ vercel-insights vitals-by-device --since 30d
-Vercel Speed Insights: prj_demo (vitals-by-device, p75)
-Range: 2026-07-15T09:00:00Z to 2026-08-14T09:00:00Z (UTC)
+The device breakdown is usually the answer to "why is the field score worse than
+my local numbers".
 
-device_type  p75_lcp  data_points
------------  -------  -----------
-desktop        1.6 s        9,840
-mobile         3.2 s        7,910
-tablet         2.5 s          454
+### Anything else, machine readable
 
-Metric: vercel.speed_insights.lcp_ms (Largest Contentful Paint)
-Target: 2.5 s or less
-Lower is better for all five metrics.
-The target is Vercel's published 'good' threshold, so the verdict is two tier: meets target or over target.
-A percentile over few data points is not comparable to one over many, so read the value next to its data point count.
+```bash
+vercel-insights devices --json | jq '.rows[] | {(.key): .metrics.pageviews}'
+vercel-insights trend --granularity week --since 8w --csv > traffic.csv
 ```
-
-Both default to `--metric lcp`. Pass `--metric inp`, `cls`, `fcp` or `ttfb` for
-a different vital. Both order by data point count by default, so a group with a
-handful of measurements does not lead the table.
-
-### Did it regress? A daily trend
-
-```console
-$ vercel-insights vitals-trend --metric inp --granularity 1d
-Vercel Speed Insights: prj_demo (vitals-trend, p75)
-Range: 2026-08-07T09:00:00Z to 2026-08-14T09:00:00Z (UTC)
-
-1d          p75_inp  data_points
-----------  -------  -----------
-2026-08-07   168 ms        1,704
-2026-08-08   172 ms        1,622
-2026-08-09   155 ms        1,180
-2026-08-10   204 ms        1,866
-2026-08-11   231 ms        1,940
-2026-08-12   188 ms        1,812
-2026-08-13   176 ms        1,786
-
-Metric: vercel.speed_insights.inp_ms (Interaction to Next Paint)
-Target: 200 ms or less
-Lower is better for all five metrics.
-The target is Vercel's published 'good' threshold, so the verdict is two tier: meets target or over target.
-A percentile over few data points is not comparable to one over many, so read the value next to its data point count.
-```
-
-The same thing as CSV, which is the shape you want in a nightly job so two days
-can be diffed:
-
-```console
-$ vercel-insights vitals-trend --metric inp --granularity 1d --csv
-1d,p75_inp,data_points
-2026-08-07,168.0,1704.0
-2026-08-08,172.0,1622.0
-2026-08-09,155.0,1180.0
-2026-08-10,204.0,1866.0
-2026-08-11,231.0,1940.0
-2026-08-12,188.0,1812.0
-2026-08-13,176.0,1786.0
-```
-
-`--granularity` accepts either vocabulary: `1d` and `day` mean the same thing
-and each API gets the spelling it wants. `week` and `year` exist on Web
-Analytics only.
-
-### How much data is behind those percentiles
-
-```console
-$ vercel-insights data-points --since 30d
-Vercel Speed Insights: prj_demo (data-points, sum)
-Range: 2026-07-15T09:00:00Z to 2026-08-14T09:00:00Z (UTC)
-
-route              sum_lcp_count  % sum_lcp_count
------------------  -------------  ---------------
-/                          8,822            48.5%
-/docs/[[...slug]]          4,410            24.2%
-/pricing                   2,240            12.3%
-/blog/[slug]               1,830            10.1%
-/dashboard/[id]              902             5.0%
------------------  -------------  ---------------
-TOTAL                     18,204           100.0%
-
-Metric: vercel.speed_insights.lcp_count (Largest Contentful Paint data points)
-These are data point counts, not metric values: one data point is one measurement of one web vital during one visit, and a visit produces up to six.
-They are what makes a percentile trustworthy, so a group with few of them is not comparable to one with many.
-```
-
-This is the one Speed Insights table that keeps a totals row and a share column,
-because a sum of measurement counts genuinely adds up.
-
-### Real Experience Score is not queryable
-
-```console
-$ vercel-insights vitals-trend --metric res --dry-run
-error: --metric 'res': Real Experience Score is not queryable. Vercel states plainly that it is not available through the query API this tool uses, so there is nothing to request and this client will not substitute another metric for it. Read it on the Speed Insights tab of your project dashboard (https://vercel.com/docs/speed-insights/metrics), or query one of the five metrics it is derived from: lcp, inp, cls, fcp, ttfb
-```
-
-That line is on stderr, with exit code 2. RES is a composite score derived from
-these five metrics; the five are the honest command line answer.
-
-### Show the request without sending it
-
-A GET, on the Web Analytics surface:
-
-```console
-$ vercel-insights top-pages --dry-run
-GET https://api.vercel.com/v1/query/web-analytics/visits/aggregate
-
-Query parameters:
-  projectId  prj_demo
-  by         requestPath
-  since      2026-08-07T09:00:00Z
-  until      2026-08-14T09:00:00Z
-  limit      10
-
-Headers:
-  Accept         application/json
-  Authorization  Bearer <redacted>
-  User-Agent     vercel-insights-skill/0.2.0
-
-Encoded URL (never contains the token):
-  https://api.vercel.com/v1/query/web-analytics/visits/aggregate?projectId=prj_demo&by=requestPath&since=2026-08-07T09%3A00%3A00Z&until=2026-08-14T09%3A00%3A00Z&limit=10
-
-Nothing was sent. No credential is printed above.
-```
-
-And the POST, on the Speed Insights surface, where the dry run prints the whole
-query body:
-
-```console
-$ vercel-insights slowest-pages --since 30d --dry-run
-POST https://api.vercel.com/v2/observability/query
-
-Query parameters:
-  (none)
-
-Headers:
-  Accept         application/json
-  Authorization  Bearer <redacted>
-  User-Agent     vercel-insights-skill/0.2.0
-
-JSON body:
-  {
-    "metric": "vercel.speed_insights.lcp_ms",
-    "scope": {
-      "type": "project",
-      "projectId": "prj_demo"
-    },
-    "aggregation": "p75",
-    "groupBy": [
-      "route"
-    ],
-    "limit": 10,
-    "orderBy": "value",
-    "orderDirection": "desc",
-    "startTime": "2026-07-15T09:00:00Z",
-    "endTime": "2026-08-14T09:00:00Z"
-  }
-
-Encoded URL (never contains the token):
-  https://api.vercel.com/v2/observability/query
-
-Nothing was sent. No credential is printed above.
-```
-
-The token is not in that body, and never is: it lives in the `Authorization`
-header and nowhere else, which is exactly why the body can be printed in full.
 
 ## Beyond web vitals
 
@@ -776,7 +478,7 @@ Exit codes: `0` success including an empty result, `1` API or network failure,
 
 ## Security and permissions
 
-- **Read-only against a three-endpoint allowlist.** One module-level table in
+- **Read-only against a five-endpoint allowlist.** One module-level table in
   `vercel_insights/http.py` maps an operation key to a fixed method and URL, and
   it has exactly three entries: the Web Analytics query
   (`GET /v1/query/web-analytics/{dataset}/{endpoint}`), the observability query
