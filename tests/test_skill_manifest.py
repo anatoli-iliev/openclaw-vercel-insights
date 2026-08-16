@@ -106,3 +106,32 @@ def test_the_launcher_runs_from_an_unrelated_directory() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert VERSION in result.stdout
+
+
+def test_only_the_token_gates_the_skill() -> None:
+    # requires.env is a hard gate: a skill missing one of these is reported as
+    # "needs setup" and stays there. Only the token qualifies, because the
+    # project is discoverable through --list-projects and asking the user, so
+    # gating on it would leave the skill permanently unready for no reason.
+    gate = re.search(r"^\s*env:\s*\[([^\]]*)\]", FRONTMATTER, re.M)
+    assert gate is not None, "requires.env is missing"
+    names = {n.strip() for n in gate.group(1).split(",") if n.strip()}
+    assert names == {"VERCEL_TOKEN"}, f"only the token should gate, found {names}"
+
+
+def test_the_description_stays_short_enough_to_read_in_a_list() -> None:
+    # `openclaw skills list` renders the description in a narrow column. A
+    # keyword-stuffed paragraph wraps over many lines and reads as noise, which
+    # costs more discoverability than the extra words buy.
+    match = re.search(r"^description: >-\n((?:  .*\n)+)", FRONTMATTER, re.M)
+    assert match is not None, "description is missing or not a folded block"
+    text = " ".join(line.strip() for line in match.group(1).splitlines())
+    assert len(text) <= 400, f"description is {len(text)} characters, trim it"
+
+
+def test_the_setup_section_documents_the_real_config_mechanism() -> None:
+    # Credentials belong in openclaw.json under skills.entries, not in a shell
+    # profile, and apiKey is what primaryEnv maps to.
+    assert "skills.entries" in TEXT or '"entries"' in TEXT
+    assert "apiKey" in TEXT
+    assert "primaryEnv" in TEXT
