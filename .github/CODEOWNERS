@@ -12,7 +12,7 @@
 # The read-only guarantee
 # ---------------------------------------------------------------------------
 # http.py is the whole security surface: the operation allowlist that decides
-# which four endpoints exist and which verb each uses, the credential scrubbing,
+# which five endpoints exist and which verb each uses, the credential scrubbing,
 # the header redaction and the refusal to follow redirects. A change here can
 # quietly turn a read-only tool into something else, so it is called out
 # separately rather than left to the catch-all.
