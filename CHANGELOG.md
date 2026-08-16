@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-08-16
+
+Documentation accuracy only. No behaviour changes, and no change to what the
+tool can reach.
+
+### Fixed
+
+- Two comments described the operation allowlist as holding **four** endpoints
+  when it holds five. Both were written before `GET /v10/projects` was added for
+  `--list-projects`, and were missed when it was: `.env.example`, in the note
+  explaining why a read-scope token is sufficient, and `.github/CODEOWNERS`, in
+  the note explaining why `http.py` is called out separately. `README.md`,
+  `SKILL.md` and `docs/cli-contract.md` already said five.
+
+  The count understated the surface rather than overstating it, so nothing was
+  presented as safer than it is. It still warrants a patch release: the sentence
+  is a security claim, it sits in the file a user has open while pasting an API
+  token into it, and anyone who counts the table and finds five learns that the
+  documentation cannot be trusted on precisely the subject where it has to be.
+
+- The link references at the foot of this file pointed `[Unreleased]` at a
+  comparison against v0.2.0 and carried no entry for 1.0.0, so both resolved
+  wrongly.
+
 ## [1.0.0] - 2026-08-16
 
 First published release. Neither 0.1.0 nor 0.2.0 was ever released, so
@@ -500,6 +524,8 @@ API, packaged as an OpenClaw skill.
   is ever built.
 - No `eval`, no `exec`, no `subprocess`, and no filesystem writes.
 
-[Unreleased]: https://github.com/anatoli-iliev/openclaw-vercel-insights/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/anatoli-iliev/openclaw-vercel-insights/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/anatoli-iliev/openclaw-vercel-insights/compare/v1.0.0...v1.0.1
+[1.0.0]: https://github.com/anatoli-iliev/openclaw-vercel-insights/releases/tag/v1.0.0
 [0.2.0]: https://github.com/anatoli-iliev/openclaw-vercel-insights/releases/tag/v0.2.0
 [0.1.0]: https://github.com/anatoli-iliev/openclaw-vercel-insights/releases/tag/v0.1.0
