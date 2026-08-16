@@ -317,6 +317,21 @@ none of these ever reached a published version. Each was reproduced first.
 
 ### Documentation
 
+- The skill description is 310 characters, down from 1090. `openclaw skills
+  list` renders it in a narrow column, where the previous keyword-packed
+  paragraph wrapped over eight lines and read as noise. Breadth of phrasing
+  belongs in the decision table, which the agent reads once it has chosen the
+  skill; the description only has to get it chosen. A test keeps it short.
+- **Only `VERCEL_TOKEN` gates the skill now.** `requires.env` also listed
+  `VERCEL_PROJECT_ID`, which is a hard gate, so the skill reported "needs setup"
+  even with a working token. The project is discoverable: without one configured
+  the skill lists the account's projects and asks. A test pins the gate to the
+  token alone.
+- `SKILL.md` documents configuration through `~/.openclaw/openclaw.json` under
+  `skills.entries`, including that `apiKey` is what `primaryEnv` maps to, so the
+  credential can live with the skill rather than in a shell profile.
+
+
 - `SKILL.md` opens with the flow an agent actually follows: check configuration,
   identify the project, then run and read back. It says when to prefer `--json`
   (only when a figure has to be computed rather than relayed), what each exit

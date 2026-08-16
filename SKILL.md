@@ -1,23 +1,11 @@
 ---
 name: vercel-insights
 description: >-
-  Answer questions about a Vercel site's traffic and its speed from the command
-  line. Traffic: "how is my site traffic this week", "top pages on my Vercel
-  site", "where is my traffic coming from", "which countries visit us", "compare
-  mobile vs desktop visitors", "which browsers do people use", "which campaign
-  drove signups". Speed: "how fast is my site", "what are my core web vitals",
-  "what is my LCP", "which pages are slowest", "is my CLS bad", "did my
-  performance regress this month", "why does the site feel slow on mobile". Use
-  it for anything about Vercel Web Analytics (page views, visitors, trends,
-  referrers, routes, UTM campaigns, devices, browsers, custom events) and
-  anything about Vercel Speed Insights (LCP, INP, CLS, FCP and TTFB at a
-  percentile, measured against Vercel's published targets, broken down by route,
-  country or device, or tracked over time). Also lists a Vercel account's
-  projects and which of them have data, checks a web vital against a budget so
-  a build can fail on a regression, and queries any other Vercel observability
-  metric by id, such as function invocations or edge requests. Read only: five
-  allowlisted read endpoints, no write path, and it never changes anything in
-  the Vercel account.
+  Reports a Vercel site's traffic and speed: page views, visitors, top pages,
+  referrers, and Core Web Vitals against Vercel's published targets. Trigger on
+  requests like "how is my site traffic this week", "which pages are slowest",
+  "what are my core web vitals", or "where is my traffic coming from". Read
+  only.
 version: 0.2.0
 homepage: https://github.com/anatoli-iliev/openclaw-vercel-insights
 compatibility: openclaw >=1.0
@@ -25,7 +13,7 @@ metadata:
   security_level: L1
   openclaw:
     requires:
-      env: [VERCEL_TOKEN, VERCEL_PROJECT_ID]
+      env: [VERCEL_TOKEN]
       bins: [python3]
     primaryEnv: VERCEL_TOKEN
     envVars:
@@ -33,8 +21,10 @@ metadata:
         required: true
         description: Vercel access token, read scope is sufficient.
       - name: VERCEL_PROJECT_ID
-        required: true
-        description: Project ID or project name to query.
+        required: false
+        description: >-
+          Default project, by id or name. Optional: without it the skill lists
+          the account's projects and asks which one.
       - name: VERCEL_TEAM_ID
         required: false
         description: Team ID for team-owned projects. Omit for personal accounts.
@@ -65,6 +55,45 @@ Query a Vercel project's **traffic** (Web Analytics) and its **speed** (Speed
 Insights) from one command line: page views, visitors, top pages and routes,
 referrers, countries, devices, browsers, UTM campaigns, custom events, and the
 five Core Web Vitals against Vercel's published targets.
+
+## Setting it up
+
+Only `VERCEL_TOKEN` is required. Everything else is discoverable: without a
+project configured this skill lists the account's projects and asks which one.
+
+Configure it in `~/.openclaw/openclaw.json` under `skills.entries`, so the
+credential lives with the skill rather than in a shell profile:
+
+```json
+{
+  "skills": {
+    "entries": {
+      "vercel-insights": {
+        "enabled": true,
+        "apiKey": "vercel_tok_...",
+        "env": {
+          "VERCEL_TEAM_ID": "team_...",
+          "VERCEL_PROJECT_ID": "prj_..."
+        }
+      }
+    }
+  }
+}
+```
+
+`apiKey` supplies `VERCEL_TOKEN`, because that is this skill's `primaryEnv`. The
+`env` map is optional and takes `"${SOME_VAR}"` to read from the environment
+instead of storing a value. `openclaw skills check` reports what is still
+missing.
+
+**Get the token at <https://vercel.com/account/tokens>, scoped to the account or
+team rather than to a single project.** A project scoped token reads traffic but
+not speed: Vercel serves Speed Insights from an account scoped API, and the
+symptom is `404 Observability Data not found.`, which reads like "no data" but
+means "this token cannot ask".
+
+Set `VERCEL_TEAM_ID` if the project belongs to a team. It is also the account
+that owns it, which saves a lookup on every speed query.
 
 ## How to answer a question with this
 
