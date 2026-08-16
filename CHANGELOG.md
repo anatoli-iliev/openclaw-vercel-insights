@@ -317,6 +317,20 @@ none of these ever reached a published version. Each was reproduced first.
 
 ### Documentation
 
+- Setup now leads with `openclaw configure --section skills`, which prompts for
+  the credential and writes it where the gateway reads it. The skill already
+  declared `primaryEnv`, which is what maps a prompted key onto
+  `skills.entries.<slug>.apiKey`, so this needed no code change, only
+  documenting. The hand-edited JSON is kept as the last resort rather than the
+  only route.
+- The secret-reference form is documented too:
+  `openclaw config set skills.entries.vercel-insights.apiKey --ref-provider
+  default --ref-source env --ref-id VERCEL_TOKEN` keeps the token in the
+  environment or a secrets provider instead of in `openclaw.json`.
+- Both files now say that the gateway runs as its own process, so a variable
+  exported in an interactive shell may never reach it.
+
+
 - The skill description is 310 characters, down from 1090. `openclaw skills
   list` renders it in a narrow column, where the previous keyword-packed
   paragraph wrapped over eight lines and read as noise. Breadth of phrasing
