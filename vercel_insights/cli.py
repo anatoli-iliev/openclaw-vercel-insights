@@ -1078,6 +1078,39 @@ OBSERVABILITY_SCOPE_HINT = (
 )
 
 
+#: Appended to a Web Analytics 403 or 404 when no team was configured. Vercel's
+#: own documentation is explicit: "For team projects, find the team's teamId or
+#: slug and include one in each request. For projects owned by your personal
+#: account, omit teamId and slug." So a team owned project queried without one
+#: is refused, and the refusal does not say which of the two situations applies.
+MISSING_TEAM_HINT = (
+    "If this project belongs to a team rather than to your personal account, "
+    "the request needs the team as well: pass --team with the team id (Team "
+    "Settings, General) or set VERCEL_TEAM_ID. Vercel requires it on every "
+    "request for a team owned project, and omitting it looks the same as not "
+    "having access. Run --list-projects to see which projects this token can "
+    "reach."
+)
+
+
+def _explain_missing_team(exc: ApiError, settings: Settings) -> ApiError:
+    """Add the team hint to a Web Analytics refusal when no team was given.
+
+    Only for 403 and 404, and only when nothing supplied a team. A refusal that
+    might mean "wrong account" and might mean "no such project" is worth one
+    sentence naming the commonest cause, but guessing at it when a team was
+    already configured would send the reader the wrong way.
+    """
+    if exc.status not in (403, 404) or settings.team or settings.team_slug:
+        return exc
+    return ApiError(
+        exc.status,
+        exc.code,
+        f"{exc.message}\n{MISSING_TEAM_HINT}",
+        attempts=exc.attempts,
+    )
+
+
 def _explain_observability_404(exc: ApiError) -> ApiError:
     """Turn a bare observability 404 into something a user can act on.
 
@@ -1524,7 +1557,7 @@ def _run(
             except ApiError as exc:
                 if prepared.operation == OBSERVABILITY_QUERY:
                     raise _explain_observability_404(exc) from None
-                raise
+                raise _explain_missing_team(exc, settings) from None
             if not isinstance(answer, Mapping):
                 # Only the schema endpoint answers with a top level array; a
                 # query that does is a response this client cannot interpret.

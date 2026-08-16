@@ -117,14 +117,17 @@ From ClawHub:
 clawhub install vercel-insights
 ```
 
-Using it as an OpenClaw skill? Install it, then let OpenClaw prompt for the
-token rather than exporting anything:
+Using it as an OpenClaw skill? Install it, then save the token where the gateway
+reads it rather than exporting anything:
 
 ```bash
 openclaw skills install /path/to/openclaw-vercel-insights --as vercel-insights
-openclaw configure --section skills
+openclaw config set skills.entries.vercel-insights.apiKey YOUR_TOKEN
 openclaw skills check          # confirms the requirement resolved
 ```
+
+The Control UI does the same thing under Skills, vercel-insights, Save key, and
+`openclaw skills info vercel-insights` prints both routes.
 
 The gateway runs as its own process, so a variable exported in an interactive
 shell may not reach it. `openclaw configure` writes it where the gateway reads

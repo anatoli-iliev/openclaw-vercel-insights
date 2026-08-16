@@ -60,6 +60,14 @@ declares them as bare objects; each is marked VERIFIED in `docs/api-notes.md`.
 
 ### Added
 
+- A Web Analytics 403 or 404 with no team configured now says that a team owned
+  project needs its team named. Vercel is explicit that `teamId` or `slug` must
+  be on every request for a team owned project and omitted for a personal one,
+  and a refusal for the missing-team reason is indistinguishable from one for
+  no access. The hint is withheld when a team was already given, since
+  suggesting the fix someone already applied misdirects them.
+
+
 - **`bin/vercel-insights`**, a launcher that works from any working directory.
   `python3 -m vercel_insights` needs the caller's working directory to be the
   skill root and `requests` importable by the first `python3` on `PATH`, and
@@ -316,6 +324,14 @@ none of these ever reached a published version. Each was reproduced first.
   before fixing. It is unconditional now.
 
 ### Documentation
+
+- Setup documents the two routes that actually work, both printed by
+  `openclaw skills info` itself: the Control UI's Save key, and
+  `openclaw config set skills.entries.vercel-insights.apiKey`.
+  `openclaw configure --section skills` reports skill status but does **not**
+  prompt for a key, and documenting it as the way in sent people to a dead end.
+  Checked against a real install this time rather than read out of a help text.
+
 
 - Setup now leads with `openclaw configure --section skills`, which prompts for
   the credential and writes it where the gateway reads it. The skill already
