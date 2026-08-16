@@ -117,6 +117,12 @@ openclaw config set skills.entries.vercel-insights.apiKey \
 The `env` map is optional and takes `"${SOME_VAR}"` to read from the environment
 instead of storing a value.
 
+### The full walkthrough
+
+`docs/openclaw-setup.md` in this skill's own directory covers every step, and a
+troubleshooting table where each row is a failure hit during a real setup: token
+scope, the missing team, the copied virtualenv, and the rest.
+
 ### Checking it worked
 
 ```bash

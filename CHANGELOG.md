@@ -325,6 +325,14 @@ none of these ever reached a published version. Each was reproduced first.
 
 ### Documentation
 
+- `docs/openclaw-setup.md`, a complete walkthrough of installing this as an
+  OpenClaw skill, checked against a real install rather than written from help
+  text. It covers token scope, the virtualenv, saving the credential where the
+  gateway can read it, when the team is required and why it cannot be a hard
+  requirement, and a troubleshooting table in which every row is a failure that
+  actually happened during setup rather than one imagined for the occasion.
+
+
 - Setup documents the two routes that actually work, both printed by
   `openclaw skills info` itself: the Control UI's Save key, and
   `openclaw config set skills.entries.vercel-insights.apiKey`.
