@@ -70,12 +70,18 @@ means "this token cannot ask".
 ### The easy way
 
 ```bash
-openclaw configure --section skills
+openclaw config set skills.entries.vercel-insights.apiKey YOUR_TOKEN
 ```
 
-That prompts for the credential and writes it for you. This skill declares
-`primaryEnv: VERCEL_TOKEN`, which is what maps the prompted key onto
-`skills.entries.vercel-insights.apiKey`, so no hand editing is needed.
+Or in the Control UI (`openclaw dashboard`): **Skills, vercel-insights, Save
+key**. Both write the same place. `openclaw skills info vercel-insights` prints
+these two routes for itself.
+
+This works because the skill declares `primaryEnv: VERCEL_TOKEN`, which is what
+maps a saved key onto `skills.entries.vercel-insights.apiKey`.
+
+Note that `openclaw configure --section skills` reports skill status but does
+not prompt for a key, so it is not the route to use here.
 
 ### Without storing the secret in the config file
 
