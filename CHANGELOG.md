@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-16
+
+First published release. Neither 0.1.0 nor 0.2.0 was ever released, so
+everything below arrives at once for anyone installing this from ClawHub; the
+earlier entries stay as development history.
+
+What it does: reports a Vercel project's traffic through the Web Analytics API
+and its speed through Speed Insights, with 19 presets, project discovery,
+performance budgets that can fail a build, and any other Vercel observability
+metric by id.
+
+Why 1.0 rather than 0.3. The parts that face a user are settled and exercised:
+the request shapes for both APIs are verified against the live API rather than
+inferred, the response parsing is pinned to real payloads, and 1080 tests run on
+Python 3.10 through 3.14. The interface is one worth committing to.
+
+Two things are honestly short of that bar, and are documented as such rather
+than smoothed over:
+
+- Metrics outside Web Analytics and Speed Insights require the Observability
+  Plus add-on, and have never been exercised against an account that has it.
+  They are built against the published schema and a real metric listing, but no
+  such query has been answered.
+- Whether an empty `projectIds` really means "every project" for `--all` is
+  inferred from the field's name, not confirmed.
+
+Neither affects the paths most people will use, and both are named in
+`docs/api-notes.md`.
+
+
 ## [0.2.0] - 2026-08-14
 
 Speed Insights arrives, and with it the project's scope grows from traffic to

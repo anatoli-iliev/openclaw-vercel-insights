@@ -6,7 +6,7 @@ description: >-
   requests like "how is my site traffic this week", "which pages are slowest",
   "what are my core web vitals", or "where is my traffic coming from". Read
   only.
-version: 0.2.0
+version: 1.0.0
 homepage: https://github.com/anatoli-iliev/openclaw-vercel-insights
 compatibility: openclaw >=1.0
 metadata:
