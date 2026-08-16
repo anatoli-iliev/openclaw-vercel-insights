@@ -19,7 +19,107 @@ Speed Insights for how fast the site felt when they got there.
 
 ## Start here
 
-Four commands, about a minute.
+Two ways in. Pick the one that sounds like you.
+
+- **"I use OpenClaw and I just want to ask it questions."** Start with
+  [Set it up in OpenClaw](#set-it-up-in-openclaw), just below. No programming
+  needed. About five minutes, mostly waiting for downloads.
+- **"I want a command line tool."** Skip to
+  [Use it from a terminal](#use-it-from-a-terminal).
+
+### Set it up in OpenClaw
+
+Four steps. Copy each grey block whole, paste it into your terminal, press
+Enter. After each one there is a line telling you what you should see, so you
+always know whether it worked before moving on.
+
+#### Step 1: install it
+
+```bash
+clawhub install vercel-insights
+```
+
+**You should see:** `Installed vercel-insights v1.0.1 -> ...`
+
+#### Step 2: make it runnable
+
+One time only. Two things need fixing that the installer cannot do for you: it
+cannot mark the program as runnable, and this tool needs one Python library
+called `requests`.
+
+```bash
+SKILL=~/.openclaw/workspace/skills/vercel-insights
+chmod +x "$SKILL/bin/vercel-insights"
+python3 -m venv "$SKILL/.venv"
+"$SKILL/.venv/bin/python" -m pip install requests
+"$SKILL/bin/vercel-insights" --version
+```
+
+**You should see:** `vercel-insights 1.0.1` on the last line. Anything installed
+here goes inside the skill's own folder and touches nothing else on your
+computer.
+
+#### Step 3: give it a Vercel token
+
+A token is a password that lets this skill read your Vercel data. Make one at
+**<https://vercel.com/account/tokens>**.
+
+When Vercel asks about **scope**, choose your **account** or your **team**. Do
+not choose a single project. This matters more than it sounds like it does, and
+[the note below](#the-one-thing-that-trips-people-up) explains why. Read access
+is all this skill ever needs; it cannot change anything.
+
+Vercel shows the token once, so copy it before closing the page. Then:
+
+```bash
+openclaw config set skills.entries.vercel-insights.apiKey PASTE_YOUR_TOKEN_HERE
+openclaw skills check
+```
+
+**You should see:** `vercel-insights` listed as ready, not under "Missing
+requirements".
+
+Prefer clicking to typing? `openclaw dashboard` opens the Control UI, where
+**Skills, vercel-insights, Save key** does the same thing.
+
+If your Vercel projects belong to a **team** rather than to you personally, add
+this one extra line (find the ID under Team Settings, General):
+
+```bash
+openclaw config set skills.entries.vercel-insights.env.VERCEL_TEAM_ID team_xxxxxxxx
+```
+
+#### Step 4: ask your agent something
+
+That is the whole setup. Now talk to OpenClaw normally:
+
+> **How's my site traffic this week?**
+>
+> **Is my site fast?**
+>
+> **Which pages are slowest?**
+>
+> **Where is my traffic coming from?**
+
+If you have more than one Vercel project, the agent will list them and ask which
+one you mean rather than guessing. You can also just say **"which Vercel
+projects do I have?"**
+
+#### If something went wrong
+
+| What you saw | What to do |
+| --- | --- |
+| `Permission denied` | Step 2 was skipped. Run it. |
+| `'requests' is not importable by this interpreter` | Step 2 was skipped, or its last line failed. Run it again and read the output. |
+| `openclaw skills check` still says missing | The token did not save. Re-run step 3 and check for a typo in the config path. |
+| `404 Observability Data not found.` | Your token is scoped to one project. Make a new account-scoped one, step 3. |
+| Speed questions work, traffic questions fail with 403 or 404 | The project belongs to a team. Add `VERCEL_TEAM_ID`, end of step 3. |
+| Empty results, no error | That project genuinely has no data for that period, or the feature is switched off for it in Vercel. |
+
+Longer walkthrough, with every failure we actually hit and how to tell them
+apart: **[docs/openclaw-setup.md](docs/openclaw-setup.md)**.
+
+### Use it from a terminal
 
 ```bash
 # 1. Get it
@@ -39,6 +139,7 @@ export VERCEL_TOKEN="..."
 .venv/bin/python -m vercel_insights --project acme-docs        # last 7 days of traffic
 ```
 
+> <a id="the-one-thing-that-trips-people-up"></a>
 > **The one thing that trips people up.** A token scoped to a *single project*
 > reads traffic fine but cannot read Speed Insights, because Vercel serves those
 > from an account-scoped API. Symptom: `404 Observability Data not found.`, which
@@ -59,7 +160,7 @@ command to see the exact request without sending it, no token required.
 | Query something other than traffic and vitals | [Beyond web vitals](#beyond-web-vitals) |
 | Understand what this can and cannot reach | [Plans, windows and what is out of reach](#plans-windows-and-what-is-out-of-reach) |
 | Check the security posture | [Security and permissions](#security-and-permissions) |
-| Set it up as an OpenClaw skill | [docs/openclaw-setup.md](docs/openclaw-setup.md) |
+| Set it up as an OpenClaw skill | [Set it up in OpenClaw](#set-it-up-in-openclaw), then [docs/openclaw-setup.md](docs/openclaw-setup.md) for the detail |
 
 ## Why not just open the dashboard
 
@@ -112,17 +213,32 @@ checkout, so an installed copy needs no `PATH` or working-directory setup:
 
 ### Installing
 
-From ClawHub:
+From ClawHub, which is the shortest route and the one
+[Set it up in OpenClaw](#set-it-up-in-openclaw) walks through step by step:
 
 ```bash
 clawhub install vercel-insights
 ```
 
-Using it as an OpenClaw skill? Install it, then save the token where the gateway
-reads it rather than exporting anything:
+It lands in `~/.openclaw/workspace/skills/vercel-insights`. Two things the
+installer cannot do for you, both one-time:
+
+```bash
+SKILL=~/.openclaw/workspace/skills/vercel-insights
+chmod +x "$SKILL/bin/vercel-insights"                       # the exec bit is not preserved
+python3 -m venv "$SKILL/.venv" && "$SKILL/.venv/bin/python" -m pip install requests
+```
+
+From a local checkout instead, which does preserve the exec bit:
 
 ```bash
 openclaw skills install /path/to/openclaw-vercel-insights --as vercel-insights
+```
+
+Either way, save the token where the gateway reads it rather than exporting
+anything:
+
+```bash
 openclaw config set skills.entries.vercel-insights.apiKey YOUR_TOKEN
 openclaw skills check          # confirms the requirement resolved
 ```
