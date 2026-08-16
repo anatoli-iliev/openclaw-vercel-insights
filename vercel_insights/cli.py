@@ -96,6 +96,9 @@ from .speedinsights import (
     warn_if_not_project_id,
 )
 from .speedinsights import DATASET as SPEED_INSIGHTS_DATASET
+from .speedinsights import (
+    METRICS as KNOWN_METRICS,
+)
 from .speedinsights import OPERATION as OBSERVABILITY_QUERY
 from .speedinsights import build_request as build_speed_request
 from .speedinsights import normalize as normalize_speed
@@ -503,7 +506,9 @@ class Settings:
     #: Speed Insights only: the metrics to query, one request each. The vitals
     #: preset holds five; every other Speed Insights preset holds one.
     metrics: tuple[Metric, ...] = ()
-    aggregation: str = DEFAULT_AGGREGATION
+    #: ``None`` for a metric outside the web vitals, where the server's own
+    #: default is better than any guess this client could make.
+    aggregation: str | None = DEFAULT_AGGREGATION
     all_projects: bool = False
     order_by: str | None = None
     order_direction: str | None = None
@@ -513,6 +518,16 @@ class Settings:
     #: team id IS the owner. For a personal account it is read once from the
     #: user endpoint at run time, because nothing else knows it.
     owner_id: str | None = None
+
+    @property
+    def aggregation_label(self) -> str:
+        """What to call the value column when no aggregation was requested.
+
+        The request omits the field so the server applies the metric's own
+        default, but a column still needs a name, and "value" is honest where a
+        specific aggregation was never asked for.
+        """
+        return self.aggregation or "value"
 
     @property
     def is_speed(self) -> bool:
@@ -712,7 +727,7 @@ def _reject_cross_surface_options(args: argparse.Namespace, preset: Preset) -> N
 
 def _resolve_aggregation(
     args: argparse.Namespace, preset: Preset, metrics: Sequence[Metric]
-) -> str:
+) -> str | None:
     """Resolve the aggregation from --aggregation, --percentile or the preset.
 
     A data point count is a count, so when the user asked for one without
@@ -734,6 +749,12 @@ def _resolve_aggregation(
         return preset.aggregation
     if metrics and all(metric.is_count for metric in metrics):
         return COUNT_AGGREGATION
+    if metrics and any(metric.id not in KNOWN_METRICS for metric in metrics):
+        # Outside the web vitals this client does not know what the metric
+        # measures, and the 75th percentile of a request count answers nothing.
+        # Omitting the field lets the server apply the metric's own default,
+        # which the schema publishes and this client would only be copying.
+        return None
     return DEFAULT_AGGREGATION
 
 
@@ -804,7 +825,15 @@ def _resolve_bucket_timezone(
 
 def _resolve_settings(args: argparse.Namespace, env: Mapping[str, str]) -> Settings:
     """Apply every validation rule, in order, before anything touches the network."""
-    preset = PRESETS[args.preset or DEFAULT_PRESET]
+    preset_name = args.preset
+    if preset_name is None and args.metric:
+        # Naming a metric is unambiguous about intent, and the default preset
+        # reports traffic, which is a different API entirely. Without this the
+        # only way to query one of the other 90-odd metrics would be to pick an
+        # unrelated speed preset first, which reads like a workaround because
+        # it is one.
+        preset_name = "metric"
+    preset = PRESETS[preset_name or DEFAULT_PRESET]
 
     if args.json and args.csv:
         raise ConfigError(
@@ -923,7 +952,7 @@ def _resolve_settings(args: argparse.Namespace, env: Mapping[str, str]) -> Setti
 
     warnings: list[str] = []
     metrics: tuple[Metric, ...] = ()
-    aggregation = DEFAULT_AGGREGATION
+    aggregation: str | None = DEFAULT_AGGREGATION
     granularity: str | None = None
     order_by: str | None = None
     order_direction: str | None = None
@@ -932,8 +961,10 @@ def _resolve_settings(args: argparse.Namespace, env: Mapping[str, str]) -> Setti
     if speed:
         metrics = _resolve_metrics(args, preset)
         aggregation = _resolve_aggregation(args, preset, metrics)
+        known = all(metric.id in KNOWN_METRICS for metric in metrics)
         group_by = validate_speed_group_by(
-            [dim for dim in (args.group_by or []) if dim] or list(preset.group_by)
+            [dim for dim in (args.group_by or []) if dim] or list(preset.group_by),
+            known_metric=known,
         )
         granularity = (
             normalize_granularity(args.granularity, SPEED_INSIGHTS)
@@ -1553,7 +1584,7 @@ def _emit_budgets(
             "the vitals preset"
         )
     budgets = parse_budgets(args.budget, VITAL_ORDER)
-    outcomes = evaluate(budgets, _measured(results, settings.metrics, settings.aggregation))
+    outcomes = evaluate(budgets, _measured(results, settings.metrics, settings.aggregation_label))
 
     stream = err if (args.json or args.csv) else out
     print(file=stream)
@@ -1589,7 +1620,7 @@ def _emit_speed(
         normalize_speed(
             payload,
             metric=metric,
-            aggregation=settings.aggregation,
+            aggregation=settings.aggregation_label,
             group_by=settings.group_by,
             granularity=settings.granularity,
         )
@@ -1623,7 +1654,7 @@ def _emit_speed(
                 results,
                 project=settings.project_label,
                 time_range=settings.time_range,
-                aggregation=settings.aggregation,
+                aggregation=settings.aggregation_label,
                 filter_expr=settings.filter_expr,
                 style=style,
             ),

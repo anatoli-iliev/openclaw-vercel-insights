@@ -467,6 +467,19 @@ a wider `--since`, a looser filter, or checking that the feature is actually
 enabled on the project: Web Analytics and Speed Insights are separate
 per-project switches, and each only has data from the moment it was turned on.
 
+## Metrics beyond web vitals
+
+The same API serves every Vercel metric. If the user asks about function
+invocations, edge requests, cache behaviour, firewall actions or AI gateway
+usage, run `--list-metrics` to see what their account can reach, then query by
+id with `--metric`. Naming a metric is enough; no preset is needed.
+
+Two things to tell the user honestly. Everything outside Web Analytics and Speed
+Insights requires the Observability Plus add-on, so a plan without it gets an
+error that no flag can fix. And for those metrics this tool knows no unit and no
+target, so it reports the number without a verdict; do not describe such a value
+as good or bad on its own.
+
 ## Finding the right project
 
 One Vercel account holds many projects and every query names exactly one, so
