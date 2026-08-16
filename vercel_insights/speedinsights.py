@@ -81,7 +81,10 @@ class Metric:
     id: str
     short: str
     label: str
-    unit: str
+    #: ``None`` for a metric outside the web vitals, whose unit this client does
+    #: not know. An unknown unit renders as a plain number rather than being
+    #: labelled seconds on a guess.
+    unit: str | None
     target: float | None
     #: For a data point count metric, the short name of the vital it counts.
     counts_for: str | None = None
@@ -307,6 +310,15 @@ def validate_metric(name: str) -> Metric:
     if metric_id is not None:
         return METRICS[metric_id]
 
+    if _OTHER_METRIC_ID_RE.match(raw):
+        # The same observability API serves every Vercel metric, not only the
+        # web vitals: function invocations, edge requests, cache results,
+        # firewall actions and so on. Their ids are not enumerated here on
+        # purpose. The schema endpoint is the source of truth for what an
+        # account can reach, --list-metrics prints it, and a hardcoded copy
+        # would go stale the moment Vercel adds one.
+        return _generic_metric(raw)
+
     suggestions = difflib.get_close_matches(key, sorted(METRIC_ALIASES), n=1, cutoff=0.6)
     hint = ""
     if suggestions:
@@ -316,6 +328,33 @@ def validate_metric(name: str) -> Metric:
         f"unknown metric {raw!r}.{hint} The Speed Insights metrics are "
         f"{METRIC_HELP}; add --data-points for the number of measurements "
         f"behind one of them, or pass a full id such as {METRIC_PREFIX}.lcp_ms"
+    )
+
+
+#: A metric id this client does not carry a record for. Deliberately strict:
+#: it must look like an observability metric id, so a typo in a short name is
+#: still caught by the suggestion path rather than sent to the API verbatim.
+#: A dimension name for a metric this client has no record for. Only the shape
+#: is checked, since the real list lives in the schema.
+_OTHER_DIMENSION_RE = re.compile(r"^[a-z][a-z0-9_]*(/[A-Za-z0-9_']+)*$")
+
+_OTHER_METRIC_ID_RE = re.compile(r"^vercel\.[a-z0-9_]+\.[a-z0-9_]+$")
+
+
+def _generic_metric(metric_id: str) -> Metric:
+    """A record for a metric outside the web vitals.
+
+    Nothing is invented. The unit is unknown, so the value renders as a plain
+    number rather than being labelled seconds or milliseconds on a guess, and
+    there is no published target, so no verdict is offered. The label is the id
+    itself, which is what the user typed and what the schema calls it.
+    """
+    return Metric(
+        id=metric_id,
+        short=metric_id.rsplit(".", 1)[-1],
+        label=metric_id,
+        unit=None,
+        target=None,
     )
 
 
@@ -332,7 +371,7 @@ def metric_for(short: str, *, data_points: bool = False) -> Metric:
 # ---------------------------------------------------------------------------
 
 
-def validate_dimension(dimension: str) -> str:
+def validate_dimension(dimension: str, *, known_metric: bool = True) -> str:
     """Validate one grouping dimension against this surface's vocabulary.
 
     A Web Analytics spelling gets its own message rather than a generic one:
@@ -348,6 +387,14 @@ def validate_dimension(dimension: str) -> str:
             "empty grouping dimension; pass a name such as --group-by route"
         )
     if name in SPEED_DIMENSIONS:
+        return name
+
+    if not known_metric and _OTHER_DIMENSION_RE.match(name):
+        # For a metric outside the web vitals this client has no dimension list
+        # to check against, and inventing one would reject grouping that the API
+        # supports. The schema endpoint names each metric's dimensions, so
+        # --list-metrics is the place to look; a wrong name here comes back as
+        # the API's own 400 rather than a guess made locally.
         return name
 
     if name in WEB_ANALYTICS_DIMENSIONS:
@@ -372,14 +419,19 @@ def validate_dimension(dimension: str) -> str:
     )
 
 
-def validate_group_by(dimensions: Sequence[str]) -> list[str]:
+def validate_group_by(
+    dimensions: Sequence[str], *, known_metric: bool = True
+) -> list[str]:
     """Validate a whole grouping: each dimension, repeats, and the count.
 
     Raises:
         ConfigError: On an unknown dimension, a repeat, or more than
             :data:`MAX_GROUP_BY` dimensions.
     """
-    validated = [validate_dimension(dimension) for dimension in dimensions]
+    validated = [
+        validate_dimension(dimension, known_metric=known_metric)
+        for dimension in dimensions
+    ]
 
     seen: set[str] = set()
     for dimension in validated:
@@ -733,7 +785,7 @@ def build_request(
     until: datetime,
     project: str | None = None,
     all_projects: bool = False,
-    aggregation: str = DEFAULT_AGGREGATION,
+    aggregation: str | None = DEFAULT_AGGREGATION,
     group_by: Sequence[str] = (),
     filter_expr: str | None = None,
     limit: int | None = None,
@@ -785,8 +837,9 @@ def build_request(
             owner_id=owner_id,
             all_projects=all_projects,
         ),
-        "aggregation": aggregation,
     }
+    if aggregation:
+        body["aggregation"] = aggregation
     dimensions = list(group_by)
     if dimensions:
         body["groupBy"] = dimensions

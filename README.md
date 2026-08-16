@@ -581,6 +581,34 @@ Nothing was sent. No credential is printed above.
 The token is not in that body, and never is: it lives in the `Authorization`
 header and nowhere else, which is exactly why the body can be printed in full.
 
+## Beyond web vitals
+
+Speed Insights is one family among many on the same query API. Function
+invocations, edge requests, image transformations, ISR operations, firewall
+actions and AI gateway usage are all queryable by id:
+
+```console
+$ vercel-insights --list-metrics                      # what this account can reach
+$ vercel-insights --metric vercel.function_invocation.count --aggregation sum
+$ vercel-insights --metric vercel.request.count --group-by route --limit 10
+```
+
+Metric ids are not hardcoded here. `--list-metrics` asks the API, which is the
+only thing that knows what your account can reach, and it prints each metric's
+unit, aggregations and dimensions so you know what to group by.
+
+For a metric outside the five web vitals this tool claims nothing it cannot
+know: no unit, so the value is a plain number rather than being labelled seconds
+on a guess; no target, so no verdict; and no aggregation is sent unless you name
+one, so the server applies the metric's own default rather than a percentile
+that may be meaningless for a count.
+
+> **Plan note.** Web Analytics and Speed Insights are queryable on any plan.
+> Every other metric requires
+> [Observability Plus](https://vercel.com/docs/observability/observability-plus).
+> Without it these queries return an error, which is a plan limit rather than
+> anything this tool can work around.
+
 ## Guarding performance in CI
 
 `--budget` turns a measurement into a pass or a fail, so a regression can stop a

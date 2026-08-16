@@ -211,6 +211,14 @@ PRESETS: dict[str, Preset] = {
         surface=SPEED_INSIGHTS,
         granularity="1d",
     ),
+    "metric": Preset(
+        name="metric",
+        dataset=SPEED_DATASET,
+        group_by=(),
+        limit=SPEED_DEFAULT_LIMIT,
+        description="Any metric by id, for example --metric vercel.request.count",
+        surface=SPEED_INSIGHTS,
+    ),
     "data-points": Preset(
         name="data-points",
         dataset=SPEED_DATASET,
