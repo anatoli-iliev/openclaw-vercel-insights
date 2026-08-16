@@ -53,6 +53,30 @@ match, and the single script becomes a package.
 
 ### Added
 
+- **Any observability metric is queryable by id**, not only the five web vitals:
+  `--metric vercel.function_invocation.count` and the other ninety-odd the API
+  serves. Naming a metric selects the right surface on its own, so no unrelated
+  preset has to be chosen first. Ids are deliberately not enumerated in the
+  source: `--list-metrics` asks the API, which is the only thing that knows what
+  an account can reach, and a hardcoded copy would go stale the moment Vercel
+  adds one.
+- For a metric outside the web vitals nothing is claimed that cannot be known.
+  No unit, so the value renders as a plain number rather than being labelled
+  seconds on a guess. No published target, so no verdict. No aggregation is sent
+  unless one is named, so the server applies the metric's own default rather
+  than a percentile that would be meaningless for a count. Grouping dimensions
+  are accepted without a local list, because there is none to check against and
+  inventing one would reject grouping the API supports; the web vitals keep
+  their checked list.
+- A `metric` preset, for querying one metric by id with no other opinions.
+
+  **Verification note.** The web vitals path is verified end to end against a
+  live account. These other metrics are not: they require Observability Plus,
+  which the account used for testing does not have. The ids in the tests come
+  from a real schema listing, so they are real, but no query using one has been
+  answered.
+
+
 - **`--budget NAME=VALUE`**, repeatable, which fails with exit code **3** when a
   web vital exceeds the limit. The code is deliberately not 1: a blown budget is
   a successful run reporting bad news, and a CI step usually wants to tell that
