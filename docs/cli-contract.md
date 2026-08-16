@@ -165,7 +165,7 @@ Restated for two surfaces. These are testable properties.
 6. No `eval`, no `exec`, no `subprocess`, no filesystem writes.
 
 The project's public claim changes from "GET-only" to "read-only against a
-three-endpoint allowlist". Documentation must state why one endpoint is POST:
+five-endpoint allowlist". Documentation must state why one endpoint is POST:
 Vercel exposes no GET equivalent for observability queries, and a query body is
 still a read.
 

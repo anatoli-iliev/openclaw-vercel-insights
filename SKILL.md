@@ -12,8 +12,12 @@ description: >-
   referrers, routes, UTM campaigns, devices, browsers, custom events) and
   anything about Vercel Speed Insights (LCP, INP, CLS, FCP and TTFB at a
   percentile, measured against Vercel's published targets, broken down by route,
-  country or device, or tracked over time). Read only: three allowlisted query
-  endpoints, no write path, and it never changes anything in the Vercel account.
+  country or device, or tracked over time). Also lists a Vercel account's
+  projects and which of them have data, checks a web vital against a budget so
+  a build can fail on a regression, and queries any other Vercel observability
+  metric by id, such as function invocations or edge requests. Read only: five
+  allowlisted read endpoints, no write path, and it never changes anything in
+  the Vercel account.
 version: 0.2.0
 homepage: https://github.com/anatoli-iliev/openclaw-vercel-insights
 compatibility: openclaw >=1.0
@@ -91,7 +95,7 @@ before any request is built, with a message naming the preset to use instead.
 
 ## This skill is read-only
 
-**Read-only against a three-endpoint allowlist.** One module-level table in
+**Read-only against a five-endpoint allowlist.** One module-level table in
 `vercel_insights/http.py` maps an operation key to a fixed method and URL, and
 it has exactly three entries:
 
