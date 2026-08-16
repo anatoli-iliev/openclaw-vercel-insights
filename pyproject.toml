@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openclaw-vercel-insights"
-version = "1.0.2"
+version = "1.0.3"
 description = "Read-only OpenClaw skill for querying Vercel Web Analytics and Speed Insights."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -34,7 +34,13 @@ classifiers = [
   "Topic :: Internet :: WWW/HTTP :: Site Management",
   "Typing :: Typed",
 ]
-dependencies = ["requests>=2.28"]
+# The floor is a security floor, not a feature floor: nothing here needs an API
+# newer than 2.28. Every published advisory against requests is fixed by 2.33.0,
+# the most recent being GHSA-gc5v-m9x4-r6x2 (insecure temp file reuse in
+# extract_zipped_paths). Raise it when a new advisory lands, not otherwise, and
+# check that requires-python above still matches: 2.33.0 needs >=3.10, the same
+# floor this project sets.
+dependencies = ["requests>=2.33.0"]
 
 [project.optional-dependencies]
 # The upper bounds are deliberate: ruff and mypy both add diagnostics in new
