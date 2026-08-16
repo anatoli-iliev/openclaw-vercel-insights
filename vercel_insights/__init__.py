@@ -23,7 +23,7 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 
 #: The REST API root. Every allowlisted operation is built from this prefix.
 BASE_URL = "https://api.vercel.com"

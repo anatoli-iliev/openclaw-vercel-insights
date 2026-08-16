@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-08-16
+
+Documentation only. No behaviour changes, and no change to what the tool can
+reach. Released so that the ClawHub listing carries the rewritten setup
+instructions, since `README.md` ships inside the published bundle.
+
+### Fixed
+
+Two blockers that stop a freshly installed copy from running at all. Both were
+found by installing the **published** 1.0.1 into a scratch directory and running
+it as a new user would, and neither is visible from a source checkout, which is
+why 1080 tests, a security review and a clean publish all missed them:
+
+- `clawhub install` does not preserve the executable bit. `bin/vercel-insights`
+  is `100755` in git and arrives at `644`, so the first thing a new user sees is
+  `Permission denied`.
+- `requests` is absent from most system interpreters, so even invoking the
+  launcher through `sh` stops at the dependency error.
+
+Neither is a code defect, and neither is fixable from inside the package. They
+are now handled in step two of the setup instructions instead of being left for
+the reader to discover.
+
+### Changed
+
+- **`README.md` now opens by asking which kind of reader it has** and routes
+  OpenClaw users to a four step walkthrough, each step stating what should
+  appear before continuing, so a reader always knows whether it worked. Adds a
+  symptom to fix table for the failures a beginner is most likely to hit. The
+  terminal instructions are unchanged, moved below the OpenClaw ones. Every
+  command in the new text was run before it was written down.
+- **`docs/openclaw-setup.md`** gains the ClawHub install route alongside the
+  local checkout one, and a troubleshooting row for `Permission denied`.
+- **`.github/CODEOWNERS`** now covers `README.md` and `docs/openclaw-setup.md`.
+  Their setup sections are copy-paste blocks containing a `chmod` and a
+  `pip install`, so a change there runs on a reader's machine as surely as a
+  code change does, and is read by people trusting it precisely because they
+  cannot audit it.
+
+### Known, and deliberately not changed here
+
+`requests>=2.28` permits releases with known vulnerabilities, which ClawHub's
+scanner noted on the 1.0.1 submission. Raising the floor changes what gets
+installed, so it belongs in its own release rather than inside a documentation
+patch.
+
 ## [1.0.1] - 2026-08-16
 
 Documentation accuracy only. No behaviour changes, and no change to what the
@@ -524,7 +570,8 @@ API, packaged as an OpenClaw skill.
   is ever built.
 - No `eval`, no `exec`, no `subprocess`, and no filesystem writes.
 
-[Unreleased]: https://github.com/anatoli-iliev/openclaw-vercel-insights/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/anatoli-iliev/openclaw-vercel-insights/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/anatoli-iliev/openclaw-vercel-insights/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/anatoli-iliev/openclaw-vercel-insights/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/anatoli-iliev/openclaw-vercel-insights/releases/tag/v1.0.0
 [0.2.0]: https://github.com/anatoli-iliev/openclaw-vercel-insights/releases/tag/v0.2.0
