@@ -135,3 +135,22 @@ def test_the_setup_section_documents_the_real_config_mechanism() -> None:
     assert "skills.entries" in TEXT or '"entries"' in TEXT
     assert "apiKey" in TEXT
     assert "primaryEnv" in TEXT
+
+
+def test_setup_leads_with_the_interactive_route() -> None:
+    # `openclaw configure --section skills` prompts for the credential and
+    # writes it where the gateway reads it. Documenting only a hand-edited JSON
+    # file sends people to do by hand what the tool offers to do for them, and
+    # exporting a variable in an interactive shell may never reach the gateway
+    # at all.
+    assert "openclaw configure --section skills" in TEXT
+    setup = TEXT[TEXT.find("## Setting it up") :]
+    interactive = setup.find("openclaw configure --section skills")
+    by_hand = setup.find('"skills": {')
+    assert interactive < by_hand, "the interactive route should come first"
+
+
+def test_the_secret_reference_form_is_documented() -> None:
+    # apiKey accepts a reference as well as a literal, so the token can stay in
+    # the environment or a secrets provider rather than in openclaw.json.
+    assert "--ref-provider" in TEXT and "--ref-id VERCEL_TOKEN" in TEXT

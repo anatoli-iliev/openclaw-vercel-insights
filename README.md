@@ -117,6 +117,24 @@ From ClawHub:
 clawhub install vercel-insights
 ```
 
+Using it as an OpenClaw skill? Install it, then let OpenClaw prompt for the
+token rather than exporting anything:
+
+```bash
+openclaw skills install /path/to/openclaw-vercel-insights --as vercel-insights
+openclaw configure --section skills
+openclaw skills check          # confirms the requirement resolved
+```
+
+The gateway runs as its own process, so a variable exported in an interactive
+shell may not reach it. `openclaw configure` writes it where the gateway reads
+it. To keep the token out of the config file entirely:
+
+```bash
+openclaw config set skills.entries.vercel-insights.apiKey \
+  --ref-provider default --ref-source env --ref-id VERCEL_TOKEN
+```
+
 Python 3.10 or newer, and `requests` is the only thing outside the standard
 library. The virtualenv in the quick start is not ceremony: Debian 12+, Ubuntu
 23.04+, Fedora and Homebrew Python all mark the system interpreter as externally
