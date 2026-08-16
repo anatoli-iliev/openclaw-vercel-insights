@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-08-16
+
+Raises the `requests` floor past every published advisory. No code changes.
+
+### Security
+
+- **`requests>=2.28` becomes `requests>=2.33.0`.** ClawHub's scanner flagged the
+  old bound on the 1.0.1 submission: it permitted releases with known
+  vulnerabilities. Enumerating the GitHub Advisory Database for the package
+  gives eight advisories, and the newest applicable one is
+  **GHSA-gc5v-m9x4-r6x2**, insecure temporary file reuse in
+  `extract_zipped_paths()`, fixed in **2.33.0**. The three that a reader is more
+  likely to have heard of are all older: the `Proxy-Authorization` leak
+  (GHSA-j8r2-6x86-q33q, fixed 2.31.0), a `Session` not honouring `verify=False`
+  on later requests (GHSA-9wx4-h78v-vm56, 2.32.0), and the `.netrc` credential
+  leak via malicious URLs (GHSA-9hjg-9r4m-mvj7, 2.32.4).
+
+  A floor of 2.32.4 would therefore have looked sufficient and been wrong, which
+  is the argument for enumerating the advisory database rather than recalling
+  the well-known CVEs.
+
+  This is a security floor, not a feature floor: nothing in this codebase needs
+  an API newer than 2.28. It is expressed as `>=` rather than a pin so that
+  users and distributions stay free to move forward.
+
+  `requests` 2.33.0 declares `requires-python >=3.10`, exactly matching this
+  project's own floor, so the supported Python range is unchanged. Verified by
+  installing `requests==2.33.0` specifically, rather than the latest release,
+  and running the full suite against it: 1080 passed.
+
 ## [1.0.2] - 2026-08-16
 
 Documentation only. No behaviour changes, and no change to what the tool can
@@ -570,7 +600,8 @@ API, packaged as an OpenClaw skill.
   is ever built.
 - No `eval`, no `exec`, no `subprocess`, and no filesystem writes.
 
-[Unreleased]: https://github.com/anatoli-iliev/openclaw-vercel-insights/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/anatoli-iliev/openclaw-vercel-insights/compare/v1.0.3...HEAD
+[1.0.3]: https://github.com/anatoli-iliev/openclaw-vercel-insights/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/anatoli-iliev/openclaw-vercel-insights/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/anatoli-iliev/openclaw-vercel-insights/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/anatoli-iliev/openclaw-vercel-insights/releases/tag/v1.0.0
