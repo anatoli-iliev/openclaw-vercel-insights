@@ -130,3 +130,52 @@ def test_an_explicit_flag_still_wins_over_both(cli: Cli) -> None:
     )
     assert code == 0, err
     assert session.calls[0]["json"]["scope"]["ownerId"] == "own_flag"
+
+
+# ---------------------------------------------------------------------------
+# A team owned project needs its team named on every request
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("status", [403, 404])
+def test_a_web_analytics_refusal_suggests_the_team_when_none_was_given(
+    cli: Cli, status: int
+) -> None:
+    # Vercel: "For team projects, find the team's teamId or slug and include one
+    # in each request." Omitting it looks exactly like not having access, and
+    # the API says nothing about which of the two it is.
+    body = {"error": {"code": "forbidden", "message": "Not authorized"}}
+    session = FakeSession(*[FakeResponse(status, body) for _ in range(4)])
+    code, _out, err = cli.run(
+        ["top-pages", *WINDOW],
+        env={"VERCEL_TOKEN": TOKEN, "VERCEL_PROJECT_ID": PROJECT},
+        session=session,
+    )
+    assert code == 1
+    assert "VERCEL_TEAM_ID" in err
+    assert "--team" in err
+
+
+def test_no_team_hint_when_a_team_was_already_configured(cli: Cli) -> None:
+    # Suggesting the fix they already applied would send them the wrong way.
+    body = {"error": {"code": "forbidden", "message": "Not authorized"}}
+    session = FakeSession(*[FakeResponse(403, body) for _ in range(4)])
+    code, _out, err = cli.run(
+        ["top-pages", *WINDOW],
+        env={"VERCEL_TOKEN": TOKEN, "VERCEL_PROJECT_ID": PROJECT, "VERCEL_TEAM_ID": "team_x"},
+        session=session,
+    )
+    assert code == 1
+    assert "VERCEL_TEAM_ID" not in err
+
+
+def test_no_team_hint_on_an_unrelated_failure(cli: Cli) -> None:
+    body = {"error": {"code": "bad_request", "message": "bad value"}}
+    session = FakeSession(FakeResponse(400, body))
+    code, _out, err = cli.run(
+        ["top-pages", *WINDOW],
+        env={"VERCEL_TOKEN": TOKEN, "VERCEL_PROJECT_ID": PROJECT},
+        session=session,
+    )
+    assert code == 1
+    assert "VERCEL_TEAM_ID" not in err

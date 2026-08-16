@@ -137,17 +137,17 @@ def test_the_setup_section_documents_the_real_config_mechanism() -> None:
     assert "primaryEnv" in TEXT
 
 
-def test_setup_leads_with_the_interactive_route() -> None:
-    # `openclaw configure --section skills` prompts for the credential and
-    # writes it where the gateway reads it. Documenting only a hand-edited JSON
-    # file sends people to do by hand what the tool offers to do for them, and
-    # exporting a variable in an interactive shell may never reach the gateway
-    # at all.
-    assert "openclaw configure --section skills" in TEXT
+def test_setup_leads_with_the_supported_route() -> None:
+    # `openclaw skills info` names two routes for saving the key: the Control UI
+    # and `openclaw config set ...apiKey`. Both were checked against a real
+    # install. `openclaw configure --section skills` reports status and does not
+    # prompt, so documenting it as the way in sent people to a dead end.
     setup = TEXT[TEXT.find("## Setting it up") :]
-    interactive = setup.find("openclaw configure --section skills")
+    supported = setup.find("openclaw config set skills.entries")
     by_hand = setup.find('"skills": {')
-    assert interactive < by_hand, "the interactive route should come first"
+    assert supported != -1, "the supported CLI route is missing"
+    assert supported < by_hand, "the supported route should come before hand editing"
+    assert "Control UI" in setup
 
 
 def test_the_secret_reference_form_is_documented() -> None:
