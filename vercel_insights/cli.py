@@ -2187,7 +2187,7 @@ def _run(
         session.close()
 
     if report is not None:
-        return _emit_logs(settings, args, report, style, out)
+        return _emit_logs(settings, args, report, style, out, err)
     if settings.is_speed:
         return _emit_speed(settings, args, payloads, style, out, err)
     if settings.preset.name == "overview":
@@ -2436,6 +2436,7 @@ def _emit_logs(
     report: LogReport,
     style: Style,
     out: TextIO,
+    err: TextIO,
 ) -> int:
     """Print a logs report in whichever format was asked for.
 
@@ -2445,16 +2446,27 @@ def _emit_logs(
         report: The collected report.
         style: Colour and glyph settings.
         out: Stream for the report.
+        err: Stream for the report's notes when the report itself is machine
+            readable, the same way ``_emit_budgets`` moves its verdict aside for
+            ``--json`` and ``--csv``.
 
     Returns:
         0, always. An empty window is a complete answer to "what broke", and
         exiting non-zero for it would fail a caller's pipeline over good news.
     """
     if args.json:
+        # The notes are a field of the document here, so they need no second
+        # copy: a consumer reads them out of it.
         print(format_logs_json(report), file=out)
         return 0
     if args.csv:
         print(format_logs_csv(report), end="", file=out)
+        # CSV has nowhere to carry a caveat, so the caveats go to the other
+        # stream rather than nowhere: without this, a table cut at its limit is
+        # indistinguishable from a complete one, and an empty window from a
+        # healthy site, to exactly the caller who cannot tell otherwise.
+        for note in report.notes:
+            print(f"note: {note}", file=err)
         return 0
     if settings.preset.name == "error-summary":
         # Tallied from the merged entries, and by this one caller, so the tables

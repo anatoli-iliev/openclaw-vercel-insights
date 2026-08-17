@@ -907,7 +907,10 @@ parameter rather than observed.
   has no such restriction.
 - `--json` and `--csv` are mutually exclusive. `--csv` needs a single table, so
   it is rejected with `overview`, `vitals` and `error-summary`, each of which
-  prints several.
+  prints several. On a logs preset `--csv` writes the rows to stdout and the
+  report's notes to stderr, so read both: the truncation and retention caveats
+  are only on the second stream, and CSV alone cannot tell a table cut at its
+  limit from a complete one.
 - UTM dimensions require Web Analytics Plus or Enterprise, and custom events
   require Pro. On lower plans those queries return nothing rather than failing.
   Speed Insights needs no Observability Plus.

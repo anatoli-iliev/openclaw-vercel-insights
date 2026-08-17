@@ -772,7 +772,7 @@ its own 400 with Vercel's message.
 | Flag | Default | Notes |
 | --- | --- | --- |
 | `--json` | off | Machine readable, with the untouched API payload under `raw`. Not with `--csv`. On a logs preset each entry carries the whole original row under its own `raw` key. |
-| `--csv` | off | `csv.writer` quoting. Not with `--json`, and not with `overview`, `vitals` or `error-summary`, each of which prints several tables. |
+| `--csv` | off | `csv.writer` quoting. Not with `--json`, and not with `overview`, `vitals` or `error-summary`, each of which prints several tables. On a logs preset the rows go to stdout and the report's notes to stderr, so a redirected file holds only data and the truncation and retention caveats are still on screen. |
 | `--dry-run` | off | Print the request, send nothing, no token needed. Prints the full JSON body on a POST. |
 | `--timeout SECONDS` | `30.0` | Per request. Must be a finite number greater than 0; anything else is a usage error. |
 | `--max-retries N` | `3` | Retries after the first attempt. Only 408, 429 and 5xx responses and network failures are retried. |

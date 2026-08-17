@@ -328,7 +328,7 @@ The honesty rules are part of the contract, not presentation:
 1. **An empty result over a window wider than one hour prints the retention figures** (1 hour Hobby, 1 day Pro, 3 days Enterprise, 30 days with Observability Plus) and says an empty answer may mean the logs aged out rather than that nothing failed. Below an hour there is nothing to warn about, and warning every time would train the reader to skip it.
 2. **4xx is excluded from `errors` deliberately**: a 401 on `/api/me` is the application working. `--status-code 4xx` asks for them by name.
 3. **`--level` only sees requests that logged**, stated in `--help`, in `SKILL.md` and in the `errors` header line.
-4. **Truncation is always visible, and a truncated report describes its sample.** When more rows matched than were shown, the count sentence says so of itself ("showing the most recent N of more that matched in the window") rather than counting the sample as if it were the window, a following line repeats that more matched and says what to do, and the most-affected route line is scoped to the rows shown. When a two-call `errors` run truncated, it adds that the result is the most recent N of each kind rather than a global top N.
+4. **Truncation is always visible, and a truncated report describes its sample.** When more rows matched than were shown, the count sentence says so of itself ("showing the most recent N of more that matched in the window") rather than counting the sample as if it were the window, a following line repeats that more matched and says what to do, and the most-affected route line is scoped to the rows shown. When a two-call `errors` run truncated, it adds that the result is the most recent N of each kind rather than a global top N. This holds in every format: `--json` carries the notes in the document and `--csv` prints them to stderr, because a consumer piping CSV is precisely the one who cannot tell otherwise.
 5. **The header line describes the query that actually ran.** The `errors` preset prints what counted as an error above the table (a 5xx response, a crashed function, or a request that logged an error or fatal line) while it applied that definition itself. An explicit `--level` or `--status-code` collapses it to a single call carrying the user's filter, so the rows become whatever that filter matched: the header then names that filter and says it replaced the definition rather than narrowing it, and the footer counts "requests" rather than "errors", because `--status-code 4xx` returns 401s and a 401 is not an error by any definition this tool holds. `error-summary` prints no header note at all, because the note is carried on the report but only the row renderer prints it; it prints the filter line and its `logged_only` footer instead.
 6. **No sentence outruns its own table.** `logged_only` counts a row only when it is a non-5xx that did not crash *and* carries an error or fatal log line, all three checked, so the "count as errors only because they logged an error or fatal line" footer can never appear beside a message table whose every group reads `(no log line)`.
 
@@ -337,7 +337,10 @@ entry carrying the tabulated columns plus the whole original row under `raw`, so
 nothing the API sent is discarded. `--csv` emits one row per request with the
 columns `time`, `level`, `status`, `method`, `route`, `path`, `source`,
 `requestId`, `message`; a message containing a newline stays in one cell because
-`csv.writer` quotes it.
+`csv.writer` quotes it. **A `--csv` run prints the report's notes to stderr**,
+one per line and prefixed `note: `, so the data stream stays machine readable
+while truncation and the retention caveat stay visible: `--json` carries them
+inside the document, and CSV has nowhere to put them.
 
 ## Module surface
 

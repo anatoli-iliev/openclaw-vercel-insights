@@ -90,8 +90,11 @@ text. Everything else in this release is additive.
 - **`--json` and `--csv` on the logs surface.** JSON carries `query`, `entries`,
   `truncated`, `pagesFetched` and `notes`, with the whole original row under each
   entry's `raw` key, so no field this tool has no column for is discarded. CSV is
-  one row per request. `--csv` is refused on `error-summary`, which prints three
-  tables, exactly as it is on `overview` and `vitals`.
+  one row per request, with the report's notes printed to **stderr**: the data
+  stream stays machine readable, and a consumer piping CSV is exactly the one who
+  could not otherwise tell a table cut at its limit from a complete one, or an
+  empty window from a healthy site. `--csv` is refused on `error-summary`, which
+  prints three tables, exactly as it is on `overview` and `vitals`.
 
 - **A 403 from the logs endpoint explains itself**: that endpoint is scoped by the
   owning account through an `ownerId` parameter it requires and cannot infer, so

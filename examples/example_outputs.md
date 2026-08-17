@@ -730,6 +730,12 @@ $ vercel-insights logs --request-id err-3 --json --since 2026-08-17T10:36:00Z --
 One row per request. A message containing a newline stays inside its cell,
 because `csv.writer` quotes any field holding the line terminator.
 
+The `note:` lines below are on **stderr**, which is why they can be here at all:
+CSV has nowhere to carry a caveat, and a consumer piping it is exactly the one
+who could not otherwise tell a table cut at its limit from a complete one. So
+`errors --csv > errors.csv` writes only the four data rows to the file and still
+prints the three notes to the terminal.
+
 ```console
 $ vercel-insights errors --csv --since 2026-08-17T10:36:00Z --until 2026-08-17T11:06:00Z
 time,level,status,method,route,path,source,requestId,message
@@ -737,6 +743,9 @@ time,level,status,method,route,path,source,requestId,message
 2026-08-17T11:03:19.400000+00:00,error,500,POST,/api/checkout,/api/checkout,serverless,err-2,TypeError: Cannot read properties of undefined
 2026-08-17T11:02:41+00:00,fatal,200,GET,/api/cron/sync,/api/cron/sync,serverless,err-3,FATAL: connection pool exhausted
 2026-08-17T10:58:03+00:00,,502,GET,/api/offerings/[slug],/api/offerings/summer,serverless,err-4,
+note: 4 errors in 30 minutes: 2 x 500, 1 x 200, 1 x 502.
+note: Most affected route: /api/checkout (2).
+note: 1 of them returned a non-5xx status and count as errors only because they logged an error or fatal line.
 [exit code 0]
 ```
 

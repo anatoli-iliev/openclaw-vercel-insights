@@ -500,6 +500,48 @@ def test_csv_output_is_one_row_per_request(cli: Cli) -> None:
     assert [row[7] for row in rows[1:]] == ["err-1", "err-2"]
 
 
+def test_csv_reports_truncation_on_the_error_stream(cli: Cli) -> None:
+    # CSV has no room for a caveat, and dropping it would leave the one consumer
+    # who cannot tell a cut table from a complete one with two rows and no
+    # signal. The data stream stays machine readable; the caveat goes beside it.
+    full = {
+        "rows": [logs_row(requestId=f"r{index}") for index in range(50)],
+        "hasMoreRows": True,
+    }
+    session = FakeSession(FakeResponse(200, full))
+    code, out, err = cli.run(["logs", "--limit", "2", "--csv"], BASE_ENV, session)
+    assert code == 0, err
+    rows = list(csv.reader(io.StringIO(out)))
+    # Header plus the two rows asked for, and nothing else on the data stream.
+    assert len(rows) == 3
+    assert all(not line.startswith("note:") for line in out.splitlines())
+    assert "note: " in err
+    assert "Showing the most recent 2 of more requests that matched" in err
+    assert "More rows matched than were shown" in err
+
+
+def test_csv_over_an_empty_wide_window_still_warns_about_retention(cli: Cli) -> None:
+    # A lone header row reads as "nothing failed" unless something says the logs
+    # may simply have aged out, and that is the whole reason the note exists.
+    session = FakeSession(
+        FakeResponse(200, LOGS_EMPTY_PAGE), FakeResponse(200, LOGS_EMPTY_PAGE)
+    )
+    code, out, err = cli.run(["errors", "--csv", "--since", "24h"], BASE_ENV, session)
+    assert code == 0, err
+    assert out.splitlines() == ["time,level,status,method,route,path,source,requestId,message"]
+    assert "retention" in err and "aged out" in err
+
+
+def test_json_does_not_repeat_its_notes_on_the_error_stream(cli: Cli) -> None:
+    # They are a field of the document there, so a second copy would be noise a
+    # caller has to filter rather than a caveat it cannot otherwise see.
+    session = FakeSession(FakeResponse(200, LOGS_ERROR_PAGE))
+    code, out, err = cli.run(["logs", "--json"], BASE_ENV, session)
+    assert code == 0, err
+    assert json.loads(out)["notes"]
+    assert "note: " not in err
+
+
 def test_a_403_explains_token_scope(cli: Cli) -> None:
     session = FakeSession(FakeResponse(403, FORBIDDEN))
     code, _out, err = cli.run(["logs"], BASE_ENV, session)
