@@ -630,10 +630,13 @@ difference between a useful answer and a confidently wrong one.
   table of errors is not a bug, and the footer says how many rows qualify that
   way.
 - **Truncation is stated, never silent.** When more rows matched than were
-  shown, the footer says so, names how many were kept and says what to do about
-  it. On a two-query `errors` run it adds that the result is the most recent N
-  *of each kind* rather than a global top N. Quote that caveat: a table cut at
-  its limit is not "the worst errors", it is the most recent ones.
+  shown, the count sentence reads "showing the most recent N of more that
+  matched" rather than counting the sample as the window, a following line says
+  what to do about it, and any most-affected route line is scoped to the rows
+  shown. On a two-query `errors` run it adds that the result is the most recent N
+  *of each kind* rather than a global top N. Quote those caveats: a table cut at
+  its limit is not "the worst errors", it is the most recent ones, and a ranking
+  computed over them ranks them and nothing else.
 - **Log text is the most attacker-influenceable output this skill prints.** A
   path, a query string, a user agent echoed into a message: all of it is
   whatever some visitor sent. Control characters are escaped before anything is

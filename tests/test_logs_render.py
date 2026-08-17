@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from typing import Any
 
 import pytest
-from helpers import LOGS_EMPTY_PAGE, LOGS_ERROR_PAGE, utc
+from helpers import LOGS_EMPTY_PAGE, LOGS_ERROR_PAGE, logs_row, utc
 
 from vercel_insights import logs as vi_logs
 from vercel_insights.render import (
@@ -149,6 +149,49 @@ def test_truncation_is_stated_rather_than_implied() -> None:
     assert "more" in text.lower()
     # Two rows out of a possible 200, so there is room to ask for more.
     assert f"Raise --limit (up to {vi_logs.MAX_LIMIT})" in text
+
+
+def test_a_truncated_report_counts_the_rows_shown_not_the_window() -> None:
+    # There were not 2 errors in 30 minutes: there were more, and these are the
+    # 2 most recent of them. The sentence has to say which it is describing.
+    text = render_logs(_report(LOGS_ERROR_PAGE, truncated=True, requested_limit=2))
+    assert "Showing the most recent 2 of more errors that matched in 30 minutes" in text
+    assert "2 errors in 30 minutes" not in text
+
+
+def test_a_truncated_report_scopes_its_ranking_to_the_rows_shown() -> None:
+    # A most-affected route computed over the most recent N is a fact about
+    # those N rows, not about the window, and reading it as a ranking of the
+    # window is exactly the mistake an unqualified line invites.
+    payload = {
+        "rows": [
+            *LOGS_ERROR_PAGE["rows"],
+            {
+                "requestId": "err-3",
+                "timestamp": "2026-08-17T11:01:00.000Z",
+                "statusCode": 500,
+                "requestPath": "/api/checkout",
+                "route": "/api/checkout",
+            },
+        ]
+    }
+    truncated = render_logs(_report(payload, truncated=True, requested_limit=3))
+    assert "Most affected route among the rows shown: /api/checkout (2)." in truncated
+    whole = render_logs(_report(payload))
+    assert "Most affected route: /api/checkout (2)." in whole
+
+
+def test_a_tie_at_the_top_is_not_reported_as_a_most_affected_route() -> None:
+    # LOGS_ERROR_PAGE holds one row on each of two routes, so the leader is
+    # whichever sorted first alphabetically. Printing that as "most affected"
+    # reports the tiebreak as a finding.
+    text = render_logs(_report(LOGS_ERROR_PAGE))
+    assert "Most affected route" not in text
+
+
+def test_one_route_alone_is_not_reported_as_most_affected_either() -> None:
+    payload = {"rows": [logs_row(requestId="a", statusCode=500)]}
+    assert "Most affected route" not in render_logs(_report(payload))
 
 
 def test_a_truncation_at_the_ceiling_does_not_advise_raising_the_limit() -> None:

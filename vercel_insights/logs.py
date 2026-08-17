@@ -945,6 +945,24 @@ RETENTION_NOTE = (
 SHORTEST_RETENTION = timedelta(hours=1)
 
 
+def _leading_route(tallies: Sequence[RouteTally]) -> RouteTally | None:
+    """The route that actually leads the ranking, or ``None`` when none does.
+
+    Args:
+        tallies: The per route tallies, already ordered by count then name.
+
+    Returns:
+        The first tally when it outnumbers the second, and ``None`` otherwise.
+        One route on its own leads nothing, since there is no ranking to lead,
+        and two routes tied at the top mean the ranking has no winner: printing
+        the first of them as "most affected" would report the alphabetical
+        accident that broke the tie as a finding.
+    """
+    if len(tallies) < 2:
+        return None
+    return tallies[0] if tallies[0].count > tallies[1].count else None
+
+
 def _header_note(*, counts_errors: bool, filters: Mapping[str, str]) -> str | None:
     """The line above the table saying what the rows in it are.
 
@@ -1040,10 +1058,25 @@ def build_report(
         breakdown = ", ".join(
             f"{count} x {status}" for status, count in summary.by_status
         )
-        notes.append(f"{summary.total} {noun}{plural} in {window}: {breakdown}.")
-        if len(summary.by_route) > 1:
-            worst = summary.by_route[0]
-            notes.append(f"Most affected route: {worst.route} ({worst.count}).")
+        if truncated:
+            # A truncated report holds a sample, so the sentence counts what is
+            # on screen. "5 requests in 30 minutes" over the 5 most recent of
+            # more that matched describes a window nobody queried.
+            notes.append(
+                f"Showing the most recent {summary.total} of more {noun}s that "
+                f"matched in {window}: {breakdown}."
+            )
+        else:
+            notes.append(f"{summary.total} {noun}{plural} in {window}: {breakdown}.")
+        leader = _leading_route(summary.by_route)
+        if leader is not None:
+            # Ranked over the rows shown, which on a truncated report is the most
+            # recent N rather than the window: a ranking read off a sample is
+            # only about the sample, and saying otherwise invents a finding.
+            scope = " among the rows shown" if truncated else ""
+            notes.append(
+                f"Most affected route{scope}: {leader.route} ({leader.count})."
+            )
         if counts_errors and summary.logged_only:
             # summarize checks for the log line itself, so this sentence is
             # about rows that really carry one. It said the opposite for every
@@ -1067,10 +1100,9 @@ def build_report(
                 f"{MAX_LIMIT} rows is all this surface will fetch, so narrow the "
                 "window with --since, or filter with --route or --status-code."
             )
-        notes.append(
-            "More rows matched than were shown: this is the most recent "
-            f"{requested_limit}. {remedy}"
-        )
+        # How many were kept is the count sentence's job now, so this one carries
+        # the fact and the remedy rather than repeating the number.
+        notes.append(f"More rows matched than were shown. {remedy}")
         if counts_errors and _is_two_call(filters):
             notes.append(
                 "Both filters were paging, so this is the most recent "

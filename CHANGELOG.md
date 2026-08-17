@@ -62,8 +62,11 @@ text. Everything else in this release is additive.
   client-side and paging stops after 4 pages: a page took up to 6 seconds live,
   and 4 pages is already 24 seconds against a 30 second timeout. Rows past the
   limit are left out rather than rolled up into an `Others` row, and the footer
-  says so. On a two-query `errors` run it adds that the answer is the most recent
-  N *of each kind* rather than a global top N.
+  says so. A truncated report then describes its sample rather than the window:
+  the count reads "showing the most recent N of more that matched", and the
+  most-affected route line, which is a ranking of the rows shown, says as much.
+  On a two-query `errors` run it adds that the answer is the most recent N *of
+  each kind* rather than a global top N.
 
 - **The honesty rules, printed rather than implied.** An empty answer over a
   window wider than an hour prints the retention figures (1 hour Hobby, 1 day Pro,
