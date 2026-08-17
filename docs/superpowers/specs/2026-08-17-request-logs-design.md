@@ -611,8 +611,24 @@ errors" is worse than no feature.
    gains logs cases.
 6. **Log bodies may contain the user's own secrets.** SKILL.md tells the agent
    not to forward log output to any external service, and to quote only the
-   lines needed to answer the question. The existing `scrub_credentials` still
-   redacts the Vercel token if it ever appears in one.
+   lines needed to answer the question. Nothing in this tool can tell a secret
+   from ordinary text in a log message, so no general redaction is possible or
+   claimed.
+
+   An earlier draft of this rule said "the existing `scrub_credentials` still
+   redacts the Vercel token if it ever appears in one". **That was false**, and
+   it was proved false during implementation by driving the CLI with a response
+   whose log message contained the token: `scrub_credentials` runs only on
+   strings heading into an `ApiError`, so a token echoed back on a successful
+   response printed verbatim.
+
+   That mattered because SKILL.md already promises the token "never appears in
+   a URL, a query parameter, a request body, a log line, an error message, or
+   any output this skill prints", and this is the first surface that prints
+   arbitrary remote text, so it was the first that could break that promise.
+   The fix is to scrub the one secret the tool does know, its own token, out of
+   rendered log text on the way out. A user's own unrelated secrets remain
+   their own to handle, which is what the guidance is for.
 
 ## 10. Errors and exit codes
 
