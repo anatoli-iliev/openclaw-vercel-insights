@@ -24,12 +24,20 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from . import ApiError, ConfigError, sanitize_label, sanitize_message
 from .http import PreparedRequest, default_headers, operation_url
-from .render import ERROR_LEVELS, LogEntry, LogLine, LogSummary, MessageTally, RouteTally
+from .render import (
+    ERROR_LEVELS,
+    LogEntry,
+    LogLine,
+    LogReport,
+    LogSummary,
+    MessageTally,
+    RouteTally,
+)
 from .timerange import to_unix_ms
 
 #: The operation key this surface uses. A key into ``http.OPERATIONS``, never a
@@ -670,4 +678,132 @@ def summarize(entries: Sequence[LogEntry]) -> LogSummary:
         by_route=by_route,
         by_message=by_message,
         logged_only=logged_only,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Reporting
+# ---------------------------------------------------------------------------
+
+#: What the errors presets count, stated in the output so the reader is never
+#: guessing. Both halves matter: see the module docstring.
+ERROR_DEFINITION = (
+    "Counted as an error: a 5xx response, a crashed function, or a request "
+    "that logged an error or fatal line."
+)
+
+#: Read from https://vercel.com/docs/runtime-logs on 2026-08-17. Printed when a
+#: query came back empty over a window longer than the shortest retention, so an
+#: empty answer is never mistaken for a healthy one.
+RETENTION_NOTE = (
+    "Runtime log retention is 1 hour on Hobby, 1 day on Pro, 3 days on "
+    "Enterprise and 30 days with Observability Plus, so an empty result over a "
+    "longer window can mean the logs aged out rather than that nothing failed."
+)
+
+#: The shortest retention any plan has. Below this there is nothing to warn
+#: about, and a warning on every empty answer trains the reader to ignore it.
+SHORTEST_RETENTION = timedelta(hours=1)
+
+
+def _window_prose(time_range: tuple[datetime, datetime]) -> str:
+    """The window as a person says it: "30 minutes", "6 hours", "3 days"."""
+    span = time_range[1] - time_range[0]
+    minutes = int(round(span.total_seconds() / 60))
+    if minutes < 60:
+        return f"{minutes} minute{'' if minutes == 1 else 's'}"
+    hours = span.total_seconds() / 3600
+    if hours < 48:
+        rounded = int(round(hours))
+        return f"{rounded} hour{'' if rounded == 1 else 's'}"
+    days = int(round(hours / 24))
+    return f"{days} day{'' if days == 1 else 's'}"
+
+
+def build_report(
+    entries: Sequence[LogEntry],
+    *,
+    time_range: tuple[datetime, datetime],
+    project_label: str,
+    preset: str,
+    filters: Mapping[str, str],
+    truncated: bool,
+    pages_fetched: int,
+    requested_limit: int,
+    counts_errors: bool,
+) -> LogReport:
+    """Wrap entries in everything needed to print them honestly.
+
+    Every sentence the output adds beyond the table is composed here: what
+    counted as an error, how many there were, what was left out, and what an
+    empty answer does not prove. ``render.py`` only lays out what it is given.
+
+    Args:
+        entries: The merged entries, newest first.
+        time_range: The resolved window.
+        project_label: How to name what was queried.
+        preset: The preset name, shown in the title.
+        filters: The filters the user asked for, wire-named.
+        truncated: Whether any call left rows behind.
+        pages_fetched: How many requests were spent.
+        requested_limit: The row budget that was in force.
+        counts_errors: True for the presets that filter to failures.
+
+    Returns:
+        The report, ready to render in any format.
+    """
+    window = _window_prose(time_range)
+    notes: list[str] = []
+    hint: str | None = None
+
+    if entries:
+        summary = summarize(entries)
+        noun = "error" if counts_errors else "request"
+        plural = "" if summary.total == 1 else "s"
+        breakdown = ", ".join(
+            f"{count} x {status}" for status, count in summary.by_status
+        )
+        notes.append(f"{summary.total} {noun}{plural} in {window}: {breakdown}.")
+        if len(summary.by_route) > 1:
+            worst = summary.by_route[0]
+            notes.append(f"Most affected route: {worst.route} ({worst.count}).")
+        if counts_errors and summary.logged_only:
+            notes.append(
+                f"{summary.logged_only} of them returned a non-5xx status and "
+                "count as errors only because they logged an error or fatal line."
+            )
+        hint = (
+            "Add --expand for full messages, or --request-id to pull one request "
+            "apart."
+        )
+
+    if truncated:
+        notes.append(
+            f"More rows matched than were shown: this is the most recent "
+            f"{requested_limit}. Raise --limit (up to {MAX_LIMIT}) or narrow the "
+            "window."
+        )
+        if counts_errors and not {"level", "statusCode"} & set(filters):
+            notes.append(
+                "Both filters were paging, so this is the most recent "
+                f"{requested_limit} of each kind rather than a global top "
+                f"{requested_limit}."
+            )
+
+    if not entries and time_range[1] - time_range[0] > SHORTEST_RETENTION:
+        notes.append(RETENTION_NOTE)
+
+    return LogReport(
+        entries=list(entries),
+        time_range=time_range,
+        project_label=project_label,
+        preset=preset,
+        window_label=window,
+        filters=dict(filters),
+        truncated=truncated,
+        pages_fetched=pages_fetched,
+        requested_limit=requested_limit,
+        header_note=ERROR_DEFINITION if counts_errors else None,
+        notes=tuple(notes),
+        hint=hint,
     )

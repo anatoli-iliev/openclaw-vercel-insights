@@ -24,7 +24,7 @@ import io
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from . import OTHERS_LABEL, sanitize_label
@@ -375,6 +375,43 @@ class LogSummary:
     #: plain logs preset, it would count every ordinary sub-500 request in
     #: the window instead.
     logged_only: int
+
+
+@dataclass(frozen=True)
+class LogReport:
+    """Everything :func:`render_logs` needs, already decided by ``logs.py``.
+
+    ``render.py`` lays this out without knowing any API fact: every sentence
+    beyond the table itself, including whether one is owed at all, is decided
+    by :func:`vercel_insights.logs.build_report` and carried here as data.
+    """
+
+    entries: list[LogEntry]
+    time_range: tuple[datetime, datetime]
+    project_label: str
+    preset: str
+    #: The window as a person says it, for example "30 minutes". Composed in
+    #: logs.py so it cannot disagree with the range line.
+    window_label: str = ""
+    filters: dict[str, str] = field(default_factory=dict)
+    truncated: bool = False
+    pages_fetched: int = 0
+    requested_limit: int = 0
+    header_note: str | None = None
+    notes: tuple[str, ...] = ()
+    #: The "try this next" line, dropped when --expand already did it.
+    hint: str | None = None
+
+
+#: Column widths for the request logs table, wide enough for a route or a
+#: one-line message excerpt without either dominating the row.
+LOG_MESSAGE_WIDTH = 34
+LOG_ROUTE_WIDTH = 32
+
+#: Printed in the message column for an error that logged nothing, so a blank
+#: cell there reads as the fact that the response failed before any handler
+#: printed rather than as a rendering fault.
+NO_LINE_ERROR = "(no log line: the response failed)"
 
 
 @dataclass(frozen=True)
@@ -990,3 +1027,112 @@ def render_vitals(
         )
     )
     return "\n".join(lines)
+
+
+def _log_time(entry: LogEntry, time_range: tuple[datetime, datetime]) -> str:
+    """The row's clock, at a precision the window justifies."""
+    if entry.timestamp is None:
+        return "(no time)"
+    span = time_range[1] - time_range[0]
+    pattern = "%H:%M:%S" if span <= timedelta(hours=24) else "%m-%d %H:%M:%S"
+    return entry.timestamp.strftime(pattern)
+
+
+def _log_message_cell(entry: LogEntry, style: Style) -> str:
+    """The one line of message that fits in the table.
+
+    An error that logged nothing says so: an empty cell there reads as a
+    rendering fault rather than as the fact that the response failed before any
+    handler printed anything.
+    """
+    message = entry.headline
+    if not message:
+        return NO_LINE_ERROR if entry.is_error else ""
+    return _truncate(message.splitlines()[0], LOG_MESSAGE_WIDTH, style)
+
+
+def _expanded_lines(entry: LogEntry, style: Style) -> list[str]:
+    """Every log line of one request, worst first, indented under its row.
+
+    A message may itself be several lines: ``sanitize_message`` indents its
+    continuations, so they stay visibly quoted rather than reaching column zero.
+    """
+    ordered = sorted(
+        entry.lines,
+        key=lambda line: LOG_LEVEL_SEVERITY.get(line.level, -1),
+        reverse=True,
+    )
+    out: list[str] = []
+    for line in ordered:
+        label = f"{line.level}: " if line.level else ""
+        suffix = " [truncated by Vercel]" if line.truncated else ""
+        out.append(style.dim(f"    {label}{line.message}{suffix}"))
+    if entry.request_id:
+        out.append(style.dim(f"    request {entry.request_id}"))
+    return out
+
+
+def render_logs(
+    report: LogReport, *, style: Style = PLAIN_STYLE, expand: bool = False
+) -> str:
+    """Render a logs report as aligned text.
+
+    One row per request, newest first. An empty report prints one line naming
+    what was asked rather than a table head with nothing under it.
+
+    Args:
+        report: The report to print.
+        style: Colour and glyph settings.
+        expand: Print every full log message under its row.
+
+    Returns:
+        The report as text, with no trailing newline.
+    """
+    title = (
+        f"Vercel request logs: {report.project_label} "
+        f"({report.preset}, last {report.window_label})"
+    )
+    parts: list[str] = [style.bold(title), _range_line(report.time_range)]
+    if report.filters:
+        shown = ", ".join(f"{name} {value}" for name, value in report.filters.items())
+        parts.append(f"Filter: {shown}")
+    if report.header_note:
+        parts.append(style.dim(report.header_note))
+    parts.append("")
+
+    if not report.entries:
+        since, until = report.time_range
+        parts.append(
+            f"No request logs for project {report.project_label} between "
+            f"{to_api_timestamp(since)} and {to_api_timestamp(until)}."
+        )
+    else:
+        headers = ["time", "level", "status", "method", "route", "source", "message"]
+        aligns = ["left", "left", "right", "left", "left", "left", "left"]
+        body = [
+            [
+                _log_time(entry, report.time_range),
+                entry.worst_level or "-",
+                str(entry.status) if entry.status is not None else "(none)",
+                entry.method or "-",
+                _truncate(entry.label, LOG_ROUTE_WIDTH, style),
+                entry.source or "-",
+                _log_message_cell(entry, style),
+            ]
+            for entry in report.entries
+        ]
+        grid = render_grid(headers, aligns, body, None, style)
+        # render_grid emits the head, the rule, then one line per body row in
+        # order, which is what lets the expansions be spliced under their rows.
+        parts.extend(grid[:2])
+        for index, entry in enumerate(report.entries):
+            parts.append(grid[2 + index])
+            if expand:
+                parts.extend(_expanded_lines(entry, style))
+
+    if report.notes:
+        parts.append("")
+        parts.extend(style.dim(note) for note in report.notes)
+    if report.hint and not expand:
+        parts.append(style.dim(report.hint))
+    return "\n".join(parts)
