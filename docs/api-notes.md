@@ -735,7 +735,7 @@ Optional, all verified to filter:
 | `environment` | `production`, `preview` | |
 | `requestPath` | exact path | **Exact match**: `/api` returned nothing, `/api/me` returned only that path. |
 | `route` | exact route pattern | `/api/offerings/[slug]` returned 23 rows across 14 distinct paths. |
-| `requestMethod` | `GET`, `POST`, ... | Recorded and matched in upper case. |
+| `requestMethod` | `GET`, `POST`, ... | Recorded in upper case on every row seen. Whether the filter is case sensitive was never probed; this client upper-cases the value, which cannot be wrong either way. |
 | `branch` | git branch name | |
 | `deploymentId` | `dpl_...` | |
 | `requestId` | one request | |

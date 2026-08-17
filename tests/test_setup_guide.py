@@ -1,15 +1,29 @@
-"""The setup guide has to keep describing this tool, not a past version of it.
+"""The documentation set has to keep describing this tool, not a past version of it.
 
-Every row of its troubleshooting table quotes a message a user might see. A
-quoted message that no longer matches what the code emits is worse than no
-table, because it teaches someone to search for a string that will never appear.
+Two kinds of drift are guarded here, and both have actually happened.
+
+The setup guide quotes messages a user might see in its troubleshooting table. A
+quoted message that no longer matches what the code emits is worse than no table,
+because it teaches someone to search for a string that will never appear.
+
+And every document that describes the operation allowlist has to describe the
+allowlist the code actually has. The endpoint count sat at "five" through several
+releases after a sixth entry was added, in three files at once, because nothing
+read them: the security claim a reader is asked to trust was checkable only by
+hand. The expectations below are derived from ``OPERATIONS`` rather than written
+out, so a seventh operation fails loudly in every file that owes the reader a
+mention of it.
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
+
+from vercel_insights import BASE_URL
+from vercel_insights.http import OPERATIONS
 
 ROOT = Path(__file__).resolve().parent.parent
 GUIDE = (ROOT / "docs" / "openclaw-setup.md").read_text()
@@ -17,6 +31,78 @@ CLI = (ROOT / "vercel_insights" / "cli.py").read_text()
 HTTP = (ROOT / "vercel_insights" / "http.py").read_text()
 MAIN = (ROOT / "vercel_insights" / "__main__.py").read_text()
 SOURCE = CLI + HTTP + MAIN
+
+#: Documents that enumerate the endpoints one by one, and must therefore name
+#: every one of them. ``full_url`` says how that file writes an entry on the API
+#: host: ``True`` for the whole URL, ``False`` for the path alone. The second
+#: host is always written out in full, because the host is the notable part.
+ENUMERATING_DOCS: tuple[tuple[str, bool], ...] = (
+    ("README.md", False),
+    ("docs/cli-contract.md", True),
+    ("docs/openclaw-setup.md", False),
+)
+
+#: Documents that state how many entries the allowlist has. ``CONTRIBUTING.md``
+#: is here and not above on purpose: it tells a contributor what the ceiling is
+#: rather than listing the endpoints, so the count is the whole of its claim.
+COUNTING_DOCS: tuple[str, ...] = (
+    "README.md",
+    "docs/cli-contract.md",
+    "docs/openclaw-setup.md",
+    "CONTRIBUTING.md",
+)
+
+#: The prose spells small numbers out; the setup guide writes a digit. Either is
+#: accepted, and the count itself comes from ``OPERATIONS``.
+NUMBER_WORDS: dict[int, str] = {
+    1: "one",
+    2: "two",
+    3: "three",
+    4: "four",
+    5: "five",
+    6: "six",
+    7: "seven",
+    8: "eight",
+    9: "nine",
+    10: "ten",
+}
+
+#: What these documents call one allowlist entry.
+ENTRY_NOUNS: tuple[str, ...] = ("entries", "endpoints", "operations")
+
+
+def _read(name: str) -> str:
+    return (ROOT / name).read_text()
+
+
+def _flat(text: str) -> str:
+    """One line, without the markdown emphasis and code ticks around a number.
+
+    A claim can be wrapped across lines or bolded ("exactly **six** entries"),
+    neither of which changes what it says, so neither should decide whether this
+    test passes.
+    """
+    return re.sub(r"[*`]", "", " ".join(text.split()))
+
+
+def _documented_url(url: str, full_url: bool) -> str:
+    """The URL as the file under test writes it."""
+    if full_url or not url.startswith(BASE_URL):
+        return url
+    return url[len(BASE_URL) :]
+
+
+def _count_phrases(number: int) -> list[str]:
+    """Every way these files write "the allowlist has this many entries".
+
+    Both the digit and the spelled-out word, against each noun they use for an
+    entry, plus the hyphenated adjective form ("six-endpoint allowlist"), which
+    is the exact phrase that went stale in two files.
+    """
+    forms = (str(number), NUMBER_WORDS[number])
+    phrases = [f"{form} {noun}" for form in forms for noun in ENTRY_NOUNS]
+    phrases.extend(f"{form}-endpoint" for form in forms)
+    return phrases
 
 
 def test_the_guide_exists_and_is_linked_from_both_entry_points() -> None:
@@ -51,15 +137,60 @@ def test_the_documented_exit_codes_match_the_code() -> None:
     assert BUDGET_EXCEEDED == 3, "the documented budget exit code drifted"
 
 
-def test_the_endpoint_table_matches_the_allowlist() -> None:
-    from vercel_insights.http import OPERATIONS
+@pytest.mark.parametrize("document,full_url", ENUMERATING_DOCS, ids=lambda item: str(item))
+@pytest.mark.parametrize("operation", sorted(OPERATIONS))
+def test_every_allowlisted_endpoint_is_documented_with_its_method(
+    operation: str, document: str, full_url: bool
+) -> None:
+    # Derived from OPERATIONS rather than from a list written out here, so an
+    # operation added to the code is missing from these files until someone adds
+    # it, and the failure says which file and which URL.
+    method, url = OPERATIONS[operation]
+    text = _read(document)
+    written = _documented_url(url, full_url)
+    assert written in text, (
+        f"{document} does not mention {written}, which the {operation} operation "
+        "can send this user's token to"
+    )
+    rows = [line for line in text.splitlines() if written in line and "|" in line]
+    assert rows, f"{document} mentions {written} but not in a table row"
+    assert any(method in row for row in rows), (
+        f"{document} documents {written} without its method ({method})"
+    )
 
-    assert "Five endpoints" in GUIDE or f"{len(OPERATIONS)} endpoints" in GUIDE.lower()
-    for _operation, (method, url) in OPERATIONS.items():
-        path = url.replace("https://api.vercel.com", "")
-        assert path in GUIDE, f"{path} is callable but missing from the guide"
-        row = next((ln for ln in GUIDE.splitlines() if path in ln and "|" in ln), None)
-        assert row is not None and method in row, f"{path} documents the wrong method"
+
+@pytest.mark.parametrize("document", [name for name, _full in ENUMERATING_DOCS])
+def test_every_host_the_allowlist_can_reach_is_named(document: str) -> None:
+    # The second host is the surprising part of this allowlist, so a file that
+    # enumerates endpoints has to name every host, not only the API one.
+    text = _read(document)
+    for host in sorted({url.split("/")[2] for _method, url in OPERATIONS.values()}):
+        assert host in text, f"{document} never names the {host} host"
+
+
+@pytest.mark.parametrize("document", COUNTING_DOCS)
+def test_the_documented_endpoint_count_matches_the_allowlist(document: str) -> None:
+    # The count is a security claim, and it is the part that drifted: it said
+    # five for several releases after the sixth entry landed. Both spellings are
+    # accepted because the prose spells the number and the setup guide digits it;
+    # what is not accepted is a number that is no longer the real one.
+    flat = _flat(_read(document))
+    count = len(OPERATIONS)
+    assert any(phrase in flat for phrase in _count_phrases(count)), (
+        f"{document} does not say the allowlist has {count} "
+        f"{ENTRY_NOUNS[0]}; it must, or its security claim is stale"
+    )
+    # A stale count next to a correct one is the shape the real drift took:
+    # docs/cli-contract.md said "exactly three entries" and "five-endpoint
+    # allowlist" a few lines apart, and both were wrong.
+    stale = [
+        phrase
+        for number in NUMBER_WORDS
+        if number != count
+        for phrase in _count_phrases(number)
+        if phrase in flat
+    ]
+    assert not stale, f"{document} still claims {stale[0]!r}"
 
 
 def test_the_guide_does_not_recommend_the_route_that_does_not_prompt() -> None:

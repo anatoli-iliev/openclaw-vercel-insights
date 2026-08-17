@@ -50,7 +50,7 @@ provides a `vercel-insights` console script.
 | Dimension case | camelCase (`requestPath`) | snake_case (`request_path`) | camelCase query parameters, no OData at all |
 | Time buckets | `by=day` | `granularity: 1d` | none; rows, not buckets |
 | Metrics | `pageviews`/`visitors`, `count`/`visitors` | one value per metric, plus `*_count` data points | none; one row per request, carrying status, level, route and log lines |
-| Scoped by | `projectId` (+ `teamId` or `slug`) | `scope.ownerId` and `scope.projectIds` | `projectId` and `ownerId`; `teamId` is not accepted |
+| Scoped by | `projectId` (+ `teamId` or `slug`) | `scope.ownerId` and `scope.projectIds` | `projectId` and `ownerId`; `teamId` is not accepted in place of `ownerId`, and is never sent |
 
 A preset determines which surface is used. `--dataset` and `--metric` are
 mutually exclusive: passing both is a config error naming the conflict, and
@@ -160,7 +160,7 @@ an unchecked typo would read as "nothing is broken".
 | `--status-code CODE` | none | Comma separated. Each item is either three characters whose first is a digit 1 to 9 and whose rest are digits or `x` (`500`, `5xx`, `40x`), or the literal `None` for a request with no status recorded. A comparison such as `>=500` is a config error quoting the API's own rule. Becomes `statusCode`. |
 | `--source SOURCE` | none | `serverless`, `edge-function`, `edge-middleware`, `static`, comma separated. `serverless-middleware` is accepted as a display alias and rewritten to `edge-middleware`, which is the spelling that matches those rows. Anything else is a config error naming the vocabulary and the alias. Becomes `source`. |
 | `--method METHOD` | none | Upper-cased for the wire. Becomes `requestMethod`. |
-| `--search TEXT` | none | Free text, not a query syntax: `status:500` is matched literally. Becomes `search`. |
+| `--search TEXT` | none | Free text and nothing more: not a query syntax, so do not expect `status:500` to filter by status. Probed forms either returned unfiltered rows or nothing. Becomes `search`. |
 | `--request-id ID` | none | One request. Becomes `requestId`. |
 | `--branch NAME` | none | Becomes `branch`. |
 | `--deployment ID` | none | A `dpl_` id, passed through with no lookup. Becomes `deploymentId`. |
@@ -305,7 +305,7 @@ unit (`ms` or a unitless score), and the number of data points when available.
 `logs` and `errors` print one row per request, newest first, with the columns
 `time`, `level`, `status`, `method`, `route`, `source`, `message`.
 
-- `time` is `HH:MM:SS` UTC while the window is under 24 hours and `MM-DD HH:MM:SS` beyond it, so a row is never ambiguous about which day it belongs to, and `(no time)` when the row carried no timestamp.
+- `time` is `HH:MM:SS` UTC for a window of 24 hours or less and `MM-DD HH:MM:SS` for a longer one, so a row is never ambiguous about which day it belongs to. Exactly 24 hours takes the short form. `(no time)` when the row carried no timestamp.
 - `level` is the worst level among the request's own log lines (`fatal` over `error` over `warning` over `info`), or `-` when it logged nothing.
 - `status` shows `(none)` when no status was recorded, which is what `--status-code None` selects.
 - `route` falls back to the request path, then to `(unknown)`.
@@ -328,7 +328,7 @@ The honesty rules are part of the contract, not presentation:
 2. **4xx is excluded from `errors` deliberately**: a 401 on `/api/me` is the application working. `--status-code 4xx` asks for them by name.
 3. **`--level` only sees requests that logged**, stated in `--help`, in `SKILL.md` and in the `errors` header line.
 4. **Truncation is always visible.** When more rows matched than were shown, the footer says how many were kept and what to do; when a two-call `errors` run truncated, it adds that the result is the most recent N of each kind rather than a global top N.
-5. The `errors` presets print what counted as an error above the table: a 5xx response, a crashed function, or a request that logged an error or fatal line.
+5. The `errors` preset prints what counted as an error above the table: a 5xx response, a crashed function, or a request that logged an error or fatal line. `error-summary` counts the same three things and does **not** print that line, because the header note is carried on the report but only the row renderer prints it; its `logged_only` footer is what states the non-5xx part there.
 
 `--json` emits `{"query", "entries", "truncated", "pagesFetched", "notes"}`, each
 entry carrying the tabulated columns plus the whole original row under `raw`, so
@@ -353,7 +353,7 @@ Exceptions, sanitizers and constants live in `__init__.py`: `ConfigError`,
 | `logs` | `LEVELS`, `SOURCES`, `SOURCE_ALIASES`, `FILTER_PARAMS`, `PAGE_SIZE`, `MAX_PAGES`, `MIN_LIMIT`, `MAX_LIMIT`, `DEFAULT_LIMIT`, `validate_levels`, `validate_sources`, `validate_status_code`, `validate_limit`, `build_request`, `normalize`, `collect`, `merge`, `error_filter_sets`, `summarize`, `build_report`, `RETENTION_NOTE`, `ERROR_DEFINITION` |
 | `projects` | `looks_like_project_id`, `build_list_request`, `build_one_request`, `extract_projects`, `format_projects`, `resolve_project_id`, `owner_from_project` |
 | `budgets` | `BUDGET_EXCEEDED`, `Budget`, `parse_budgets`, `evaluate`, `any_failed` |
-| `render` | `Row`, `Result`, `LogLine`, `LogEntry`, `LogSummary`, `LogReport`, `format_table`, `format_json`, `format_csv`, `render_overview`, `render_vitals`, `render_logs`, `render_error_summary`, `format_logs_json`, `format_logs_csv`, `verdict` |
+| `render` | `Row`, `Result`, `LogLine`, `LogEntry`, `RouteTally`, `MessageTally`, `LogSummary`, `LogReport`, `ERROR_LEVELS`, `format_table`, `format_json`, `format_csv`, `render_overview`, `render_vitals`, `render_logs`, `render_error_summary`, `format_logs_json`, `format_logs_csv`, `verdict` |
 | `presets` | `PRESETS`, `Preset`, `format_presets` |
 | `cli` | `build_parser`, `main` |
 

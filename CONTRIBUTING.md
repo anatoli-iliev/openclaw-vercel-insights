@@ -44,13 +44,14 @@ That is what let the second and third surfaces be added without touching the
 first, and a patch that reaches across the line will be asked to move.
 
 The logs surface shows where that line runs. Its containers, `LogLine`,
-`LogEntry`, `LogSummary` and `LogReport`, live in `render.py` beside `Row` and
-`Result`, because `render.py` must not import a surface module; `logs.py` builds
-them, exactly as `webanalytics.py` builds `Result`. And the prose is composed in
-`logs.py`, not in the renderer: what counted as an error, what was left out, and
-what an empty answer does not prove are all API facts, so they are decided in the
-surface module and carried to `render.py` as data. `render.py` only lays out what
-it is given.
+`LogEntry`, `RouteTally`, `MessageTally`, `LogSummary` and `LogReport`, live in
+`render.py` beside `Row` and `Result`, because `render.py` must not import a
+surface module; `logs.py` imports all six from there, plus `ERROR_LEVELS`, and
+builds them, exactly as `webanalytics.py` builds `Result`. And the prose is
+composed in `logs.py`, not in the renderer: what counted as an error, what was
+left out, and what an empty answer does not prove are all API facts, so they are
+decided in the surface module and carried to `render.py` as data. `render.py`
+only lays out what it is given.
 
 `logs.py` also performs no I/O of its own: `collect` takes an injected page
 fetcher, which is what lets the paging loop, its page cap and the merge be tested

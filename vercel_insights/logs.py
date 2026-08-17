@@ -374,9 +374,11 @@ def _number(row: Mapping[str, Any], name: str) -> float | None:
 def _status(row: Mapping[str, Any]) -> int | None:
     """The HTTP status, ``None`` when the API recorded none.
 
-    A status of 0 is how this API spells "no response was recorded", which is
-    also what ``statusCode=None`` selects, so it is read as absent rather than
-    as a status of zero.
+    A missing field and a value of zero or less are both read as absent rather
+    than as a status. ``statusCode=None`` selects rows with no status recorded,
+    so such rows exist; which of the two ways the API spells one was never
+    probed, and reading both the same way cannot be wrong either way. See
+    docs/api-notes.md, which marks this inferred rather than verified.
     """
     value = _number(row, "statusCode")
     if value is None or value <= 0:

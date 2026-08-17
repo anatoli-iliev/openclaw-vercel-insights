@@ -190,7 +190,8 @@ looking at it.
   `vitals-trend --granularity 1d --csv` in a nightly job and the regression
   shows up as a line in a file, not as a feeling.
 - **Scriptable.** Cron job, CI step, Makefile. Exit codes are meaningful: 0 for
-  success (an empty result included), 1 for an API failure, 2 for a bad command.
+  success (an empty result included), 1 for an API failure, 2 for a bad command,
+  and 3 for a `--budget` that was exceeded.
 - **Pipeable.** `--json` feeds `jq`, `--csv` feeds a spreadsheet or `duckdb`. The
   raw API payload is preserved under `raw` in the JSON output, so nothing is
   lost in translation.
@@ -727,7 +728,7 @@ HTTP 200 and zero rows, and zero rows reads as "your site is fine".
 | `--status-code CODE` | none | An integer (`500`), a class (`5xx`, `40x`), `None` for a request with no status recorded, or a comma separated mix. No comparisons: `>=500` is refused, quoting the API's own rule. |
 | `--source SOURCE` | none | `serverless`, `edge-function`, `edge-middleware`, `static`. The `source` column can display `serverless-middleware`; pass that and it is rewritten to `edge-middleware`, which is the spelling that actually matches those rows. |
 | `--method METHOD` | none | One HTTP method, upper-cased for the wire. |
-| `--search TEXT` | none | Free text, not a query syntax: `status:500` is matched literally. |
+| `--search TEXT` | none | Free text and nothing more. Not a query syntax, so do not expect `status:500` to filter by status: use `--status-code` for that. |
 | `--request-id ID` | none | One request, by the id shown in the table. Pair it with `--expand`. |
 | `--branch NAME` | none | Only deployments built from this git branch. |
 | `--deployment ID` | none | One deployment, by its `dpl_` id. |

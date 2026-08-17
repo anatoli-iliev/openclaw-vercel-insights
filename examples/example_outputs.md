@@ -1,14 +1,16 @@
 # Example output
 
 Every fenced block below is **captured output from the real code**, not written
-by hand. The data behind it is synthetic and anonymised: one fictional docs and
-marketing site, one dataset, so the numbers agree across sections.
+by hand. Almost all of the data behind it is synthetic and anonymised: one
+fictional docs and marketing site, one dataset, so the numbers agree across
+sections.
 
-Two blocks are different, and say so where they appear: the first two in
+Two blocks are the exception, and say so where they appear: the first two in
 [Errors: request logs](#errors-request-logs) were captured against a **live
-Vercel account**, on a real project that happened to have no errors at all. The
-rest of that section is stub-driven like everything else, with data invented to
-show what a failing project looks like.
+Vercel account**, so their project id, routes and timestamps are real, and the
+project happened to have no errors at all. The rest of that section is
+stub-driven like everything else, with data invented to show what a failing
+project looks like.
 
 `vercel-insights` is shorthand for `python3 -m vercel_insights`.
 
@@ -1036,7 +1038,7 @@ Query parameters:
 Headers:
   Accept         application/json
   Authorization  Bearer <redacted>
-  User-Agent     vercel-insights-skill/0.2.0
+  User-Agent     vercel-insights-skill/1.1.0
 
 Encoded URL (never contains the token):
   https://api.vercel.com/v1/query/web-analytics/visits/aggregate?projectId=prj_9RkQm2vT7xLpN4dWbYcF3sJz&by=requestPath&since=2026-08-08T00%3A00%3A00Z&until=2026-08-15T00%3A00%3A00Z&limit=10&filter=country+eq+%27US%27
@@ -1109,7 +1111,7 @@ Query parameters:
 Headers:
   Accept         application/json
   Authorization  Bearer <redacted>
-  User-Agent     vercel-insights-skill/0.2.0
+  User-Agent     vercel-insights-skill/1.1.0
 
 JSON body:
   {
@@ -1163,8 +1165,8 @@ This usually means the access token is scoped to a single project. Speed Insight
 
 The logs endpoint is scoped by the owning account too, through an `ownerId`
 parameter it requires and cannot infer, so a project scoped token is refused with
-a `403`. The hint names that rather than pointing at `--team`, which this endpoint
-does not accept at all.
+a `403`. The hint names that rather than pointing at `--team`: a team id is
+verified not to work in place of an `ownerId` here, and the client never sends one.
 
 ```console
 $ vercel-insights errors --since 30m

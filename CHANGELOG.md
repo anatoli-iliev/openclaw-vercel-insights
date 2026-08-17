@@ -69,9 +69,11 @@ text. Everything else in this release is additive.
   window wider than an hour prints the retention figures (1 hour Hobby, 1 day Pro,
   3 days Enterprise, 30 days with Observability Plus) and says an empty result may
   mean the logs aged out rather than that nothing failed. Exit code is still 0: no
-  errors is an answer. The `errors` presets print what counted as an error above
-  the table. A 4xx is deliberately excluded, because a 401 on `/api/me` is the
-  application working, and `--status-code 4xx` asks for those by name.
+  errors is an answer. The `errors` preset prints what counted as an error above
+  the table; `error-summary` counts the same three things without that line, and
+  says in its footer how many rows qualified on a log line alone. A 4xx is
+  deliberately excluded, because a 401 on `/api/me` is the application working, and
+  `--status-code 4xx` asks for those by name.
 
 - **`--json` and `--csv` on the logs surface.** JSON carries `query`, `entries`,
   `truncated`, `pagesFetched` and `notes`, with the whole original row under each
@@ -81,8 +83,9 @@ text. Everything else in this release is additive.
 
 - **A 403 from the logs endpoint explains itself**: that endpoint is scoped by the
   owning account through an `ownerId` parameter it requires and cannot infer, so
-  the message names token scope rather than pointing at `--team`, which this
-  endpoint does not accept at all.
+  the message names token scope rather than pointing at `--team`: a `teamId` is
+  verified not to work in place of an `ownerId` here, and this client never sends
+  one.
 
 ### Changed
 
@@ -155,8 +158,11 @@ text. Everything else in this release is additive.
 - Every string on a log row goes through the existing sanitizers at the one
   normalization boundary, log messages keeping their newlines because a stack
   trace's line structure carries meaning. `tests/test_untrusted_response.py` gains
-  logs cases: an ANSI escape, a carriage return, a newline, a very long message and
-  a hostile request path.
+  three logs cases: an ANSI escape in a log message, a hostile request path
+  carrying a carriage return, and a multi-line message, whose continuation lines
+  must stay indented so none of them can reach column zero and forge a line of
+  this tool's own output. Truncating an over-wide message to its column is covered
+  in `tests/test_logs_render.py` instead, where the rendering is.
 
 ### Known, and marked as assumptions
 
