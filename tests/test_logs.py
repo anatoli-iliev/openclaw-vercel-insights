@@ -7,6 +7,9 @@ checked here, before a request exists, and these tests are what hold that line.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 import pytest
 from helpers import (
     LOGS_EMPTY_PAGE,
@@ -293,3 +296,129 @@ def test_normalize_keeps_the_raw_row_for_json_output() -> None:
     entry = vi_logs.normalize(LOGS_PAGE)[0][0]
     assert entry.raw["cache"] == "MISS"
     assert entry.raw["requestTags"] == ["ssr", "rsc"]
+
+
+# ---------------------------------------------------------------------------
+# Paging, merging and error presets
+# ---------------------------------------------------------------------------
+
+
+def _page(count: int, has_more: bool, first_id: int = 0) -> dict[str, Any]:
+    return {
+        "rows": [logs_row(requestId=f"r{first_id + index}") for index in range(count)],
+        "hasMoreRows": has_more,
+    }
+
+
+def test_collect_stops_after_one_page_when_there_is_no_more() -> None:
+    calls: list[int] = []
+
+    def call(page: int) -> Mapping[str, Any]:
+        calls.append(page)
+        return _page(3, False)
+
+    entries, truncated, pages = vi_logs.collect(call, limit=50)
+    assert calls == [0]
+    assert len(entries) == 3
+    assert truncated is False and pages == 1
+
+
+def test_collect_keeps_paging_until_the_budget_is_met() -> None:
+    calls: list[int] = []
+
+    def call(page: int) -> Mapping[str, Any]:
+        calls.append(page)
+        return _page(vi_logs.PAGE_SIZE, True, first_id=page * vi_logs.PAGE_SIZE)
+
+    entries, truncated, pages = vi_logs.collect(call, limit=120)
+    assert calls == [0, 1, 2]
+    assert len(entries) == 120
+    # More rows existed than were asked for, so this is a truncated answer.
+    assert truncated is True and pages == 3
+
+
+def test_collect_never_reads_more_than_the_page_cap() -> None:
+    def call(page: int) -> Mapping[str, Any]:
+        return _page(vi_logs.PAGE_SIZE, True, first_id=page * vi_logs.PAGE_SIZE)
+
+    entries, truncated, pages = vi_logs.collect(call, limit=vi_logs.MAX_LIMIT)
+    assert pages == vi_logs.MAX_PAGES
+    assert len(entries) == vi_logs.MAX_LIMIT
+    assert truncated is True
+
+
+def test_collect_stops_on_a_short_page_even_when_the_api_claims_more() -> None:
+    # Defensive: a short page means the server has nothing else for this query,
+    # whatever hasMoreRows says. Trusting the flag alone would loop to the cap.
+    def call(page: int) -> Mapping[str, Any]:
+        return _page(2, True)
+
+    entries, truncated, pages = vi_logs.collect(call, limit=50)
+    assert pages == 1 and len(entries) == 2
+
+
+def test_merge_deduplicates_by_request_id() -> None:
+    # A 500 that also logged an error comes back from both calls of the errors
+    # preset. It is one request and must be reported once.
+    shared = vi_logs.normalize(LOGS_ERROR_PAGE)[0]
+    entries, _truncated = vi_logs.merge([shared, shared], limit=50)
+    assert len(entries) == 2
+    assert [entry.request_id for entry in entries] == ["err-1", "err-2"]
+
+
+def test_merge_prefers_the_copy_that_carries_log_lines() -> None:
+    bare = vi_logs.normalize({"rows": [logs_row(requestId="x", logs=[])]})[0]
+    logged = vi_logs.normalize(
+        {"rows": [logs_row(requestId="x", logs=[{"level": "error", "message": "boom"}])]}
+    )[0]
+    entries, _ = vi_logs.merge([bare, logged], limit=50)
+    assert len(entries) == 1
+    assert entries[0].headline == "boom"
+
+
+def test_merge_sorts_newest_first() -> None:
+    older = vi_logs.normalize(
+        {"rows": [logs_row(requestId="old", timestamp="2026-08-17T10:00:00.000Z")]}
+    )[0]
+    newer = vi_logs.normalize(
+        {"rows": [logs_row(requestId="new", timestamp="2026-08-17T11:00:00.000Z")]}
+    )[0]
+    entries, _ = vi_logs.merge([older, newer], limit=50)
+    assert [entry.request_id for entry in entries] == ["new", "old"]
+
+
+def test_merge_puts_a_row_with_no_timestamp_last_and_stays_deterministic() -> None:
+    undated = vi_logs.normalize({"rows": [logs_row(requestId="b", timestamp="")]})[0]
+    dated = vi_logs.normalize(
+        {"rows": [logs_row(requestId="a", timestamp="2026-08-17T11:00:00.000Z")]}
+    )[0]
+    entries, _ = vi_logs.merge([undated, dated], limit=50)
+    assert [entry.request_id for entry in entries] == ["a", "b"]
+
+
+def test_merge_reports_truncation_when_it_drops_rows() -> None:
+    many = vi_logs.normalize(_page(10, False))[0]
+    entries, truncated = vi_logs.merge([many], limit=4)
+    assert len(entries) == 4 and truncated is True
+
+
+def test_error_filter_sets_queries_both_kinds_of_error() -> None:
+    # Verified live: level matches log lines only, so a 500 that printed nothing
+    # is invisible to level=error, and a 200 that logged a stack trace is
+    # invisible to statusCode=5xx. Neither filter alone answers the question.
+    assert vi_logs.error_filter_sets({}) == [
+        {"statusCode": "5xx"},
+        {"level": "error,fatal"},
+    ]
+
+
+def test_error_filter_sets_keeps_the_users_own_filters_on_both_calls() -> None:
+    sets = vi_logs.error_filter_sets({"requestPath": "/api/checkout"})
+    assert all(item["requestPath"] == "/api/checkout" for item in sets)
+
+
+@pytest.mark.parametrize("override", [{"statusCode": "500"}, {"level": "warning"}])
+def test_an_explicit_filter_collapses_the_errors_preset_to_one_call(
+    override: dict[str, str],
+) -> None:
+    assert vi_logs.error_filter_sets(override) == [override]

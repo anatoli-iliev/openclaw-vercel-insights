@@ -23,13 +23,13 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any
 
 from . import ApiError, ConfigError, sanitize_label, sanitize_message
 from .http import PreparedRequest, default_headers, operation_url
-from .render import LogEntry, LogLine
+from .render import ERROR_LEVELS, LogEntry, LogLine
 from .timerange import to_unix_ms
 
 #: The operation key this surface uses. A key into ``http.OPERATIONS``, never a
@@ -457,3 +457,129 @@ def normalize(payload: Mapping[str, Any]) -> tuple[list[LogEntry], bool]:
             )
         entries.append(_entry(row))
     return entries, bool(payload.get("hasMoreRows"))
+
+
+# ---------------------------------------------------------------------------
+# Paging, merging and error presets
+# ---------------------------------------------------------------------------
+
+
+def collect(
+    call: Callable[[int], Mapping[str, Any]],
+    *,
+    limit: int,
+    max_pages: int = MAX_PAGES,
+) -> tuple[list[LogEntry], bool, int]:
+    """Read pages until the row budget is met, and say whether more existed.
+
+    The API pages :data:`PAGE_SIZE` rows at a time and ignores a ``limit`` of
+    its own, so the budget is enforced here instead. Paging stops on whichever
+    comes first: the budget being met, a page shorter than :data:`PAGE_SIZE`
+    (the server has nothing else for this query, whatever ``hasMoreRows``
+    claims), ``hasMoreRows`` being false, or ``max_pages`` being reached. The
+    fetcher is injected so this loop is testable with no HTTP at all, and so
+    this module still performs no I/O of its own.
+
+    Args:
+        call: Given a zero based page index, returns that page's payload.
+        limit: How many rows the caller wants at most.
+        max_pages: Hard ceiling on requests, defaulting to :data:`MAX_PAGES`.
+            A page took up to six seconds against a live account, so the
+            default is already 24 seconds against a 30 second per request
+            timeout.
+
+    Returns:
+        The entries, never more than ``limit``; whether rows were left
+        behind; and how many pages were read.
+
+    Raises:
+        ApiError: Whatever :func:`normalize` raises for an unreadable page.
+    """
+    entries: list[LogEntry] = []
+    has_more = False
+    short_page = False
+    pages = 0
+    for page in range(max(1, max_pages)):
+        payload = call(page)
+        pages = page + 1
+        page_entries, has_more = normalize(payload)
+        entries.extend(page_entries)
+        short_page = len(page_entries) < PAGE_SIZE
+        if len(entries) >= limit or short_page or not has_more:
+            break
+    # A short page means nothing else exists for this query, whatever
+    # hasMoreRows claims, so it never counts toward truncation on its own:
+    # only rows already in hand beyond the budget, or a credible hasMoreRows
+    # off a full sized page, make this a truncated answer.
+    truncated = len(entries) > limit or (has_more and not short_page)
+    return entries[:limit], truncated, pages
+
+
+def merge(
+    groups: Sequence[Sequence[LogEntry]], *, limit: int
+) -> tuple[list[LogEntry], bool]:
+    """Combine the results of several calls into one honest, ordered list.
+
+    One request can arrive from more than one call: the errors preset's two
+    filter sets both match a 5xx that also logged a stack trace. Entries are
+    therefore deduplicated by request id, and the copy carrying more log
+    lines wins, since the other copy would render with an empty message.
+
+    Ordering is applied here rather than trusted from the server, so "newest
+    first" is a property of this client. A row with no timestamp sorts last,
+    and the request id breaks ties, so the output is deterministic.
+
+    Args:
+        groups: One sequence of entries per call.
+        limit: How many rows to keep.
+
+    Returns:
+        The merged entries, newest first and never more than ``limit``; and
+        whether anything was dropped.
+    """
+    best: dict[str, LogEntry] = {}
+    anonymous: list[LogEntry] = []
+    for group in groups:
+        for entry in group:
+            if not entry.request_id:
+                # Without an id there is nothing to deduplicate on, and
+                # dropping it would hide a request. Keep it.
+                anonymous.append(entry)
+                continue
+            previous = best.get(entry.request_id)
+            if previous is None or len(entry.lines) > len(previous.lines):
+                best[entry.request_id] = entry
+
+    merged = list(best.values()) + anonymous
+    epoch = datetime(1, 1, 1, tzinfo=timezone.utc)
+    merged.sort(
+        key=lambda entry: (entry.timestamp or epoch, entry.request_id),
+        reverse=True,
+    )
+    return merged[:limit], len(merged) > limit
+
+
+def error_filter_sets(filters: Mapping[str, str]) -> list[dict[str, str]]:
+    """The filter sets the errors preset queries with.
+
+    Two calls, because ``level`` matches application log lines and
+    ``statusCode`` matches responses, and an error can show up as either: a
+    5xx that printed nothing is invisible to ``level``, and a 200 whose
+    handler logged a stack trace is invisible to ``statusCode``. An explicit
+    ``--level`` or ``--status-code`` collapses this to one call, the same "an
+    explicit flag overrides a preset value" rule the rest of this tool
+    follows.
+
+    Args:
+        filters: The wire-named filters the user asked for.
+
+    Returns:
+        One filter mapping when the user already narrowed by level or status;
+        otherwise two, each a complete filter set for one call.
+    """
+    if "level" in filters or "statusCode" in filters:
+        return [dict(filters)]
+    return [
+        {**filters, "statusCode": "5xx"},
+        {**filters, "level": ",".join(ERROR_LEVELS)},
+    ]
