@@ -11,9 +11,7 @@ that surface has no equivalent.
 from __future__ import annotations
 
 import re
-from datetime import datetime as datetime
-from datetime import timedelta
-from datetime import timezone as timezone
+from datetime import datetime, timedelta, timezone
 
 from . import ConfigError
 
