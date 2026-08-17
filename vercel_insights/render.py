@@ -130,6 +130,11 @@ def stringify_label(value: Any) -> str:
     return sanitize_label(str(value))
 
 
+# ---------------------------------------------------------------------------
+# Result containers, shared by both analytics surfaces
+# ---------------------------------------------------------------------------
+
+
 @dataclass(frozen=True)
 class Row:
     """One result row: its group labels, its metrics, and an optional bucket.
@@ -247,6 +252,11 @@ class Result:
             for name in self.metric_names:
                 totals[name] += row.metrics.get(name, 0)
         return totals
+
+
+# ---------------------------------------------------------------------------
+# Request logs containers, and the widths their tables use
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -424,6 +434,11 @@ LOG_SUMMARY_MESSAGE_WIDTH = 48
 NO_LINE_ERROR = "(no log line: the response failed)"
 
 
+# ---------------------------------------------------------------------------
+# Decoration, value formatting and the grid every table is built on
+# ---------------------------------------------------------------------------
+
+
 @dataclass(frozen=True)
 class Style:
     """How output is decorated: colour, and whether non-ASCII glyphs are safe."""
@@ -565,6 +580,11 @@ def _label_cells(row: Row, count: int) -> list[str]:
 def _range_line(time_range: tuple[datetime, datetime]) -> str:
     since, until = time_range
     return f"Range: {to_api_timestamp(since)} to {to_api_timestamp(until)} (UTC)"
+
+
+# ---------------------------------------------------------------------------
+# The analytics table, and its JSON and CSV forms
+# ---------------------------------------------------------------------------
 
 
 def format_table(
@@ -853,6 +873,11 @@ def _sparkline_rows(result: Result, style: Style, width: int = 24) -> list[str]:
     return lines
 
 
+# ---------------------------------------------------------------------------
+# The composed analytics reports: overview and vitals
+# ---------------------------------------------------------------------------
+
+
 def render_overview(
     results: Sequence[Result],
     *,
@@ -1037,6 +1062,11 @@ def render_vitals(
         )
     )
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Request logs rendering: rows, the three tallies, JSON and CSV
+# ---------------------------------------------------------------------------
 
 
 def _clock_pattern(time_range: tuple[datetime, datetime]) -> str:
