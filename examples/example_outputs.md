@@ -5,12 +5,13 @@ by hand. Almost all of the data behind it is synthetic and anonymised: one
 fictional docs and marketing site, one dataset, so the numbers agree across
 sections.
 
-Two blocks are the exception, and say so where they appear: the first two in
+Three blocks are the exception, and say so where they appear: the first three in
 [Errors: request logs](#errors-request-logs) were captured against a **live
 Vercel account**, so their project id, routes and timestamps are real, and the
-project happened to have no errors at all. The rest of that section is
-stub-driven like everything else, with data invented to show what a failing
-project looks like.
+project happened to have no errors at all: the third asks for 4xx responses by
+name, which is why it has rows to show. The rest of that section is stub-driven
+like everything else, with data invented to show what a failing project looks
+like.
 
 `vercel-insights` is shorthand for `python3 -m vercel_insights`.
 
@@ -489,25 +490,32 @@ They are what makes a percentile trustworthy, so a group with few of them is not
 
 Real output from a real project. The `level` column is `-` on every row because
 none of these requests printed a log line, which is the ordinary case: a filter
-like `--level error` would have matched none of them. The footer says the table
-was cut at `--limit 5`, so it is the most recent five rather than all of them.
+like `--level error` would have matched none of them.
+
+`--limit 5` cut the table, and the footer describes what is on screen rather than
+the half hour: *showing the most recent 5 of more requests that matched*, with the
+remedy on the line after it. Nothing is called a "most affected route" here,
+because all five routes are distinct and tied at one occurrence, and a ranking
+with no winner is not a finding. The last route is wider than its column, so it is
+truncated with an ellipsis, and its `source` reads `serverless-middleware`: that
+is the display spelling, whose filter form is `edge-middleware`, which the last
+block in this section shows being resolved.
 
 ```console
 $ vercel-insights logs --since 30m --limit 5
 Vercel request logs: prj_tjgvYZgQGYqNxBP1nQffcF1A92Ag (logs, last 30 minutes)
-Range: 2026-08-17T17:02:42Z to 2026-08-17T17:32:42Z (UTC)
+Range: 2026-08-17T20:18:19Z to 2026-08-17T20:48:19Z (UTC)
 
-time      level  status  method  route                     source                 message
---------  -----  ------  ------  ------------------------  ---------------------  -------
-17:32:10  -         200  GET     /api/landing/[[...slug]]  serverless
-17:32:10  -         401  GET     /api/me                   serverless
-17:32:10  -         200  GET     /[locale]/[categorySlug]  serverless-middleware
-17:31:35  -         401  GET     /api/me                   serverless
-17:31:35  -         200  GET     /api/landing/[[...slug]]  serverless
+time      level  status  method  route                             source                 message
+--------  -----  ------  ------  --------------------------------  ---------------------  -------
+20:47:59  -         200  GET     /api/orgs/[orgSlug]               serverless
+20:47:59  -         401  GET     /api/me                           serverless
+20:47:59  -         200  GET     /api/offerings/[slug]             serverless
+20:47:59  -         200  GET     /robots.txt                       serverless
+20:47:59  -         200  GET     /[locale]/o/[orgSlug]/[offering…  serverless-middleware
 
-5 requests in 30 minutes: 3 x 200, 2 x 401.
-Most affected route: /api/landing/[[...slug]] (2).
-More rows matched than were shown: this is the most recent 5. Raise --limit (up to 200) or narrow the window.
+Showing the most recent 5 of more requests that matched in 30 minutes: 4 x 200, 1 x 401.
+More rows matched than were shown. Raise --limit (up to 200) or narrow the window.
 Add --expand for full messages, or --request-id to pull one request apart.
 [exit code 0]
 ```
@@ -531,6 +539,40 @@ No request logs for project prj_tjgvYZgQGYqNxBP1nQffcF1A92Ag between 2026-08-16T
 Runtime log retention is 1 hour on Hobby, 1 day on Pro, 3 days on Enterprise and 30 days with Observability Plus, so an empty result over a longer window can mean the logs aged out rather than that nothing failed.
 [exit code 0]
 ```
+
+### Asking for 4xx, which are not errors
+
+Live too, and the one case worth showing on purpose: `errors` normally
+decides for itself what an error is, and an explicit `--level` or `--status-code`
+takes that decision away from it. The preset then issues a single query carrying
+your filter, so the rows are whatever it matched. `--status-code 4xx` matches
+401s, and a 401 on `/api/me` is the application turning away an unauthenticated
+request, so the header says the filter replaced the error definition rather than
+narrowing it, and the footer counts "requests" instead of "errors". Nothing here
+claims those three rows are faults.
+
+```console
+$ vercel-insights errors --status-code 4xx --since 1h --limit 3
+Vercel request logs: prj_tjgvYZgQGYqNxBP1nQffcF1A92Ag (errors, last 1 hour)
+Range: 2026-08-17T19:48:40Z to 2026-08-17T20:48:40Z (UTC)
+Filter: statusCode 4xx
+These rows are what statusCode 4xx matched, not what this tool counts as an error: an explicit --level or --status-code replaces the error definition rather than narrowing it.
+
+time      level  status  method  route    source      message
+--------  -----  ------  ------  -------  ----------  -------
+20:47:59  -         401  GET     /api/me  serverless
+20:47:52  -         401  GET     /api/me  serverless
+20:47:52  -         401  GET     /api/me  serverless
+
+Showing the most recent 3 of more requests that matched in 1 hour: 3 x 401.
+More rows matched than were shown. Raise --limit (up to 200) or narrow the window.
+Add --expand for full messages, or --request-id to pull one request apart.
+[exit code 0]
+```
+
+Compare it with the block above: there the header line reads "Counted as an
+error: a 5xx response, a crashed function, or a request that logged an error or
+fatal line", because that run applied the definition itself.
 
 ### Errors, when there are some
 

@@ -481,19 +481,18 @@ Here is a real run, captured against a live account:
 ```console
 $ vercel-insights logs --since 30m --limit 5
 Vercel request logs: prj_tjgvYZgQGYqNxBP1nQffcF1A92Ag (logs, last 30 minutes)
-Range: 2026-08-17T17:02:42Z to 2026-08-17T17:32:42Z (UTC)
+Range: 2026-08-17T20:18:19Z to 2026-08-17T20:48:19Z (UTC)
 
-time      level  status  method  route                     source                 message
---------  -----  ------  ------  ------------------------  ---------------------  -------
-17:32:10  -         200  GET     /api/landing/[[...slug]]  serverless
-17:32:10  -         401  GET     /api/me                   serverless
-17:32:10  -         200  GET     /[locale]/[categorySlug]  serverless-middleware
-17:31:35  -         401  GET     /api/me                   serverless
-17:31:35  -         200  GET     /api/landing/[[...slug]]  serverless
+time      level  status  method  route                             source                 message
+--------  -----  ------  ------  --------------------------------  ---------------------  -------
+20:47:59  -         200  GET     /api/orgs/[orgSlug]               serverless
+20:47:59  -         401  GET     /api/me                           serverless
+20:47:59  -         200  GET     /api/offerings/[slug]             serverless
+20:47:59  -         200  GET     /robots.txt                       serverless
+20:47:59  -         200  GET     /[locale]/o/[orgSlug]/[offering…  serverless-middleware
 
-5 requests in 30 minutes: 3 x 200, 2 x 401.
-Most affected route: /api/landing/[[...slug]] (2).
-More rows matched than were shown: this is the most recent 5. Raise --limit (up to 200) or narrow the window.
+Showing the most recent 5 of more requests that matched in 30 minutes: 4 x 200, 1 x 401.
+More rows matched than were shown. Raise --limit (up to 200) or narrow the window.
 Add --expand for full messages, or --request-id to pull one request apart.
 ```
 
@@ -503,6 +502,16 @@ them, and that is the trap this surface sets: a filter that matches nothing
 answers `200` with zero rows, and zero rows reads like a healthy site. Every
 vocabulary is therefore checked before the request goes out, so a typo is a
 refusal rather than a reassuring lie.
+
+Three details in that footer and table are deliberate. The count says *showing
+the most recent 5 of more that matched*, because `--limit 5` cut the table and
+five rows are a sample rather than the half hour. There is no "most affected
+route" line: all five routes are distinct, so nothing leads, and printing
+whichever sorted first would dress up a tie as a finding. And the last route is
+too long for its column, so it is cut with an ellipsis; the `source` column shows
+`serverless-middleware`, which is the spelling this API *displays* while the
+filter that matches those rows is `--source edge-middleware`, a mismatch the tool
+resolves for you.
 
 ### An empty answer is not a clean bill of health
 
