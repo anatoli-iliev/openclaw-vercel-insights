@@ -56,6 +56,8 @@ from .logs import OPERATION as REQUEST_LOGS_QUERY
 from .logs import (
     SOURCE_ALIAS_NOTE,
     error_filter_sets,
+    method_warning,
+    normalize_method,
     summarize,
     validate_levels,
     validate_sources,
@@ -204,6 +206,32 @@ exit codes:
 """
 
 
+def _preset_window_phrase() -> str:
+    """Name every preset that owns a window default, as ``--since``'s help says it.
+
+    Composed from :data:`PRESETS` rather than written out, because the two used
+    to be separate strings with nothing keeping them in step: the help said "1h
+    on the logs and errors presets and 6h on error-summary" while the preset
+    table was free to move underneath it.
+
+    Returns:
+        A phrase such as ``1h on logs and errors, 6h on error-summary``, in the
+        order the preset table lists them, or ``""`` when no preset owns one.
+    """
+    grouped: dict[str, list[str]] = {}
+    for name, preset in PRESETS.items():
+        if preset.default_since:
+            grouped.setdefault(preset.default_since, []).append(name)
+    parts: list[str] = []
+    for since, names in grouped.items():
+        if len(names) > 1:
+            listed = f"{', '.join(names[:-1])} and {names[-1]}"
+        else:
+            listed = names[0]
+        parts.append(f"{since} on {listed}")
+    return ", ".join(parts)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser. The help text doubles as the reference docs."""
     parser = argparse.ArgumentParser(
@@ -331,8 +359,8 @@ def build_parser() -> argparse.ArgumentParser:
         # tell "the user asked for 7d" apart from "nobody asked for anything".
         default=None,
         help=(
-            f"start of the window (default: {DEFAULT_SINCE}, or 1h on the logs "
-            f"and errors presets and 6h on error-summary); {TIME_HELP}"
+            f"start of the window (default: {DEFAULT_SINCE}, or "
+            f"{_preset_window_phrase()}); {TIME_HELP}"
         ),
     )
     shape.add_argument(
@@ -802,7 +830,9 @@ def _resolve_filters(
     return combine_filters(clauses)
 
 
-def _resolve_log_filters(args: argparse.Namespace) -> dict[str, str]:
+def _resolve_log_filters(
+    args: argparse.Namespace, warnings: list[str]
+) -> dict[str, str]:
     """Turn every logs filter flag into the query parameters the API takes.
 
     This is the one place a flag becomes a wire parameter on this surface, and
@@ -810,8 +840,14 @@ def _resolve_log_filters(args: argparse.Namespace) -> dict[str, str]:
     the API answers an unknown level or source with HTTP 200 and zero rows: an
     unchecked typo would read as a healthy site.
 
+    ``--method`` is the one vocabulary warned about rather than refused: a custom
+    HTTP method is legal, so refusing an unknown one would remove capability,
+    while saying nothing would leave the same zero-rows trap unmarked.
+
     Args:
         args: The parsed arguments.
+        warnings: Collector for anything worth saying on stderr without failing
+            the run, the same list :class:`Settings` carries.
 
     Returns:
         Wire-named filters, keyed by :data:`logs.FILTER_PARAMS`.
@@ -828,7 +864,11 @@ def _resolve_log_filters(args: argparse.Namespace) -> dict[str, str]:
         filters["source"] = validate_sources(args.source)
     if args.method:
         # The API records the method in upper case, and matches it exactly.
-        filters["requestMethod"] = str(args.method).strip().upper()
+        method = normalize_method(str(args.method))
+        filters["requestMethod"] = method
+        warning = method_warning(method)
+        if warning:
+            warnings.append(warning)
     if args.path:
         filters["requestPath"] = args.path
     if args.route:
@@ -913,8 +953,13 @@ SURFACE_OPTIONS: tuple[tuple[str, str, frozenset[str], str], ...] = (
      "only the request logs API reports a response status per request"),
     ("source", "--source", frozenset({LOGS}),
      "only the request logs API says what served a request"),
+    # These two are claims about what this client's analytics surfaces filter
+    # on, not about what the APIs behind them could do: the observability API
+    # publishes an HTTP method and a deployment among a metric's dimensions, and
+    # a future change here could reach them. Overstating that would be a fact
+    # this table cannot support.
     ("method", "--method", frozenset({LOGS}),
-     "neither analytics API filters by HTTP method"),
+     "neither analytics surface here filters by HTTP method"),
     ("search", "--search", frozenset({LOGS}),
      "there is no log text to search on an analytics surface"),
     ("request_id", "--request-id", frozenset({LOGS}),
@@ -922,7 +967,7 @@ SURFACE_OPTIONS: tuple[tuple[str, str, frozenset[str], str], ...] = (
     ("branch", "--branch", frozenset({LOGS}),
      "neither analytics API records the git branch"),
     ("deployment", "--deployment", frozenset({LOGS}),
-     "neither analytics API filters by deployment"),
+     "neither analytics surface here filters by deployment"),
     ("expand", "--expand", frozenset({LOGS}),
      "there is no log message to expand"),
     # Both analytics surfaces, but not request logs.
@@ -1298,7 +1343,7 @@ def _resolve_settings(args: argparse.Namespace, env: Mapping[str, str]) -> Setti
         group_by = []
         limit = args.limit if args.limit is not None else preset.limit
         limit = validate_logs_limit(limit if limit is not None else LOGS_DEFAULT_LIMIT)
-        log_filters = _resolve_log_filters(args)
+        log_filters = _resolve_log_filters(args, warnings)
     else:
         group_by = validate_group_by(_resolve_group_by(args, preset), dataset)
         limit = args.limit if args.limit is not None else preset.limit

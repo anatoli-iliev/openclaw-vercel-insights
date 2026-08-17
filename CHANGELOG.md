@@ -46,10 +46,16 @@ text. Everything else in this release is additive.
   `--level` or `--status-code` explicitly collapses it to one query, which is the
   usual "an explicit flag overrides a preset value" rule.
 
-- **Nine new flags**, all logs-only and all validated before a request exists:
+- **Nine new flags**, all logs-only and all checked before a request exists:
   `--level`, `--status-code`, `--source`, `--method`, `--search`, `--request-id`,
   `--branch`, `--deployment` and `--expand`. On any other preset each one exits 2
   naming the three presets that accept it.
+
+  `--method` is checked but not refused: a method outside the standard set warns
+  on stderr and is still sent, because a custom HTTP verb is legal and refusing
+  one would remove capability, while saying nothing would leave `--method POTS`
+  answering 200 with zero rows, which is the same trap the other vocabularies are
+  validated against.
 
   Local validation is not politeness here. This API answers an unknown `level` or
   `source` with **HTTP 200 and zero rows**, so an unchecked typo would report a

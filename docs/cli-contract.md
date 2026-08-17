@@ -159,7 +159,7 @@ an unchecked typo would read as "nothing is broken".
 | `--level LEVEL` | none | `error`, `warning`, `info`, `fatal`, comma separated, any case. Anything else is a config error naming all four. Becomes `level`. Matches **application log lines, not responses**. |
 | `--status-code CODE` | none | Comma separated. Each item is either three characters whose first is a digit 1 to 9 and whose rest are digits or `x` (`500`, `5xx`, `40x`), or the literal `None` for a request with no status recorded. A comparison such as `>=500` is a config error quoting the API's own rule. Becomes `statusCode`. |
 | `--source SOURCE` | none | `serverless`, `edge-function`, `edge-middleware`, `static`, comma separated. `serverless-middleware` is accepted as a display alias and rewritten to `edge-middleware`, which is the spelling that matches those rows. Anything else is a config error naming the vocabulary and the alias. Becomes `source`. |
-| `--method METHOD` | none | Upper-cased for the wire. Becomes `requestMethod`. |
+| `--method METHOD` | none | Upper-cased for the wire. Becomes `requestMethod`. A method outside the standard set (`GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, `TRACE`, `CONNECT`) is **warned about on stderr and still sent**, because a custom method is legal HTTP: refusing would remove capability, and saying nothing would leave the same zero-rows trap `--level` and `--source` are validated against. |
 | `--search TEXT` | none | Free text and nothing more: not a query syntax, so do not expect `status:500` to filter by status. Probed forms either returned unfiltered rows or nothing. Becomes `search`. |
 | `--request-id ID` | none | One request. Becomes `requestId`. |
 | `--branch NAME` | none | Becomes `branch`. |
@@ -237,6 +237,7 @@ Added with the request logs surface:
 28. `--limit` outside 1 to 200 on a logs preset: config error saying that the limit counts rows there, that the API pages 50 at a time, and that this client stops after 4 pages.
 29. `--csv` with `error-summary`: config error naming `errors --csv`, which is one row per request.
 30. `--team-slug` alone on a logs preset: config error. That endpoint needs the account id, and a slug is a name; the same rule already applied to Speed Insights.
+31. `--method` outside the standard HTTP set: **warning on stderr, not an error**, and the value is still sent. A custom method is legal HTTP, so refusing would remove capability the API may have; silence is what is not acceptable, since an unrecorded method comes back as 200 with zero rows. The warning names the standard set and that outcome.
 
 Every message names the offending value and the fix. No traceback reaches the user.
 
@@ -355,7 +356,7 @@ Exceptions, sanitizers and constants live in `__init__.py`: `ConfigError`,
 | `http` | `OPERATIONS`, `PreparedRequest`, `redact_headers`, `format_dry_run`, `retry_delay`, `execute`, `scrub_credentials` |
 | `webanalytics` | `VISIT_DIMENSIONS`, `EVENT_DIMENSIONS`, `select_endpoint`, `validate_group_by`, `build_request`, `normalize` |
 | `speedinsights` | `METRICS`, `TARGETS`, `SPEED_DIMENSIONS`, `validate_metric`, `build_request`, `normalize` |
-| `logs` | `LEVELS`, `SOURCES`, `SOURCE_ALIASES`, `FILTER_PARAMS`, `PAGE_SIZE`, `MAX_PAGES`, `MIN_LIMIT`, `MAX_LIMIT`, `DEFAULT_LIMIT`, `validate_levels`, `validate_sources`, `validate_status_code`, `validate_limit`, `build_request`, `normalize`, `collect`, `merge`, `error_filter_sets`, `summarize`, `build_report`, `RETENTION_NOTE`, `ERROR_DEFINITION` |
+| `logs` | `LEVELS`, `SOURCES`, `SOURCE_ALIASES`, `SOURCE_ALIAS_NOTE`, `METHODS`, `FILTER_PARAMS`, `PAGE_SIZE`, `MAX_PAGES`, `MIN_LIMIT`, `MAX_LIMIT`, `DEFAULT_LIMIT`, `validate_levels`, `validate_sources`, `validate_status_code`, `validate_limit`, `normalize_method`, `method_warning`, `build_request`, `normalize`, `collect`, `merge`, `error_filter_sets`, `summarize`, `build_report`, `RETENTION_NOTE`, `ERROR_DEFINITION` |
 | `projects` | `looks_like_project_id`, `build_list_request`, `build_one_request`, `extract_projects`, `format_projects`, `resolve_project_id`, `owner_from_project` |
 | `budgets` | `BUDGET_EXCEEDED`, `Budget`, `parse_budgets`, `evaluate`, `any_failed` |
 | `render` | `Row`, `Result`, `LogLine`, `LogEntry`, `RouteTally`, `MessageTally`, `LogSummary`, `LogReport`, `ERROR_LEVELS`, `format_table`, `format_json`, `format_csv`, `render_overview`, `render_vitals`, `render_logs`, `render_error_summary`, `format_logs_json`, `format_logs_csv`, `verdict` |

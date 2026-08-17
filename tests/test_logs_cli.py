@@ -34,6 +34,7 @@ from helpers import (
 
 from vercel_insights import logs as vi_logs
 from vercel_insights.cli import OWNER_PLACEHOLDER, build_parser
+from vercel_insights.presets import PRESETS
 
 LOGS_ONLY_FLAGS: list[list[str]] = [
     ["--level", "error"],
@@ -354,6 +355,41 @@ def test_preview_environment_is_accepted_on_a_logs_preset(cli: Cli) -> None:
     )
     assert code == 0, err
     assert dry_run_values(out, "environment") == ["preview"]
+
+
+def test_an_unknown_method_warns_on_stderr_and_is_still_sent(cli: Cli) -> None:
+    # --method was the one logs vocabulary with no check at all, so --method POTS
+    # went out and came back 200 with zero rows: the same trap --level and
+    # --source are validated against. A custom method is legal HTTP, though, so
+    # this warns rather than refusing, and the request is still made.
+    code, out, err = cli.run(["logs", "--method", "POTS", "--dry-run"], dict(DRY_RUN_ENV))
+    assert code == 0, err
+    assert dry_run_values(out, "requestMethod") == ["POTS"]
+    assert "warning: --method POTS" in err
+    # The warning has to name the standard set and the zero-rows outcome, or the
+    # reader cannot tell a typo from a deliberate custom verb.
+    for method in ("GET", "POST", "DELETE"):
+        assert method in err
+    assert "zero rows" in err
+
+
+@pytest.mark.parametrize("method", ["get", "POST", " delete "])
+def test_a_standard_method_is_upper_cased_without_a_warning(cli: Cli, method: str) -> None:
+    code, out, err = cli.run(["logs", "--method", method, "--dry-run"], dict(DRY_RUN_ENV))
+    assert code == 0, err
+    assert dry_run_values(out, "requestMethod") == [method.strip().upper()]
+    assert "warning:" not in err
+
+
+def test_the_since_help_names_each_logs_preset_window_from_the_preset_table() -> None:
+    # The phrase used to be written out beside a preset table free to move under
+    # it. Composed from PRESETS, it cannot say 6h while error-summary asks for
+    # something else.
+    help_text = " ".join(build_parser().format_help().split())
+    for name, preset in PRESETS.items():
+        if preset.default_since:
+            assert f"{preset.default_since} on " in help_text
+            assert name in help_text
 
 
 def test_the_source_help_quotes_the_one_alias_note_rather_than_its_own_copy() -> None:
