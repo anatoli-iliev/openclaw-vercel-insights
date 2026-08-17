@@ -1055,7 +1055,10 @@ def _expanded_lines(entry: LogEntry, style: Style) -> list[str]:
     """Every log line of one request, worst first, indented under its row.
 
     A message may itself be several lines: ``sanitize_message`` indents its
-    continuations, so they stay visibly quoted rather than reaching column zero.
+    continuations, so they stay visibly quoted rather than reaching column
+    zero. This adds its own indent on top of that on every line, rather than
+    only on the first, so a continuation never renders less indented than the
+    line above it: a stack trace must not step backwards under ``--expand``.
     """
     ordered = sorted(
         entry.lines,
@@ -1066,7 +1069,10 @@ def _expanded_lines(entry: LogEntry, style: Style) -> list[str]:
     for line in ordered:
         label = f"{line.level}: " if line.level else ""
         suffix = " [truncated by Vercel]" if line.truncated else ""
-        out.append(style.dim(f"    {label}{line.message}{suffix}"))
+        rows = line.message.split("\n")
+        rows[0] = f"{label}{rows[0]}"
+        rows[-1] = f"{rows[-1]}{suffix}"
+        out.append(style.dim("\n".join(f"    {row}" for row in rows)))
     if entry.request_id:
         out.append(style.dim(f"    request {entry.request_id}"))
     return out

@@ -103,6 +103,86 @@ def test_truncation_is_stated_rather_than_implied() -> None:
     assert "more" in text.lower()
 
 
+def test_a_two_call_truncation_says_it_is_the_most_recent_of_each_kind() -> None:
+    # No explicit level or statusCode filter, so the errors preset ran its two
+    # calls and merged them: what was cut is per kind, not a global top N, and
+    # the footer must say so rather than let the generic sentence imply less.
+    text = render_logs(_report(LOGS_ERROR_PAGE, truncated=True, requested_limit=2))
+    assert "the most recent 2 of each kind rather than a global top 2" in text
+
+
+def test_a_single_call_truncation_does_not_claim_a_merge_that_did_not_happen() -> None:
+    # An explicit --level (or --status-code) collapses the errors preset to one
+    # call, so there was no per-kind merge, and the sharper sentence would be a
+    # lie here: it must not appear.
+    text = render_logs(
+        _report(
+            LOGS_ERROR_PAGE,
+            truncated=True,
+            requested_limit=2,
+            filters={"level": "error"},
+        )
+    )
+    assert "of each kind" not in text
+
+
 def test_the_footer_counts_the_errors_by_status() -> None:
     text = render_logs(_report(LOGS_ERROR_PAGE))
     assert "2 errors" in text
+
+
+def test_expand_keeps_a_multiline_message_indented_under_its_row() -> None:
+    # sanitize_message indents continuation lines by two spaces so nothing a
+    # server sends can reach column zero; render_logs must add its own indent
+    # on top of that on every line, not only the first, or a stack trace steps
+    # backwards under --expand instead of staying nested under its row.
+    payload = {
+        "rows": [
+            {
+                "requestId": "trace-1",
+                "timestamp": "2026-08-17T11:00:00.000Z",
+                "statusCode": 500,
+                "requestPath": "/api/checkout",
+                "logs": [
+                    {
+                        "level": "error",
+                        "message": "Error: boom\nat foo (a.js:1)\nat bar (b.js:2)",
+                    }
+                ],
+            }
+        ]
+    }
+    text = render_logs(_report(payload), expand=True)
+    lines = [
+        line
+        for line in text.splitlines()
+        if line.startswith(" ")
+        and ("boom" in line or "at foo" in line or "at bar" in line)
+    ]
+    assert len(lines) == 3
+    indents = [len(line) - len(line.lstrip(" ")) for line in lines]
+    assert all(indent >= indents[0] for indent in indents)
+
+
+def test_a_row_with_no_timestamp_says_so_rather_than_leaving_a_blank() -> None:
+    payload = {
+        "rows": [
+            {
+                "requestId": "no-time",
+                "statusCode": 500,
+                "requestPath": "/api/checkout",
+            }
+        ]
+    }
+    text = render_logs(_report(payload))
+    assert "(no time)" in text
+
+
+def test_a_window_over_a_day_shows_the_date_in_the_time_column() -> None:
+    text = render_logs(
+        _report(
+            LOGS_ERROR_PAGE,
+            time_range=(utc(2026, 8, 15, 11, 6), utc(2026, 8, 17, 11, 6)),
+        )
+    )
+    assert "08-17 11:04:52" in text
