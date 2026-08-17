@@ -1429,6 +1429,14 @@ def _plan_log_requests(settings: Settings, page: int = 0) -> list[PreparedReques
 OWNER_PLACEHOLDER = "<read from the project at run time>"
 
 
+#: Where a token is created in the dashboard, which is what both scope refusals
+#: below tell the reader to go and do. Named here rather than in the package root
+#: (where :data:`DOCS_TOKEN_URL`, the documentation anchor, lives) because this
+#: module is the only one that needs it, and written once so a moved Vercel page
+#: cannot leave one of the two hints stale.
+DASHBOARD_TOKEN_URL = "https://vercel.com/account/tokens"
+
+
 #: Appended to a 404 from the observability API. That surface scopes by account
 #: (``scope.ownerId``), so a token bound to a single project has no account to
 #: resolve and is refused. Web Analytics takes a ``projectId`` instead, which is
@@ -1439,9 +1447,8 @@ OBSERVABILITY_SCOPE_HINT = (
     "Speed Insights is served by Vercel's observability API, which scopes by "
     "account rather than by project, so it needs a token with account (or "
     "team) scope. Web Analytics presets keep working with a project scoped "
-    "token. Create an account scoped token at "
-    "https://vercel.com/account/tokens, or confirm the scope of the current "
-    "one with: npx vercel@latest metrics schema"
+    f"token. Create an account scoped token at {DASHBOARD_TOKEN_URL}, or "
+    "confirm the scope of the current one with: npx vercel@latest metrics schema"
 )
 
 
@@ -1505,8 +1512,8 @@ REQUEST_LOGS_SCOPE_HINT = (
     "Request logs are scoped by the owning account (the ownerId parameter), so "
     "a token scoped to a single project cannot read them: it cannot act for the "
     "account that owns the project. Create an account or team scoped token at "
-    "https://vercel.com/account/tokens, and set VERCEL_TEAM_ID for a team owned "
-    "project, since a team is its own owner."
+    f"{DASHBOARD_TOKEN_URL}, and set VERCEL_TEAM_ID for a team owned project, "
+    "since a team is its own owner."
 )
 
 
@@ -1961,20 +1968,33 @@ def _collect_logs(
         RateLimitError: When retrying did not clear a rate limit.
     """
     limit = settings.limit or LOGS_DEFAULT_LIMIT
+    # Built once, for the filter set count and for the header line below. The
+    # rebuild inside the loop is only because a page index has to reach the
+    # request, and every page of a set carries the same headers.
+    planned = _plan_log_requests(settings)
     groups: list[list[LogEntry]] = []
     truncated = False
     pages = 0
 
-    for index in range(len(_plan_log_requests(settings))):
+    for index, first_page in enumerate(planned):
+        if args.verbose:
+            # Once per filter set rather than once per page, so the output stays
+            # proportional to the paging. This is also the line that shows a
+            # reader the token is redacted wherever the tool prints a request.
+            print(
+                f"verbose: headers {redact_headers(first_page.headers)}",
+                file=err,
+            )
 
         def call(page: int, index: int = index) -> Mapping[str, Any]:
             """Fetch one page of one filter set. Injected into logs.collect."""
             prepared = _plan_log_requests(settings, page)[index]
             if args.verbose:
-                print(
-                    f"verbose: {prepared.method} {prepared.url} page {page}",
-                    file=err,
-                )
+                # The params name the page and the filter set's own statusCode or
+                # level, which is what tells two interleaved sets apart: without
+                # them an errors run reads "page 0, page 1, page 0".
+                print(f"verbose: {prepared.method} {prepared.url}", file=err)
+                print(f"verbose: params {prepared.params}", file=err)
             try:
                 answer = execute(
                     prepared,

@@ -111,6 +111,21 @@ def test_a_thirty_minute_window_does_not_lecture_about_retention() -> None:
 def test_truncation_is_stated_rather_than_implied() -> None:
     text = render_logs(_report(LOGS_ERROR_PAGE, truncated=True, requested_limit=2))
     assert "more" in text.lower()
+    # Two rows out of a possible 200, so there is room to ask for more.
+    assert f"Raise --limit (up to {vi_logs.MAX_LIMIT})" in text
+
+
+def test_a_truncation_at_the_ceiling_does_not_advise_raising_the_limit() -> None:
+    # The error-summary preset already asks for MAX_LIMIT, so "raise --limit (up
+    # to 200)" would be telling a reader who is at 200 to go to 200. Advice that
+    # cannot be followed is worse than none, so the remedy offered is the one
+    # that is left.
+    text = render_logs(
+        _report(LOGS_ERROR_PAGE, truncated=True, requested_limit=vi_logs.MAX_LIMIT)
+    )
+    assert "more" in text.lower()
+    assert "Raise --limit" not in text
+    assert "narrow the window" in text
 
 
 def test_a_two_call_truncation_says_it_is_the_most_recent_of_each_kind() -> None:

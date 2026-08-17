@@ -21,8 +21,10 @@ from helpers import (
     DAILY_PAYLOAD,
     DRY_RUN_ENV,
     ESCAPED_ANSI_CAMPAIGN,
+    LOGS_PAGE,
     PROJECT,
     SECRET,
+    SPEED_ROUTE_PAYLOAD,
     TESTS_DIR,
     TOKEN,
     TOP_PAGES_PAYLOAD,
@@ -417,13 +419,28 @@ def test_dry_run_without_a_token_exits_zero_and_never_touches_a_session(
     assert "Bearer <redacted>" in out
 
 
-def test_a_verbose_run_prints_redacted_headers_only(cli: Cli) -> None:
-    session = FakeSession(FakeResponse(200, TOP_PAGES_PAYLOAD))
-    code, out, err = cli.run(
-        ["top-pages", "--verbose"], env=dict(BASE_ENV), session=session
-    )
-    assert code == 0
-    assert "verbose: GET" in err
+#: One verbose run per surface, with the payload its endpoint answers with. All
+#: three are here because this is the demonstration that the token stays in the
+#: Authorization header wherever this tool prints a request, and a surface left
+#: out of it is a surface where that is only a promise.
+VERBOSE_RUNS: list[tuple[str, dict[str, Any]]] = [
+    ("top-pages", TOP_PAGES_PAYLOAD),
+    ("slowest-pages", SPEED_ROUTE_PAYLOAD),
+    ("logs", LOGS_PAGE),
+]
+
+
+@pytest.mark.parametrize(
+    ("preset", "payload"), VERBOSE_RUNS, ids=[preset for preset, _ in VERBOSE_RUNS]
+)
+def test_a_verbose_run_prints_redacted_headers_only(
+    cli: Cli, preset: str, payload: dict[str, Any]
+) -> None:
+    session = FakeSession(FakeResponse(200, payload))
+    code, out, err = cli.run([preset, "--verbose"], env=dict(BASE_ENV), session=session)
+    assert code == 0, err
+    # Speed Insights posts its query; the other two get.
+    assert "verbose: GET" in err or "verbose: POST" in err
     assert "Bearer <redacted>" in err
     assert TOKEN not in err
     assert TOKEN not in out

@@ -799,10 +799,18 @@ def build_report(
         )
 
     if truncated:
+        # The error-summary preset already asks for MAX_LIMIT, so "raise --limit"
+        # is advice its reader cannot follow. Only offer it where there is room.
+        if requested_limit < MAX_LIMIT:
+            remedy = f"Raise --limit (up to {MAX_LIMIT}) or narrow the window."
+        else:
+            remedy = (
+                f"{MAX_LIMIT} rows is all this surface will fetch, so narrow the "
+                "window with --since, or filter with --route or --status-code."
+            )
         notes.append(
-            f"More rows matched than were shown: this is the most recent "
-            f"{requested_limit}. Raise --limit (up to {MAX_LIMIT}) or narrow the "
-            "window."
+            "More rows matched than were shown: this is the most recent "
+            f"{requested_limit}. {remedy}"
         )
         if counts_errors and _is_two_call(filters):
             notes.append(

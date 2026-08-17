@@ -505,6 +505,25 @@ def test_a_403_explains_token_scope(cli: Cli) -> None:
     assert "You don't have permission" in err
     assert "account" in err and "team" in err
     assert "vercel.com/account/tokens" in err
+    # The collector raised through the session's try/finally, so the connection
+    # is still closed: a failure must not leak one.
+    assert session.closed
+
+
+def test_a_failure_on_the_second_filter_set_reports_nothing_and_fails(cli: Cli) -> None:
+    # The first filter set came back with two real errors and the second was
+    # refused. A partial answer is not offered: it would read as "these are the
+    # errors" while half the question went unanswered, and this surface's whole
+    # point is that neither filter alone answers it.
+    session = FakeSession(
+        FakeResponse(200, LOGS_ERROR_PAGE), FakeResponse(403, FORBIDDEN)
+    )
+    code, out, err = cli.run(["errors"], BASE_ENV, session)
+    assert code == 1
+    assert out == ""
+    assert "/api/checkout" not in out
+    assert "vercel.com/account/tokens" in err
+    assert session.closed
 
 
 def test_a_403_here_does_not_get_the_web_analytics_team_advice(cli: Cli) -> None:
@@ -528,6 +547,24 @@ def test_a_top_level_array_is_refused_rather_than_read_as_no_rows(cli: Cli) -> N
     assert "rows" in err
 
 
+def test_an_unreadable_second_page_fails_rather_than_stopping_early(cli: Cli) -> None:
+    # Page 0 was fine and page 1 is a shape this client cannot read. Treating
+    # that as the end of the data would report the first 50 requests as the whole
+    # answer, which is the same silence a truncation note exists to prevent.
+    full = {
+        "rows": [logs_row(requestId=f"r{index}") for index in range(50)],
+        "hasMoreRows": True,
+    }
+    session = FakeSession(
+        FakeResponse(200, full), FakeResponse(200, {"rows": "not a list"})
+    )
+    code, out, err = cli.run(["logs", "--limit", "100"], BASE_ENV, session)
+    assert code == 1
+    assert out == ""
+    assert "not a list" in err or "was not a list" in err
+    assert len(session.calls) == 2
+
+
 def test_the_token_never_reaches_the_output(cli: Cli) -> None:
     session = FakeSession(FakeResponse(200, LOGS_ERROR_PAGE))
     code, out, err = cli.run(["logs", "--verbose"], BASE_ENV, session)
@@ -536,7 +573,27 @@ def test_the_token_never_reaches_the_output(cli: Cli) -> None:
     # own diagnostics being checked rather than a run that printed none: a line
     # sent to the process stderr instead would escape both of these.
     assert "verbose: GET" in err
+    assert "Bearer <redacted>" in err
     assert TOKEN not in out and TOKEN not in err
+
+
+def test_verbose_says_which_filter_set_each_page_belonged_to(cli: Cli) -> None:
+    # An errors run interleaves two filter sets, and page numbers restart with
+    # each one, so "page 0, page 1, page 0" cannot be read on its own. The params
+    # carry the page and the filter that set was querying with, which is what
+    # tells the two apart.
+    session = FakeSession(
+        FakeResponse(200, LOGS_ERROR_PAGE), FakeResponse(200, LOGS_EMPTY_PAGE)
+    )
+    code, _out, err = cli.run(["errors", "--verbose"], BASE_ENV, session)
+    assert code == 0, err
+    params = [line for line in err.splitlines() if line.startswith("verbose: params")]
+    assert len(params) == 2
+    assert "('statusCode', '5xx')" in params[0]
+    assert "('level', 'error,fatal')" in params[1]
+    # Headers once per filter set rather than once per page, so a run that pages
+    # four times deep does not print the same three headers four times over.
+    assert err.count("Bearer <redacted>") == 2
 
 
 # ---------------------------------------------------------------------------

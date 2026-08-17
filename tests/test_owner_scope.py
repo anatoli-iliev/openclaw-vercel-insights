@@ -119,6 +119,9 @@ def test_a_project_without_an_account_id_fails_with_the_flag_to_set(cli: Cli) ->
     assert code == 2
     assert "--owner-id" in err
     assert "Traceback" not in err
+    # The refusal names the surface that could not be scoped, because the same
+    # lookup now serves request logs and the two need telling apart.
+    assert "Speed Insights query could not be scoped" in err
 
 
 # ---------------------------------------------------------------------------
