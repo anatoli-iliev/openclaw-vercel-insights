@@ -256,8 +256,8 @@ Every row here is a failure hit during real setup, not a hypothetical.
 
 ## What this skill can reach
 
-6 endpoints, all read-only, fixed in a table in `vercel_insights/http.py` that
-no input can extend:
+Exactly 6 endpoints, all read-only, fixed in a table in `vercel_insights/http.py`
+that no input can extend:
 
 | Method | Endpoint | For |
 | --- | --- | --- |

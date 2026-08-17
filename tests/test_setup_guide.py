@@ -97,12 +97,44 @@ def _count_phrases(number: int) -> list[str]:
 
     Both the digit and the spelled-out word, against each noun they use for an
     entry, plus the hyphenated adjective form ("six-endpoint allowlist"), which
-    is the exact phrase that went stale in two files.
+    is the exact phrase that went stale in two files. Lower case, because the
+    text is lowered before matching: a claim is no less a claim for starting a
+    sentence.
     """
     forms = (str(number), NUMBER_WORDS[number])
     phrases = [f"{form} {noun}" for form in forms for noun in ENTRY_NOUNS]
     phrases.extend(f"{form}-endpoint" for form in forms)
     return phrases
+
+
+def _stale_phrases(number: int) -> list[str]:
+    """The shapes a stale count took, rather than every shape of a number.
+
+    Narrower than :func:`_count_phrases` on purpose. The real drift was
+    "exactly three entries" and "five-endpoint allowlist" a few lines apart in
+    one file, and those two shapes only ever describe the whole allowlist. A
+    bare "five entries" does not: `docs/cli-contract.md` correctly says "Five
+    entries are on `api.vercel.com`", which is a true statement about a subset,
+    and matching that as a stale claim would report a correct file as wrong.
+    Narrowing is what lets this run case-insensitively, which a bare form could
+    not.
+    """
+    forms = (str(number), NUMBER_WORDS[number])
+    phrases = [f"exactly {form} {noun}" for form in forms for noun in ENTRY_NOUNS]
+    phrases.extend(f"{form}-endpoint" for form in forms)
+    return phrases
+
+
+def _names_host(text: str, host: str) -> bool:
+    """Whether ``text`` names this host rather than merely containing its tail.
+
+    ``"vercel.com" in text`` is true of every mention of ``api.vercel.com``,
+    since one is a substring of the other, so asserting it did no work at all:
+    a file could enumerate the API host alone and still pass. A host counts as
+    named only where the character before it cannot itself be part of a
+    hostname, which is what tells the dashboard host apart from the API one.
+    """
+    return re.search(rf"(?<![A-Za-z0-9.-]){re.escape(host)}", text) is not None
 
 
 def test_the_guide_exists_and_is_linked_from_both_entry_points() -> None:
@@ -165,7 +197,7 @@ def test_every_host_the_allowlist_can_reach_is_named(document: str) -> None:
     # enumerates endpoints has to name every host, not only the API one.
     text = _read(document)
     for host in sorted({url.split("/")[2] for _method, url in OPERATIONS.values()}):
-        assert host in text, f"{document} never names the {host} host"
+        assert _names_host(text, host), f"{document} never names the {host} host"
 
 
 @pytest.mark.parametrize("document", COUNTING_DOCS)
@@ -174,7 +206,7 @@ def test_the_documented_endpoint_count_matches_the_allowlist(document: str) -> N
     # five for several releases after the sixth entry landed. Both spellings are
     # accepted because the prose spells the number and the setup guide digits it;
     # what is not accepted is a number that is no longer the real one.
-    flat = _flat(_read(document))
+    flat = _flat(_read(document)).lower()
     count = len(OPERATIONS)
     assert any(phrase in flat for phrase in _count_phrases(count)), (
         f"{document} does not say the allowlist has {count} "
@@ -187,7 +219,7 @@ def test_the_documented_endpoint_count_matches_the_allowlist(document: str) -> N
         phrase
         for number in NUMBER_WORDS
         if number != count
-        for phrase in _count_phrases(number)
+        for phrase in _stale_phrases(number)
         if phrase in flat
     ]
     assert not stale, f"{document} still claims {stale[0]!r}"

@@ -98,13 +98,24 @@ def test_list_presets_rows_match_the_documented_table(cli: Cli) -> None:
     assert "3 x aggregate" in " ".join(overview)
 
 
-@pytest.mark.parametrize("name", ["logs", "errors", "error-summary"])
+#: Transcribed by hand from the preset table in docs/cli-contract.md, which says
+#: 50 rows for logs and errors and 200 for error-summary. Not read back from
+#: PRESETS: with nothing pinning the numbers, swapping the default and the
+#: maximum between errors and error-summary passed every test, and that swap is
+#: user-visible twice over, in the row budget and in build_report's
+#: at-the-ceiling branch, which stops advising a raise once the limit is 200.
+LOGS_PRESET_LIMITS: dict[str, int] = {"logs": 50, "errors": 50, "error-summary": 200}
+
+
+@pytest.mark.parametrize("name", sorted(LOGS_PRESET_LIMITS))
 def test_the_logs_presets_query_the_logs_surface(name: str) -> None:
     preset = PRESETS[name]
     assert preset.surface == LOGS
     assert preset.is_logs is True
     assert preset.group_by == ()
     assert preset.endpoint.endswith("request-logs")
+    assert preset.dataset == "logs"
+    assert preset.limit == LOGS_PRESET_LIMITS[name]
 
 
 def test_the_errors_presets_issue_two_calls() -> None:
@@ -134,3 +145,11 @@ def test_the_preset_table_renders_with_the_logs_presets() -> None:
     for name in ("logs", "errors", "error-summary"):
         assert name in text
     assert "request-logs" in text
+
+
+@pytest.mark.parametrize("name", sorted(LOGS_PRESET_LIMITS))
+def test_a_logs_preset_row_shows_its_documented_row_limit(name: str) -> None:
+    # The limit column is what a reader checks before passing --limit, so the
+    # printed table owes the same number the preset actually applies.
+    row = preset_row(format_presets(), name)
+    assert str(LOGS_PRESET_LIMITS[name]) in row

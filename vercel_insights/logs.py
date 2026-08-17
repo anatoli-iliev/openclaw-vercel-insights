@@ -499,7 +499,12 @@ def _lines(row: Mapping[str, Any]) -> tuple[LogLine, ...]:
         level = item.get("level")
         lines.append(
             LogLine(
-                level=sanitize_label(str(level)).lower() if level else "",
+                # Lower-cased and stripped because render.py ranks a level by an
+                # exact key in LOG_LEVEL_SEVERITY: an "ERROR" or a padded
+                # " error " that missed the table would score below "info", lose
+                # the worst-line ranking, and leave is_error False for a request
+                # that logged a stack trace.
+                level=sanitize_label(str(level)).strip().lower() if level else "",
                 message=sanitize_message(str(message)) if message else "",
                 truncated=bool(item.get("messageTruncated")),
             )

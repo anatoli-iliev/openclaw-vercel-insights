@@ -283,6 +283,29 @@ def test_a_row_with_no_log_lines_has_no_level_and_no_headline() -> None:
     assert entry.headline == ""
 
 
+@pytest.mark.parametrize("spelling", ["ERROR", "Error", " error "])
+def test_a_level_is_lower_cased_on_the_way_in(spelling: str) -> None:
+    # Not cosmetic: worst_line ranks levels by an exact lower-case key in
+    # LOG_LEVEL_SEVERITY, so an un-normalized "ERROR" would score below "info",
+    # lose the ranking to any other line, and leave is_error returning False for
+    # a request that logged a stack trace.
+    payload = {
+        "rows": [
+            logs_row(
+                statusCode=200,
+                logs=[
+                    {"level": "info", "message": "starting"},
+                    {"level": spelling, "message": "boom"},
+                ],
+            )
+        ]
+    }
+    entry = vi_logs.normalize(payload)[0][0]
+    assert entry.worst_level == "error"
+    assert entry.headline == "boom"
+    assert entry.is_error is True
+
+
 def test_the_worst_line_wins_the_level_and_the_headline() -> None:
     payload = {
         "rows": [
