@@ -86,6 +86,22 @@ DATA_POINTS_NOTE = (
     "read the value next to its data point count."
 )
 
+#: Log levels ordered by severity, so the worst line on a request can be picked
+#: without a surface module having to rank them. The names are validated in
+#: logs.py; tests/test_logs.py asserts the two agree.
+LOG_LEVEL_SEVERITY: dict[str, int] = {
+    "info": 0,
+    "warning": 1,
+    "error": 2,
+    "fatal": 3,
+}
+
+#: The levels that make a request an error rather than a note, in the order they
+#: are sent as a filter. Defined here because LogEntry.is_error needs them and
+#: this module must not import a surface module; logs.py imports them from here,
+#: so there is one definition rather than two that can drift.
+ERROR_LEVELS: tuple[str, ...] = ("error", "fatal")
+
 
 # ---------------------------------------------------------------------------
 # The untrusted-input boundary
