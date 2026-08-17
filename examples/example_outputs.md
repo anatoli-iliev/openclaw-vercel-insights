@@ -556,7 +556,7 @@ $ vercel-insights errors --status-code 4xx --since 1h --limit 3
 Vercel request logs: prj_tjgvYZgQGYqNxBP1nQffcF1A92Ag (errors, last 1 hour)
 Range: 2026-08-17T19:48:40Z to 2026-08-17T20:48:40Z (UTC)
 Filter: statusCode 4xx
-These rows are what statusCode 4xx matched, not what this tool counts as an error: an explicit --level or --status-code replaces the error definition rather than narrowing it.
+These rows are what statusCode 4xx matched: your filter chose them, not this tool's own error query. An explicit --level or --status-code replaces the error definition rather than narrowing it.
 
 time      level  status  method  route    source      message
 --------  -----  ------  ------  -------  ----------  -------

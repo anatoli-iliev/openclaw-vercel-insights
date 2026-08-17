@@ -995,9 +995,9 @@ def _header_note(*, counts_errors: bool, filters: Mapping[str, str]) -> str | No
         return ERROR_DEFINITION
     shown = " and ".join(f"{name} {filters[name]}" for name in narrowed)
     return (
-        f"These rows are what {shown} matched, not what this tool counts as an "
-        "error: an explicit --level or --status-code replaces the error "
-        "definition rather than narrowing it."
+        f"These rows are what {shown} matched: your filter chose them, not "
+        "this tool's own error query. An explicit --level or --status-code "
+        "replaces the error definition rather than narrowing it."
     )
 
 

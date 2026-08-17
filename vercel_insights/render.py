@@ -384,11 +384,9 @@ class LogSummary:
     by_route: tuple[RouteTally, ...]
     by_message: tuple[MessageTally, ...]
     #: Entries that are errors only because they logged an error or fatal
-    #: line, not because their status was already a 5xx or the function
-    #: crashed. This number is only meaningful for a set of entries that has
-    #: already been filtered to errors: on an unfiltered set, such as the
-    #: plain logs preset, it would count every ordinary sub-500 request in
-    #: the window instead.
+    #: line: a non-5xx status that did not crash but did carry such a line.
+    #: All three conditions are checked, so this is safe to compute on any
+    #: set of entries, not just one already filtered to errors.
     logged_only: int
 
 
