@@ -19,6 +19,7 @@ import pytest
 from vercel_insights import cli as vi_cli
 from vercel_insights import http as vi_http
 from vercel_insights.http import PreparedRequest
+from vercel_insights.logs import build_request as build_logs_request
 from vercel_insights.speedinsights import build_request as build_speed_request
 from vercel_insights.speedinsights import validate_metric
 from vercel_insights.webanalytics import build_request
@@ -35,6 +36,10 @@ WEB_ANALYTICS_BASE = "https://api.vercel.com/v1/query/web-analytics"
 #: The observability query endpoint, likewise written out by hand from
 #: docs/api-notes.md rather than read back from ``OPERATIONS``.
 SPEED_QUERY_URL = "https://api.vercel.com/v2/observability/query"
+
+#: The request-logs endpoint, written out by hand from docs/api-notes.md rather
+#: than read back from OPERATIONS.
+LOGS_URL = "https://vercel.com/api/logs/request-logs"
 
 TOKEN = "vercel-token-that-must-never-be-printed"
 PROJECT = "prj_demo"
@@ -223,6 +228,19 @@ def speed_request(**overrides: Any) -> PreparedRequest:
     }
     kwargs.update(overrides)
     return build_speed_request(**kwargs)
+
+
+def logs_request(**overrides: Any) -> PreparedRequest:
+    """A prepared request-logs request, for the HTTP and security tests."""
+    kwargs: dict[str, Any] = {
+        "project": PROJECT,
+        "owner_id": OWNER,
+        "since": utc(2026, 8, 17, 10, 6, 8),
+        "until": utc(2026, 8, 17, 11, 6, 8),
+        "token": TOKEN,
+    }
+    kwargs.update(overrides)
+    return build_logs_request(**kwargs)
 
 
 def dry_run_calls(out: str) -> list[tuple[str, list[tuple[str, str]]]]:

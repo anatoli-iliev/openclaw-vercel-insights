@@ -22,8 +22,12 @@ See docs/api-notes.md for the live probes behind every claim here.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
+from datetime import datetime
 
 from . import ConfigError
+from .http import PreparedRequest, default_headers, operation_url
+from .timerange import to_unix_ms
 
 #: The operation key this surface uses. A key into ``http.OPERATIONS``, never a
 #: method and never a host.
@@ -197,4 +201,90 @@ def validate_limit(limit: int) -> int:
         f"rather than groups: pass {MIN_LIMIT} to {MAX_LIMIT}. The API pages "
         f"{PAGE_SIZE} rows at a time and ignores a limit of its own, so this "
         f"client stops after {MAX_PAGES} pages"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Request building
+# ---------------------------------------------------------------------------
+
+#: Every filter parameter this surface may send, in the order they are emitted.
+#: This is a parameter allowlist as well as an ordering: a key outside it is a
+#: ConfigError, so a caller cannot introduce a query parameter of its own.
+FILTER_PARAMS: tuple[str, ...] = (
+    "level",
+    "statusCode",
+    "source",
+    "requestMethod",
+    "requestPath",
+    "route",
+    "environment",
+    "branch",
+    "deploymentId",
+    "requestId",
+    "search",
+)
+
+
+def build_request(
+    *,
+    project: str,
+    owner_id: str,
+    since: datetime,
+    until: datetime,
+    page: int = 0,
+    filters: Mapping[str, str] | None = None,
+    token: str | None = None,
+) -> PreparedRequest:
+    """Build the request that fetches one page of request logs. Pure: no I/O.
+
+    The URL comes from the ``request_logs`` entry of the operation allowlist, so
+    neither the method nor the host is written down here. The token, when
+    supplied, goes into the ``Authorization`` header and nowhere else.
+
+    ``teamId`` is deliberately absent: this endpoint does not accept it, and
+    ``ownerId`` is what scopes the call.
+
+    Args:
+        project: Project id or project name; both work on this endpoint.
+        owner_id: Account that owns the project. Required by the API.
+        since: Start of the window, aware.
+        until: End of the window, aware.
+        page: Zero based page index.
+        filters: Wire-named filter values, keyed by :data:`FILTER_PARAMS`.
+            Empty values are dropped rather than sent.
+        token: Access token for the ``Authorization`` header.
+
+    Returns:
+        The :class:`PreparedRequest` describing exactly one allowlisted call.
+
+    Raises:
+        ConfigError: When ``filters`` carries a key outside
+            :data:`FILTER_PARAMS`.
+    """
+    supplied = dict(filters or {})
+    unknown = sorted(set(supplied) - set(FILTER_PARAMS))
+    if unknown:
+        raise ConfigError(
+            f"{unknown[0]!r} is not a request logs filter; this surface sends "
+            f"only {', '.join(FILTER_PARAMS)}"
+        )
+
+    params: list[tuple[str, str]] = [
+        ("projectId", project),
+        ("ownerId", owner_id),
+        ("page", str(page)),
+        ("startDate", to_unix_ms(since)),
+        ("endDate", to_unix_ms(until)),
+    ]
+    for name in FILTER_PARAMS:
+        value = supplied.get(name)
+        if value:
+            params.append((name, value))
+
+    return PreparedRequest(
+        operation=OPERATION,
+        url=operation_url(OPERATION),
+        params=params,
+        headers=default_headers(token),
     )

@@ -33,6 +33,7 @@ from helpers import (
     Recorder,
     dry_run_values,
     error_payload,
+    logs_request,
     no_jitter,
     package_source_text,
     package_sources,
@@ -540,6 +541,28 @@ def test_an_error_body_echoing_the_token_is_scrubbed() -> None:
 def test_the_user_agent_carries_no_credential() -> None:
     assert TOKEN not in vi_http.USER_AGENT
     assert vi_http.USER_AGENT.startswith("vercel-insights-skill/")
+
+
+def test_a_logs_request_carries_no_credential_in_its_url_or_params() -> None:
+    request = logs_request(token=TOKEN)
+    assert TOKEN not in request.url
+    assert all(TOKEN not in value for _name, value in request.params)
+    assert request.headers["Authorization"] == f"Bearer {TOKEN}"
+
+
+def test_the_repr_of_a_logs_request_hides_the_token() -> None:
+    text = repr(logs_request(token=TOKEN))
+    assert TOKEN not in text
+    assert "Bearer <redacted>" in text
+    assert "request-logs" in text
+
+
+def test_a_logs_dry_run_prints_no_credential() -> None:
+    text = format_dry_run(logs_request(token=TOKEN))
+    assert TOKEN not in text
+    assert "Bearer <redacted>" in text
+    assert "GET https://vercel.com/api/logs/request-logs" in text
+    assert "Nothing was sent" in text
 
 
 # ---------------------------------------------------------------------------
