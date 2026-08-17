@@ -64,6 +64,46 @@ def _split(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def _validate_vocabulary(
+    flag: str, noun: str, value: str, vocabulary: tuple[str, ...]
+) -> str:
+    """Validate a comma separated list against a fixed vocabulary.
+
+    Shared by :func:`validate_levels` and :func:`validate_sources`, which
+    differ only in the flag, the noun and the vocabulary: both need every
+    accepted value named, and the same 200-with-zero-rows danger explained,
+    so one message template serves both rather than two that could drift.
+
+    Args:
+        flag: The flag name, without its leading dashes, for example
+            ``"level"``.
+        noun: What one item of this vocabulary is called, for the message,
+            for example ``"log level"``.
+        value: One or more comma separated names, any case.
+        vocabulary: Every value this API accepts for this flag.
+
+    Returns:
+        The lower-cased comma separated list to send.
+
+    Raises:
+        ConfigError: When the list is empty or names a value outside
+            ``vocabulary``. The API answers an unknown value with HTTP 200
+            and zero rows rather than an error, so an unchecked typo would
+            read as "nothing is broken".
+    """
+    items = [item.lower() for item in _split(value)]
+    unknown = [item for item in items if item not in vocabulary]
+    if not items or unknown:
+        offending = f"{unknown[0]!r}" if unknown else "an empty list"
+        raise ConfigError(
+            f"--{flag} {offending} is not a {noun} this API knows; it accepts "
+            f"{', '.join(vocabulary)}, comma separated. This is checked here "
+            "because the API answers an unknown value with HTTP 200 and zero "
+            "rows rather than an error, which would read as 'nothing is broken'"
+        )
+    return ",".join(items)
+
+
 def validate_levels(value: str) -> str:
     """Validate a ``--level`` list and return it as the API spells it.
 
@@ -78,17 +118,7 @@ def validate_levels(value: str) -> str:
             know. The API answers 200 with zero rows for an unknown level, so
             an unchecked typo would report a healthy site.
     """
-    items = [item.lower() for item in _split(value)]
-    unknown = [item for item in items if item not in LEVELS]
-    if not items or unknown:
-        offending = f"{unknown[0]!r}" if unknown else "an empty list"
-        raise ConfigError(
-            f"--level {offending} is not a log level this API knows; it accepts "
-            f"{', '.join(LEVELS)}, comma separated. This is checked here because "
-            "the API answers an unknown level with zero rows rather than an "
-            "error, which would read as 'nothing is broken'"
-        )
-    return ",".join(items)
+    return _validate_vocabulary("level", "log level", value, LEVELS)
 
 
 def validate_sources(value: str) -> str:
@@ -105,16 +135,7 @@ def validate_sources(value: str) -> str:
             reasoning as :func:`validate_levels`: an unknown value is answered
             with zero rows.
     """
-    items = [item.lower() for item in _split(value)]
-    unknown = [item for item in items if item not in SOURCES]
-    if not items or unknown:
-        offending = f"{unknown[0]!r}" if unknown else "an empty list"
-        raise ConfigError(
-            f"--source {offending} is not a source this API knows; it accepts "
-            f"{', '.join(SOURCES)}, comma separated. An unknown value comes back "
-            "as zero rows rather than an error, so it is refused here"
-        )
-    return ",".join(items)
+    return _validate_vocabulary("source", "source", value, SOURCES)
 
 
 def validate_status_code(value: str) -> str:

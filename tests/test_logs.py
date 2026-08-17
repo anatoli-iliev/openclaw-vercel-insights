@@ -54,8 +54,14 @@ def test_validate_sources_normalizes_a_valid_list(value: str, expected: str) -> 
 
 @pytest.mark.parametrize("value", ["lambda", "edge", "function", ""])
 def test_validate_sources_refuses_an_unknown_source(value: str) -> None:
-    with pytest.raises(ConfigError):
+    with pytest.raises(ConfigError) as excinfo:
         vi_logs.validate_sources(value)
+    message = str(excinfo.value)
+    # Same message builder as validate_levels, so it owes the same two checks:
+    # every accepted value named, and the zero-rows danger explained.
+    for source in vi_logs.SOURCES:
+        assert source in message
+    assert "zero rows" in message
 
 
 @pytest.mark.parametrize(

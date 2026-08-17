@@ -98,8 +98,9 @@ LOG_LEVEL_SEVERITY: dict[str, int] = {
 
 #: The levels that make a request an error rather than a note, in the order they
 #: are sent as a filter. Defined here because LogEntry.is_error needs them and
-#: this module must not import a surface module; logs.py imports them from here,
-#: so there is one definition rather than two that can drift.
+#: this module must not import a surface module; a later task has logs.py
+#: import them from here, so there will be one definition rather than two that
+#: can drift.
 ERROR_LEVELS: tuple[str, ...] = ("error", "fatal")
 
 
