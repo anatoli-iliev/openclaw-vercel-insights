@@ -8,6 +8,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+import pytest
 from helpers import LOGS_EMPTY_PAGE, LOGS_ERROR_PAGE, utc
 
 from vercel_insights import logs as vi_logs
@@ -224,6 +225,36 @@ def test_the_summary_explains_a_non_5xx_row_in_the_status_table() -> None:
     report = _report(payload, preset="error-summary")
     text = render_error_summary(report, vi_logs.summarize(report.entries))
     assert "logged" in text
+    # The "logged" word above is satisfied by the trailing note no matter what
+    # the status table renders, so the property this test actually owns (a
+    # level never leaks into the status column) needs its own assertion,
+    # scoped to the status table itself: "fatal" legitimately appears in the
+    # note's prose ("... error or fatal line"), so a whole-text search for it
+    # would be a false positive there.
+    lines = text.splitlines()
+    start = next(
+        index for index, line in enumerate(lines) if line.split()[:1] == ["status"]
+    )
+    status_table = lines[start : lines.index("", start)]
+    assert any(line.split()[0] == "200" for line in status_table)
+    assert not any("fatal" in line for line in status_table)
+
+
+def test_the_summary_names_the_window_rather_than_printing_empty_tables() -> None:
+    # render_error_summary's empty branch is not in the brief and no test
+    # called it; this pins the behaviour the reviewer confirmed by hand.
+    report = _report(
+        LOGS_EMPTY_PAGE,
+        preset="error-summary",
+        time_range=(utc(2026, 8, 17, 5, 6), utc(2026, 8, 17, 11, 6)),
+    )
+    text = render_error_summary(report, vi_logs.summarize(report.entries))
+    assert "No request logs" in text
+    assert "TOTAL" not in text
+    # Six hours is over the shortest retention, so the retention note, composed
+    # in build_report rather than by this renderer, should still surface after
+    # the empty-tables message.
+    assert "1 hour on Hobby" in text
 
 
 def test_json_output_keeps_every_field_the_api_sent() -> None:
@@ -239,11 +270,16 @@ def test_json_output_keeps_every_field_the_api_sent() -> None:
     assert first["raw"]["cache"] == "MISS"
 
 
-def test_json_output_is_strict_json() -> None:
-    # The README sells piping --json into jq, so NaN and Infinity must never
-    # reach the output.
-    text = format_logs_json(_report(LOGS_ERROR_PAGE))
-    assert "NaN" not in text and "Infinity" not in text
+def test_json_output_refuses_a_non_finite_number_rather_than_emit_one() -> None:
+    # http.py's response parser already walks every real response body and
+    # refuses a NaN, Infinity or -Infinity with an invalid_response error, so
+    # this can never actually reach `raw` from a live API call. allow_nan=False
+    # is a second line of defence: if a non-finite float ever did get here some
+    # other way, this must refuse to write it out as something jq would
+    # reject, rather than silently emit a bare NaN token.
+    payload = {"rows": [{"requestId": "a", "cacheReason": float("nan")}]}
+    with pytest.raises(ValueError):
+        format_logs_json(_report(payload))
 
 
 def test_json_output_escapes_a_control_character_in_the_raw_row() -> None:

@@ -1347,6 +1347,12 @@ def format_logs_json(report: LogReport) -> str:
         ValueError: If a value in ``report`` is a non-finite float, since
             ``json.dumps`` is called with ``allow_nan=False``.
     """
+    # allow_nan=False is a second line of defence, not the first: http.py's
+    # response parser already walks every parsed body and refuses a NaN,
+    # Infinity or -Infinity with an invalid_response error, so one of those
+    # cannot reach `raw` from a real API response. This still refuses to
+    # write one out rather than propagate it, in case a value ever reached
+    # here some other way.
     since, until = report.time_range
     document = {
         "query": {
@@ -1383,9 +1389,13 @@ LOG_CSV_COLUMNS: tuple[str, ...] = (
 def format_logs_csv(report: LogReport) -> str:
     """Render a logs report as CSV, one row per request.
 
-    Messages are already sanitized, so a newline inside one is the visible
-    escape ``\\x0a`` and cannot break a row open. The csv module quotes the
-    rest.
+    A message can contain a literal newline: ``sanitize_message`` deliberately
+    keeps them, because a stack trace's line structure is the one place a
+    newline carries meaning (``sanitize_label``, used for every other string
+    field here, is the one that escapes them). What keeps that newline from
+    breaking a row open is :mod:`csv` itself: ``csv.writer`` quotes any field
+    that contains its line terminator, so the message stays inside one cell
+    rather than starting a new record.
 
     Args:
         report: The report to render.
