@@ -594,4 +594,77 @@ SPEED_MALFORMED_PAYLOADS: list[tuple[str, dict[str, Any]]] = [
     ("rows-carry-no-number", {"version": 1, "data": [{"route": "/", "value": "fast"}]}),
 ]
 
+# Request logs payload fixtures.
+#
+# These rows are copied from docs/api-notes.md, which in turn holds the real
+# probed rows.
+
+
+def logs_row(**overrides: Any) -> dict[str, Any]:
+    """One request-logs row, shaped exactly as the live API returns them."""
+    row: dict[str, Any] = {
+        "requestId": "zgzc9-1786964768933-ce3a0a3fb303",
+        "timestamp": "2026-08-17T11:06:08.933Z",
+        "deploymentId": "dpl_8fQLGTTwTZXixzmKhKm9DaXeadTJ",
+        "environment": "production",
+        "deploymentDomain": "demo.vercel.app",
+        "branch": "main",
+        "domain": "demo.vercel.app",
+        "requestMethod": "GET",
+        "requestPath": "/api/me",
+        "statusCode": 401,
+        "errorCode": "",
+        "route": "/api/me",
+        "cache": "MISS",
+        "wafAction": "",
+        "traceId": "",
+        "logs": [],
+        "requestDurationMs": 54,
+        "clientRegion": "fra1",
+        "hasFunctionCrashed": False,
+        "events": [{"source": "serverless", "httpStatus": 401, "region": "fra1"}],
+        "requestTags": ["ssr", "rsc"],
+    }
+    row.update(overrides)
+    return row
+
+
+#: A page of ordinary traffic: no 5xx, no log lines. This is what a healthy
+#: project really returns, and it is the shape that makes --level answer with
+#: zero rows.
+LOGS_PAGE: dict[str, Any] = {"rows": [logs_row()], "hasMoreRows": False}
+
+#: A page carrying the two kinds of error: a 500 that logged a stack trace, and
+#: a 502 that logged nothing at all.
+LOGS_ERROR_PAGE: dict[str, Any] = {
+    "rows": [
+        logs_row(
+            requestId="err-1",
+            timestamp="2026-08-17T11:04:52.100Z",
+            requestMethod="POST",
+            requestPath="/api/checkout",
+            route="/api/checkout",
+            statusCode=500,
+            logs=[
+                {
+                    "level": "error",
+                    "message": "TypeError: Cannot read properties of undefined",
+                    "messageTruncated": False,
+                }
+            ],
+        ),
+        logs_row(
+            requestId="err-2",
+            timestamp="2026-08-17T10:58:03.000Z",
+            requestPath="/api/offerings/summer",
+            route="/api/offerings/[slug]",
+            statusCode=502,
+            logs=[],
+        ),
+    ],
+    "hasMoreRows": False,
+}
+
+LOGS_EMPTY_PAGE: dict[str, Any] = {"rows": [], "hasMoreRows": False}
+
 SECRET = "sk_SUPERSECRETVALUE"

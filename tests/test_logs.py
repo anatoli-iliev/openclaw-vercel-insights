@@ -8,9 +8,19 @@ checked here, before a request exists, and these tests are what hold that line.
 from __future__ import annotations
 
 import pytest
-from helpers import LOGS_URL, OWNER, PROJECT, TOKEN, logs_request
+from helpers import (
+    LOGS_EMPTY_PAGE,
+    LOGS_ERROR_PAGE,
+    LOGS_PAGE,
+    LOGS_URL,
+    OWNER,
+    PROJECT,
+    TOKEN,
+    logs_request,
+    logs_row,
+)
 
-from vercel_insights import ConfigError
+from vercel_insights import ApiError, ConfigError
 from vercel_insights import logs as vi_logs
 
 
@@ -185,3 +195,101 @@ def test_build_request_sends_no_team_parameter() -> None:
     # call. Sending teamId as well would be cargo cult.
     names = [name for name, _value in logs_request().params]
     assert "teamId" not in names and "slug" not in names
+
+
+def test_normalize_reads_the_fields_the_table_shows() -> None:
+    entries, has_more = vi_logs.normalize(LOGS_PAGE)
+    assert has_more is False
+    entry = entries[0]
+    assert entry.request_id == "zgzc9-1786964768933-ce3a0a3fb303"
+    assert entry.status == 401
+    assert entry.method == "GET"
+    assert entry.path == "/api/me"
+    assert entry.route == "/api/me"
+    assert entry.source == "serverless"
+    assert entry.region == "fra1"
+    assert entry.duration_ms == 54
+    assert entry.timestamp is not None
+    assert entry.timestamp.isoformat() == "2026-08-17T11:06:08.933000+00:00"
+
+
+def test_normalize_reads_an_empty_page() -> None:
+    entries, has_more = vi_logs.normalize(LOGS_EMPTY_PAGE)
+    assert entries == [] and has_more is False
+
+
+def test_a_row_with_no_log_lines_has_no_level_and_no_headline() -> None:
+    entry = vi_logs.normalize(LOGS_PAGE)[0][0]
+    assert entry.lines == ()
+    assert entry.worst_level is None
+    assert entry.headline == ""
+
+
+def test_the_worst_line_wins_the_level_and_the_headline() -> None:
+    payload = {
+        "rows": [
+            logs_row(
+                logs=[
+                    {"level": "info", "message": "starting"},
+                    {"level": "fatal", "message": "connection pool exhausted"},
+                    {"level": "warning", "message": "slow"},
+                ]
+            )
+        ]
+    }
+    entry = vi_logs.normalize(payload)[0][0]
+    assert entry.worst_level == "fatal"
+    assert entry.headline == "connection pool exhausted"
+
+
+def test_a_5xx_is_an_error_even_with_no_log_line() -> None:
+    entries, _ = vi_logs.normalize(LOGS_ERROR_PAGE)
+    assert [entry.is_error for entry in entries] == [True, True]
+
+
+def test_a_4xx_is_not_an_error() -> None:
+    # A 401 on /api/me is the application working. Counting it would drown the
+    # answer in noise and misreport a healthy site as broken.
+    assert vi_logs.normalize(LOGS_PAGE)[0][0].is_error is False
+
+
+def test_a_logged_error_on_a_200_is_an_error() -> None:
+    payload = {
+        "rows": [logs_row(statusCode=200, logs=[{"level": "error", "message": "boom"}])]
+    }
+    assert vi_logs.normalize(payload)[0][0].is_error is True
+
+
+def test_a_crashed_function_is_an_error() -> None:
+    payload = {"rows": [logs_row(statusCode=200, hasFunctionCrashed=True)]}
+    assert vi_logs.normalize(payload)[0][0].is_error is True
+
+
+def test_normalize_survives_a_row_that_is_missing_everything() -> None:
+    # Real rows carry 30-odd fields and Vercel adds more over time. A row that
+    # arrives short must degrade, not raise.
+    entries, _ = vi_logs.normalize({"rows": [{}]})
+    entry = entries[0]
+    assert entry.request_id == ""
+    assert entry.status is None
+    assert entry.timestamp is None
+    assert entry.label == "(unknown)"
+    assert entry.is_error is False
+
+
+def test_normalize_falls_back_to_the_path_when_the_route_is_empty() -> None:
+    entry = vi_logs.normalize({"rows": [logs_row(route="")]})[0][0]
+    assert entry.label == "/api/me"
+
+
+def test_normalize_reports_an_unusable_payload_rather_than_raising() -> None:
+    for payload in ({"rows": "nope"}, {"rows": [["not", "a", "row"]]}):
+        with pytest.raises(ApiError) as excinfo:
+            vi_logs.normalize(payload)
+        assert excinfo.value.code == "invalid_response"
+
+
+def test_normalize_keeps_the_raw_row_for_json_output() -> None:
+    entry = vi_logs.normalize(LOGS_PAGE)[0][0]
+    assert entry.raw["cache"] == "MISS"
+    assert entry.raw["requestTags"] == ["ssr", "rsc"]

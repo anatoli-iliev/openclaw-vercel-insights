@@ -250,6 +250,96 @@ class Result:
 
 
 @dataclass(frozen=True)
+class LogLine:
+    """One application log line attached to a request.
+
+    ``message`` is already sanitized: the surface module escapes it once, on
+    the way in, so nothing downstream has to remember to.
+    """
+
+    level: str
+    message: str
+    truncated: bool = False
+
+
+@dataclass(frozen=True)
+class LogEntry:
+    """One request, as the request logs surface reports it.
+
+    Every string field arrives sanitized. ``raw`` is the exception: it keeps
+    the row verbatim so ``--json`` can hand back everything the API sent
+    rather than only the columns this tool tabulates. That is safe because
+    ``raw`` is only ever emitted through ``json.dumps``, which escapes control
+    characters, so no escape sequence in it can reach a terminal. It must never
+    be printed directly, and tests/test_logs_render.py holds that line.
+    """
+
+    request_id: str = ""
+    timestamp: datetime | None = None
+    status: int | None = None
+    method: str = ""
+    path: str = ""
+    route: str = ""
+    source: str = ""
+    environment: str = ""
+    deployment_id: str = ""
+    duration_ms: float | None = None
+    region: str = ""
+    error_code: str = ""
+    branch: str = ""
+    domain: str = ""
+    trace_id: str = ""
+    crashed: bool = False
+    lines: tuple[LogLine, ...] = ()
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def worst_line(self) -> LogLine | None:
+        """The most severe log line on this request, if it logged anything.
+
+        ``max`` is stable in Python, so among lines tied for the worst level
+        the first one wins, which is the earliest one logged.
+        """
+        if not self.lines:
+            return None
+        return max(
+            self.lines,
+            key=lambda line: LOG_LEVEL_SEVERITY.get(line.level, -1),
+        )
+
+    @property
+    def worst_level(self) -> str | None:
+        """The level of :attr:`worst_line`, or ``None`` when nothing was logged."""
+        line = self.worst_line
+        return line.level if line is not None else None
+
+    @property
+    def headline(self) -> str:
+        """The message worth showing on one row, empty when nothing was logged."""
+        line = self.worst_line
+        return line.message if line is not None else ""
+
+    @property
+    def is_error(self) -> bool:
+        """True when this request is something to worry about.
+
+        Three ways to qualify: the response was a 5xx, the function crashed, or
+        the request logged an error or fatal line. A 4xx does not qualify: a
+        401 on a login route is the application working.
+        """
+        if self.status is not None and self.status >= 500:
+            return True
+        if self.crashed:
+            return True
+        return self.worst_level in ERROR_LEVELS
+
+    @property
+    def label(self) -> str:
+        """What to show in the route column: the route, or the path, or a mark."""
+        return self.route or self.path or "(unknown)"
+
+
+@dataclass(frozen=True)
 class Style:
     """How output is decorated: colour, and whether non-ASCII glyphs are safe."""
 

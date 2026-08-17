@@ -21,12 +21,15 @@ See docs/api-notes.md for the live probes behind every claim here.
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import Any
 
-from . import ConfigError
+from . import ApiError, ConfigError, sanitize_label, sanitize_message
 from .http import PreparedRequest, default_headers, operation_url
+from .render import LogEntry, LogLine
 from .timerange import to_unix_ms
 
 #: The operation key this surface uses. A key into ``http.OPERATIONS``, never a
@@ -288,3 +291,169 @@ def build_request(
         params=params,
         headers=default_headers(token),
     )
+
+
+# ---------------------------------------------------------------------------
+# Normalization
+# ---------------------------------------------------------------------------
+
+
+def _text(row: Mapping[str, Any], name: str) -> str:
+    """One sanitized single-line string field, empty when absent."""
+    value = row.get(name)
+    if value is None or isinstance(value, (Mapping, list)):
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return sanitize_label(str(value))
+
+
+def _number(row: Mapping[str, Any], name: str) -> float | None:
+    """One numeric field, ``None`` when absent, non-numeric or not finite."""
+    value = row.get(name)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if math.isfinite(float(value)) else None
+
+
+def _status(row: Mapping[str, Any]) -> int | None:
+    """The HTTP status, ``None`` when the API recorded none.
+
+    A status of 0 is how this API spells "no response was recorded", which is
+    also what ``statusCode=None`` selects, so it is read as absent rather than
+    as a status of zero.
+    """
+    value = _number(row, "statusCode")
+    if value is None or value <= 0:
+        return None
+    return int(value)
+
+
+def _timestamp(row: Mapping[str, Any]) -> datetime | None:
+    """The row's instant, ``None`` when it is missing or unparseable.
+
+    Values arrive as ISO-8601 with a trailing ``Z``, which
+    ``datetime.fromisoformat`` cannot read before Python 3.11, so the offset is
+    spelled out first.
+    """
+    raw = row.get("timestamp")
+    if not isinstance(raw, str) or not raw:
+        return None
+    candidate = raw[:-1] + "+00:00" if raw.endswith(("Z", "z")) else raw
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _lines(row: Mapping[str, Any]) -> tuple[LogLine, ...]:
+    """Every application log line on this request, sanitized.
+
+    ASSUMPTION: the item shape is ``{level, message, messageTruncated}``, taken
+    from the Vercel CLI's own mapping code. No probe ever saw one populated,
+    because neither test project had logged an error, so anything unexpected is
+    skipped rather than trusted. See docs/api-notes.md.
+    """
+    raw = row.get("logs")
+    if not isinstance(raw, list):
+        return ()
+    lines: list[LogLine] = []
+    for item in raw:
+        if not isinstance(item, Mapping):
+            continue
+        message = item.get("message")
+        level = item.get("level")
+        lines.append(
+            LogLine(
+                level=sanitize_label(str(level)).lower() if level else "",
+                message=sanitize_message(str(message)) if message else "",
+                truncated=bool(item.get("messageTruncated")),
+            )
+        )
+    return tuple(lines)
+
+
+def _source(row: Mapping[str, Any]) -> str:
+    """Where the request was served from, read off its first event."""
+    events = row.get("events")
+    if isinstance(events, list):
+        for event in events:
+            if isinstance(event, Mapping) and event.get("source"):
+                return sanitize_label(str(event["source"]))
+    return ""
+
+
+def _region(row: Mapping[str, Any]) -> str:
+    """The region that served the request, off its first event or the client."""
+    events = row.get("events")
+    if isinstance(events, list):
+        for event in events:
+            if isinstance(event, Mapping) and event.get("region"):
+                return sanitize_label(str(event["region"]))
+    return _text(row, "clientRegion")
+
+
+def _entry(row: Mapping[str, Any]) -> LogEntry:
+    """Turn one API row into a :class:`LogEntry`, sanitizing every string."""
+    return LogEntry(
+        request_id=_text(row, "requestId"),
+        timestamp=_timestamp(row),
+        status=_status(row),
+        method=_text(row, "requestMethod"),
+        path=_text(row, "requestPath"),
+        route=_text(row, "route"),
+        source=_source(row),
+        environment=_text(row, "environment"),
+        deployment_id=_text(row, "deploymentId"),
+        duration_ms=_number(row, "requestDurationMs"),
+        region=_region(row),
+        error_code=_text(row, "errorCode"),
+        branch=_text(row, "branch"),
+        domain=_text(row, "domain"),
+        trace_id=_text(row, "traceId"),
+        crashed=bool(row.get("hasFunctionCrashed")),
+        lines=_lines(row),
+        raw=dict(row),
+    )
+
+
+def normalize(payload: Mapping[str, Any]) -> tuple[list[LogEntry], bool]:
+    """Parse one page of request logs.
+
+    Args:
+        payload: The decoded response body.
+
+    Returns:
+        The page's entries in the order they arrived, and whether the API said
+        more rows exist.
+
+    Raises:
+        ApiError: With code ``invalid_response`` when ``rows`` is present but is
+            not a list of objects. Nothing is dropped silently: a shape this
+            client cannot read is reported, because a quietly shortened list of
+            errors is worse than an error message.
+    """
+    rows = payload.get("rows", [])
+    if rows is None:
+        rows = []
+    if not isinstance(rows, list):
+        raise ApiError(
+            200,
+            "invalid_response",
+            "the request logs response carried 'rows' that was not a list; run "
+            "with --json to see it",
+        )
+    entries: list[LogEntry] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise ApiError(
+                200,
+                "invalid_response",
+                "the request logs response carried a row that was not an "
+                "object; run with --json to see it",
+            )
+        entries.append(_entry(row))
+    return entries, bool(payload.get("hasMoreRows"))
