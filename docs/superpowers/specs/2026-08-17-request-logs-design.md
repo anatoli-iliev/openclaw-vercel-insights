@@ -316,9 +316,16 @@ Insights needs the same value, and `cli.py::_resolve_project_record` reads it
 once per run from `GET /v9/projects/{project}` as `accountId`, short-circuited
 by `VERCEL_TEAM_ID` (a team is its own owner) or `VERCEL_OWNER_ID`. The logs
 surface reuses that path unchanged: `needs_lookup` becomes true for a logs run
-that lacks an owner, and additionally when the project is a name rather than an
-id, because `projectId` here accepts a name but the header line should show what
-was actually queried.
+that lacks an owner, and for that reason only.
+
+An earlier draft of this section also forced the lookup when the project was a
+name rather than an id, so that the header line could show a resolved id. That
+was wrong and the implementation deliberately does not do it: this endpoint
+accepts a name, so resolving one buys nothing, and the header line showing the
+name the user actually queried is more honest than showing an id they never
+typed. Speed Insights still needs that half of the condition, because its scope
+matches on `projectIds` and a name there comes back empty rather than as an
+error.
 
 ASSUMPTION to mark in the code and in api-notes: a **project-scoped** token
 probably fails here the way it fails on Speed Insights, since this call also
