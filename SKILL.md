@@ -209,9 +209,9 @@ before any request is built, with a message naming the preset to use instead.
 
 ## This skill is read-only
 
-**Read-only against a five-endpoint allowlist.** One module-level table in
+**Read-only against a six-endpoint allowlist.** One module-level table in
 `vercel_insights/http.py` maps an operation key to a fixed method and URL, and
-it has exactly five entries:
+it has exactly six entries:
 
 | Operation | Method | Endpoint |
 | --- | --- | --- |
@@ -220,6 +220,15 @@ it has exactly five entries:
 | `observability_schema` | GET | `/v2/observability/schema` |
 | `project` | GET | `/v9/projects/{project}` |
 | `projects` | GET | `/v10/projects` |
+| `request_logs` | GET | `https://vercel.com/api/logs/request-logs` |
+
+`request_logs` is the one entry not on `api.vercel.com` and not in Vercel's
+published OpenAPI document: its ground truth is the official `vercel logs`
+command plus the live probes recorded in `docs/api-notes.md`. The documented
+alternative on `api.vercel.com` is an endless stream, and the metrics route
+requires the Observability Plus add-on, so neither stands in for it here. It
+is read-only, the whole query travels in the query string, and it can change
+without notice.
 
 The dispatcher takes an operation key, never a method and never a host, so no
 user input can select, extend or override an entry. There are exactly two HTTP

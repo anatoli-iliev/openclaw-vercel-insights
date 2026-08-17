@@ -78,12 +78,16 @@ DOCUMENTED_OPERATIONS: dict[str, tuple[str, str]] = {
     # Read-only. One account holds many projects, and naming the right one is
     # the first thing any query needs.
     "projects": ("GET", "https://api.vercel.com/v10/projects"),
+    # Read-only. Runtime request logs, and the only entry not on api.vercel.com:
+    # Vercel serves this one from the dashboard host, and it is the endpoint the
+    # official `vercel logs` command calls. See docs/api-notes.md.
+    "request_logs": ("GET", "https://vercel.com/api/logs/request-logs"),
 }
 
 
-def test_operations_holds_exactly_the_five_documented_entries() -> None:
+def test_operations_holds_exactly_the_six_documented_entries() -> None:
     assert set(OPERATIONS) == set(DOCUMENTED_OPERATIONS)
-    assert len(OPERATIONS) == 5
+    assert len(OPERATIONS) == 6
 
 
 @pytest.mark.parametrize("operation", sorted(DOCUMENTED_OPERATIONS))
@@ -95,13 +99,21 @@ def test_each_operation_has_exactly_its_documented_method_and_url(
 
 def test_only_one_operation_is_a_post_and_every_other_is_a_get() -> None:
     methods = sorted(method for method, _ in OPERATIONS.values())
-    assert methods == ["GET", "GET", "GET", "GET", "POST"]
+    assert methods == ["GET", "GET", "GET", "GET", "GET", "POST"]
+
+
+#: The only hosts this client may address. Written out by hand rather than read
+#: back from OPERATIONS: a test that derives the answer from the table it is
+#: checking cannot notice the table naming a host nobody approved.
+DOCUMENTED_HOSTS: frozenset[str] = frozenset(
+    {"https://api.vercel.com/", "https://vercel.com/api/"}
+)
 
 
 @pytest.mark.parametrize("operation", sorted(DOCUMENTED_OPERATIONS))
-def test_every_allowlisted_url_is_on_the_vercel_api_host(operation: str) -> None:
+def test_every_allowlisted_url_is_on_a_documented_host(operation: str) -> None:
     _method, url = OPERATIONS[operation]
-    assert url.startswith("https://api.vercel.com/")
+    assert any(url.startswith(host) for host in DOCUMENTED_HOSTS), url
 
 
 def test_the_write_toggle_endpoints_are_absent_from_the_package() -> None:
@@ -189,6 +201,21 @@ def test_a_static_operation_url_has_to_match_the_template_exactly() -> None:
             params=[],
             headers={},
         )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://vercel.com/api/logs/request-logs/extra",
+        "https://vercel.com/api/logs",
+        "http://vercel.com/api/logs/request-logs",
+        "https://vercel.com.evil.example/api/logs/request-logs",
+        "https://api.vercel.com/api/logs/request-logs",
+    ],
+)
+def test_request_logs_cannot_address_anything_else(url: str) -> None:
+    with pytest.raises(ConfigError):
+        PreparedRequest(operation="request_logs", url=url, params=[], headers={})
 
 
 def test_the_method_is_read_from_the_allowlist_and_cannot_be_set() -> None:
@@ -604,6 +631,7 @@ def test_the_read_endpoints_that_stay_gets_are_the_documented_ones() -> None:
         "observability_schema",
         "project",
         "projects",
+        "request_logs",
         "web_analytics",
     ]
 

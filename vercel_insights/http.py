@@ -16,10 +16,15 @@ redirects, so the allowlist binds every hop of a request rather than only its
 first: a 3xx is reported as an error naming the location it wanted to send the
 ``Authorization`` header to.
 
-One of the three operations is a POST. That is still a read: Vercel exposes no
+One of the six operations is a POST. That is still a read: Vercel exposes no
 GET equivalent for an observability query, so the query travels in the body.
 Nothing is created or mutated, and the toggle endpoints that would enable or
 disable a feature are deliberately absent from the table.
+
+The allowlist spans two hosts: ``api.vercel.com`` for five operations and
+``vercel.com`` for request logs, the one entry documented elsewhere. A
+redirect is still refused at both call sites, so the allowlist binds every
+hop regardless of which of the two hosts a request started on.
 """
 
 from __future__ import annotations
@@ -41,6 +46,7 @@ import requests
 from . import (
     BASE_URL,
     DOCS_TOKEN_URL,
+    LOGS_BASE_URL,
     VERSION,
     ApiError,
     ConfigError,
@@ -67,6 +73,12 @@ OPERATIONS: dict[str, tuple[str, str]] = {
     # one is the first thing anybody has to do, so listing them is part of the
     # job rather than a convenience.
     "projects": ("GET", BASE_URL + "/v10/projects"),
+    # Read-only. Runtime request logs. The one entry that is not on
+    # api.vercel.com and not in Vercel's published OpenAPI document: its ground
+    # truth is the official CLI plus the live probes recorded in
+    # docs/api-notes.md, so it can change without notice. Nothing is created or
+    # mutated; the whole query travels in the query string.
+    "request_logs": ("GET", LOGS_BASE_URL + "/api/logs/request-logs"),
 }
 
 DEFAULT_TIMEOUT = 30.0
