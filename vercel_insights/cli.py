@@ -53,17 +53,18 @@ from .logs import DEFAULT_LIMIT as LOGS_DEFAULT_LIMIT
 from .logs import LEVELS as LOG_LEVELS
 from .logs import MAX_LIMIT as LOGS_MAX_LIMIT
 from .logs import OPERATION as REQUEST_LOGS_QUERY
-from .logs import SOURCES as LOG_SOURCES
-from .logs import build_report as build_log_report
-from .logs import build_request as build_logs_request
-from .logs import collect as collect_logs
 from .logs import (
+    SOURCE_ALIAS_NOTE,
     error_filter_sets,
     summarize,
     validate_levels,
     validate_sources,
     validate_status_code,
 )
+from .logs import SOURCES as LOG_SOURCES
+from .logs import build_report as build_log_report
+from .logs import build_request as build_logs_request
+from .logs import collect as collect_logs
 from .logs import merge as merge_logs
 from .logs import validate_limit as validate_logs_limit
 from .odata import build_clause, combine_filters, json_dimension
@@ -473,8 +474,9 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "only requests served by: "
             + ", ".join(LOG_SOURCES)
-            + ", comma separated. The source column may display "
-            "'serverless-middleware', which is filtered as 'edge-middleware'"
+            # Composed in logs.py from the alias table itself, so this help and
+            # the refusal that quotes the same fact cannot drift from it.
+            + f", comma separated. {SOURCE_ALIAS_NOTE}"
         ),
     )
     logs.add_argument(
@@ -488,8 +490,9 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="TEXT",
         default=None,
         help=(
-            "only requests whose path or log text contains this; free text, not "
-            "a query syntax, so 'status:500' is matched literally"
+            "only requests whose path or log text contains this; free text and "
+            "nothing more, not a query syntax, so do not expect 'status:500' to "
+            "filter by status: use --status-code for that"
         ),
     )
     logs.add_argument(

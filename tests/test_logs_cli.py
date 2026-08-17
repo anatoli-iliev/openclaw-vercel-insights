@@ -33,7 +33,7 @@ from helpers import (
 )
 
 from vercel_insights import logs as vi_logs
-from vercel_insights.cli import OWNER_PLACEHOLDER
+from vercel_insights.cli import OWNER_PLACEHOLDER, build_parser
 
 LOGS_ONLY_FLAGS: list[list[str]] = [
     ["--level", "error"],
@@ -354,6 +354,25 @@ def test_preview_environment_is_accepted_on_a_logs_preset(cli: Cli) -> None:
     )
     assert code == 0, err
     assert dry_run_values(out, "environment") == ["preview"]
+
+
+def test_the_source_help_quotes_the_one_alias_note_rather_than_its_own_copy() -> None:
+    # Two hand-written copies of a probed API fact can drift apart, and this one
+    # had them: the help text and the refusal message. Both now read the sentence
+    # logs.py composes from SOURCE_ALIASES.
+    help_text = " ".join(build_parser().format_help().split())
+    assert " ".join(vi_logs.SOURCE_ALIAS_NOTE.split()) in help_text
+
+
+def test_the_search_help_does_not_claim_a_matching_rule_nobody_established(
+    cli: Cli,
+) -> None:
+    # The probes showed that a field:value string does not filter, not how the
+    # server treats it: search=path:/api/me came back unfiltered, which literal
+    # matching cannot produce. So the help says what to expect, not why.
+    help_text = " ".join(build_parser().format_help().split())
+    assert "matched literally" not in help_text
+    assert "do not expect 'status:500' to filter by status" in help_text
 
 
 def test_a_logs_run_needs_an_account_id_and_says_so(cli: Cli) -> None:

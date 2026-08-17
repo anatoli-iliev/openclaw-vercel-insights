@@ -112,6 +112,19 @@ def test_validate_sources_still_refuses_an_unrelated_unknown_value_beside_the_al
         assert source in message
 
 
+def test_the_alias_note_is_composed_from_the_alias_table() -> None:
+    # The sentence is a probed API fact, and it used to be hand-written in two
+    # places: this refusal and --source's help text. Composing it from the table
+    # means a new alias reaches both, and neither can drift from the mapping the
+    # code actually applies.
+    for display, resolved in vi_logs.SOURCE_ALIASES.items():
+        assert display in vi_logs.SOURCE_ALIAS_NOTE
+        assert resolved in vi_logs.SOURCE_ALIAS_NOTE
+    with pytest.raises(ConfigError) as excinfo:
+        vi_logs.validate_sources("lambda")
+    assert vi_logs.SOURCE_ALIAS_NOTE in str(excinfo.value)
+
+
 def test_source_aliases_only_resolve_to_values_the_api_accepts() -> None:
     # An alias that pointed outside SOURCES would mean this client refuses,
     # or worse silently mis-filters, on its own alias table rather than on
