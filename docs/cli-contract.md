@@ -317,9 +317,9 @@ unit (`ms` or a unitless score), and the number of data points when available.
 
 `error-summary` prints the same title, range and filter lines and then three
 tables over the same merged rows: by status with a share column and a total, by
-route with the worst status and a first and last seen, and by exact message. Messages are grouped by **exact text**, never
-clustered by a guessed pattern, because merging two different bugs into one row is
-a worse answer than two rows. `(no log line)` is its own group. A request that
+route with the worst status and a first and last seen, and by exact message.
+Messages are grouped by **exact text**, never clustered by a guessed pattern,
+because merging two different bugs into one row is a worse answer than two rows. `(no log line)` is its own group. A request that
 counts as an error only because it logged an error or fatal line appears under its
 real status, so a `200` row in a table of errors is not a bug, and a footer line
 says how many rows qualify that way.
