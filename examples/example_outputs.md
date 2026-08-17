@@ -4,6 +4,12 @@ Every fenced block below is **captured output from the real code**, not written
 by hand. The data behind it is synthetic and anonymised: one fictional docs and
 marketing site, one dataset, so the numbers agree across sections.
 
+Two blocks are different, and say so where they appear: the first two in
+[Errors: request logs](#errors-request-logs) were captured against a **live
+Vercel account**, on a real project that happened to have no errors at all. The
+rest of that section is stub-driven like everything else, with data invented to
+show what a failing project looks like.
+
 `vercel-insights` is shorthand for `python3 -m vercel_insights`.
 
 ## Getting started
@@ -475,6 +481,297 @@ They are what makes a percentile trustworthy, so a group with few of them is not
 [exit code 0]
 ```
 
+## Errors: request logs
+
+### Recent requests, captured against a live account
+
+Real output from a real project. The `level` column is `-` on every row because
+none of these requests printed a log line, which is the ordinary case: a filter
+like `--level error` would have matched none of them. The footer says the table
+was cut at `--limit 5`, so it is the most recent five rather than all of them.
+
+```console
+$ vercel-insights logs --since 30m --limit 5
+Vercel request logs: prj_tjgvYZgQGYqNxBP1nQffcF1A92Ag (logs, last 30 minutes)
+Range: 2026-08-17T17:02:42Z to 2026-08-17T17:32:42Z (UTC)
+
+time      level  status  method  route                     source                 message
+--------  -----  ------  ------  ------------------------  ---------------------  -------
+17:32:10  -         200  GET     /api/landing/[[...slug]]  serverless
+17:32:10  -         401  GET     /api/me                   serverless
+17:32:10  -         200  GET     /[locale]/[categorySlug]  serverless-middleware
+17:31:35  -         401  GET     /api/me                   serverless
+17:31:35  -         200  GET     /api/landing/[[...slug]]  serverless
+
+5 requests in 30 minutes: 3 x 200, 2 x 401.
+Most affected route: /api/landing/[[...slug]] (2).
+More rows matched than were shown: this is the most recent 5. Raise --limit (up to 200) or narrow the window.
+Add --expand for full messages, or --request-id to pull one request apart.
+[exit code 0]
+```
+
+### What a healthy project looks like
+
+Also captured live, and the case most worth recognising: nothing failed. Exit
+code 0, because "no errors" is an answer rather than a failure. The last line is
+the honest part. Runtime logs are kept for far less time than analytics data, so
+over 24 hours an empty result can mean "nothing broke" or "most of that window
+has already aged out", and the tool refuses to imply the first.
+
+```console
+$ vercel-insights errors --since 24h
+Vercel request logs: prj_tjgvYZgQGYqNxBP1nQffcF1A92Ag (errors, last 24 hours)
+Range: 2026-08-16T17:34:31Z to 2026-08-17T17:34:31Z (UTC)
+Counted as an error: a 5xx response, a crashed function, or a request that logged an error or fatal line.
+
+No request logs for project prj_tjgvYZgQGYqNxBP1nQffcF1A92Ag between 2026-08-16T17:34:31Z and 2026-08-17T17:34:31Z.
+
+Runtime log retention is 1 hour on Hobby, 1 day on Pro, 3 days on Enterprise and 30 days with Observability Plus, so an empty result over a longer window can mean the logs aged out rather than that nothing failed.
+[exit code 0]
+```
+
+### Errors, when there are some
+
+Illustrative from here on: the live account had nothing failing, so these rows
+are invented and served to the real renderer through a stub session.
+
+`errors` issues two queries, one for `5xx` responses and one for `error` and
+`fatal` log lines, and merges them by request id. All four rows below are errors,
+for three different reasons: two 500s that logged a stack trace, a 200 whose
+handler logged a fatal line, and a 502 that failed before anything printed. That
+last one is why the message column says so rather than leaving a blank cell.
+
+```console
+$ vercel-insights errors --since 2026-08-17T10:36:00Z --until 2026-08-17T11:06:00Z
+Vercel request logs: prj_9RkQm2vT7xLpN4dWbYcF3sJz (errors, last 30 minutes)
+Range: 2026-08-17T10:36:00Z to 2026-08-17T11:06:00Z (UTC)
+Counted as an error: a 5xx response, a crashed function, or a request that logged an error or fatal line.
+
+time      level  status  method  route                  source      message
+--------  -----  ------  ------  ---------------------  ----------  ----------------------------------
+11:04:52  error     500  POST    /api/checkout          serverless  TypeError: Cannot read properties…
+11:03:19  error     500  POST    /api/checkout          serverless  TypeError: Cannot read properties…
+11:02:41  fatal     200  GET     /api/cron/sync         serverless  FATAL: connection pool exhausted
+10:58:03  -         502  GET     /api/offerings/[slug]  serverless  (no log line: the response failed)
+
+4 errors in 30 minutes: 2 x 500, 1 x 200, 1 x 502.
+Most affected route: /api/checkout (2).
+1 of them returned a non-5xx status and count as errors only because they logged an error or fatal line.
+Add --expand for full messages, or --request-id to pull one request apart.
+[exit code 0]
+```
+
+### Where the errors are concentrated
+
+`error-summary` runs the same two queries and tallies the merged rows three ways.
+The `200` row in the status table is not a bug: it is the request that counts as
+an error only because it logged a fatal line, and the footer says how many rows
+qualify that way. Messages are grouped by exact text, never by a guessed pattern,
+so two different bugs can never be merged into one row.
+
+```console
+$ vercel-insights error-summary --since 2026-08-17T05:06:00Z --until 2026-08-17T11:06:00Z
+Vercel request logs: prj_9RkQm2vT7xLpN4dWbYcF3sJz (error-summary, last 6 hours)
+Range: 2026-08-17T05:06:00Z to 2026-08-17T11:06:00Z (UTC)
+
+status  count   share
+------  -----  ------
+500        41   74.5%
+502        12   21.8%
+200         2    3.6%
+------  -----  ------
+TOTAL      55  100.0%
+
+route                  count  worst status  first seen  last seen
+---------------------  -----  ------------  ----------  ---------
+/api/checkout             38           500  05:11:02    10:44:41
+/api/offerings/[slug]     12           502  06:40:19    10:42:19
+/api/cron/sync             5           500  06:30:00    11:02:41
+
+message                                         count  first seen  last seen
+----------------------------------------------  -----  ----------  ---------
+TypeError: Cannot read properties of undefined     38  05:11:02    10:44:41
+(no log line)                                      15  06:30:00    10:42:19
+FATAL: connection pool exhausted                    2  07:15:44    11:02:41
+
+55 errors in 6 hours: 41 x 500, 12 x 502, 2 x 200.
+Most affected route: /api/checkout (38).
+2 of them returned a non-5xx status and count as errors only because they logged an error or fatal line.
+[exit code 0]
+```
+
+### One request, pulled apart
+
+`--request-id` with `--expand` prints every line that request logged, worst level
+first, in full, and marks any line Vercel itself truncated. A message that spans
+several lines keeps its shape, indented, so a stack trace never steps back to
+column zero and cannot forge a line of this tool's own output.
+
+```console
+$ vercel-insights logs --request-id zgzc9-1786964768933-ce3a0a3fb303 --expand --since 2026-08-17T10:36:00Z --until 2026-08-17T11:06:00Z
+Vercel request logs: prj_9RkQm2vT7xLpN4dWbYcF3sJz (logs, last 30 minutes)
+Range: 2026-08-17T10:36:00Z to 2026-08-17T11:06:00Z (UTC)
+Filter: requestId zgzc9-1786964768933-ce3a0a3fb303
+
+time      level  status  method  route          source      message
+--------  -----  ------  ------  -------------  ----------  ----------------------------------
+11:04:52  error     500  POST    /api/checkout  serverless  TypeError: Cannot read properties…
+    error: TypeError: Cannot read properties of undefined
+          at handler (/var/task/checkout.js:42:19)
+    warning: retrying payment provider call (attempt 2 of 3)
+    info: cart 4192 for customer 88213 has 3 items and a coupon code that is [truncated by Vercel]
+    request zgzc9-1786964768933-ce3a0a3fb303
+
+1 request in 30 minutes: 1 x 500.
+[exit code 0]
+```
+
+### Logs as JSON
+
+Nothing the API sent is thrown away: each entry carries the tabulated columns
+plus the whole original row under `raw`, so a field this tool has no column for
+is still there for `jq`. `notes` carries the same sentences the text output
+prints, so a script can quote the caveats rather than reinventing them.
+
+```console
+$ vercel-insights logs --request-id err-3 --json --since 2026-08-17T10:36:00Z --until 2026-08-17T11:06:00Z
+{
+  "query": {
+    "project": "prj_9RkQm2vT7xLpN4dWbYcF3sJz",
+    "preset": "logs",
+    "since": "2026-08-17T10:36:00Z",
+    "until": "2026-08-17T11:06:00Z",
+    "filters": {
+      "requestId": "err-3"
+    },
+    "limit": 50
+  },
+  "entries": [
+    {
+      "requestId": "err-3",
+      "timestamp": "2026-08-17T11:02:41+00:00",
+      "status": 200,
+      "method": "GET",
+      "path": "/api/cron/sync",
+      "route": "/api/cron/sync",
+      "source": "serverless",
+      "environment": "production",
+      "deploymentId": "dpl_8fQLGTTwTZXixzmKhKm9DaXeadTJ",
+      "durationMs": 54.0,
+      "region": "fra1",
+      "errorCode": "",
+      "branch": "main",
+      "domain": "demo.vercel.app",
+      "traceId": "",
+      "crashed": false,
+      "isError": true,
+      "level": "fatal",
+      "message": "FATAL: connection pool exhausted",
+      "lines": [
+        {
+          "level": "fatal",
+          "message": "FATAL: connection pool exhausted",
+          "truncated": false
+        }
+      ],
+      "raw": {
+        "requestId": "err-3",
+        "timestamp": "2026-08-17T11:02:41.000Z",
+        "deploymentId": "dpl_8fQLGTTwTZXixzmKhKm9DaXeadTJ",
+        "environment": "production",
+        "deploymentDomain": "demo.vercel.app",
+        "branch": "main",
+        "domain": "demo.vercel.app",
+        "requestMethod": "GET",
+        "requestPath": "/api/cron/sync",
+        "statusCode": 200,
+        "errorCode": "",
+        "route": "/api/cron/sync",
+        "cache": "MISS",
+        "wafAction": "",
+        "traceId": "",
+        "logs": [
+          {
+            "level": "fatal",
+            "message": "FATAL: connection pool exhausted",
+            "messageTruncated": false
+          }
+        ],
+        "requestDurationMs": 54,
+        "clientRegion": "fra1",
+        "hasFunctionCrashed": false,
+        "events": [
+          {
+            "source": "serverless",
+            "httpStatus": 200,
+            "region": "fra1"
+          }
+        ],
+        "requestTags": [
+          "ssr",
+          "rsc"
+        ]
+      }
+    }
+  ],
+  "truncated": false,
+  "pagesFetched": 1,
+  "notes": [
+    "1 request in 30 minutes: 1 x 200."
+  ]
+}
+[exit code 0]
+```
+
+### Logs as CSV
+
+One row per request. A message containing a newline stays inside its cell,
+because `csv.writer` quotes any field holding the line terminator.
+
+```console
+$ vercel-insights errors --csv --since 2026-08-17T10:36:00Z --until 2026-08-17T11:06:00Z
+time,level,status,method,route,path,source,requestId,message
+2026-08-17T11:04:52.100000+00:00,error,500,POST,/api/checkout,/api/checkout,serverless,err-1,TypeError: Cannot read properties of undefined
+2026-08-17T11:03:19.400000+00:00,error,500,POST,/api/checkout,/api/checkout,serverless,err-2,TypeError: Cannot read properties of undefined
+2026-08-17T11:02:41+00:00,fatal,200,GET,/api/cron/sync,/api/cron/sync,serverless,err-3,FATAL: connection pool exhausted
+2026-08-17T10:58:03+00:00,,502,GET,/api/offerings/[slug],/api/offerings/summer,serverless,err-4,
+[exit code 0]
+```
+
+`error-summary` has no CSV form, on purpose: it prints three tables, and one file
+cannot be three tables. `errors --csv` is the flat version of the same rows.
+
+### The source column and the source filter do not share a vocabulary
+
+A row can display `serverless-middleware` in its `source` column, and the API
+matches nothing when that spelling is sent back as a filter: the spelling that
+matches those rows is `edge-middleware`. So the value this tool showed is accepted
+and rewritten, which the dry run makes visible.
+
+```console
+$ vercel-insights logs --source serverless-middleware --since 2026-08-17T10:36:00Z --until 2026-08-17T11:06:00Z --dry-run
+GET https://vercel.com/api/logs/request-logs
+
+Query parameters:
+  projectId  prj_9RkQm2vT7xLpN4dWbYcF3sJz
+  ownerId    own_demo
+  page       0
+  startDate  1786962960000
+  endDate    1786964760000
+  source     edge-middleware
+
+Headers:
+  Accept         application/json
+  Authorization  Bearer <redacted>
+  User-Agent     vercel-insights-skill/1.1.0
+
+Encoded URL (never contains the token):
+  https://vercel.com/api/logs/request-logs?projectId=prj_9RkQm2vT7xLpN4dWbYcF3sJz&ownerId=own_demo&page=0&startDate=1786962960000&endDate=1786964760000&source=edge-middleware
+
+Nothing was sent. No credential is printed above.
+[exit code 0]
+```
+
 ## Failing a build on a regression
 
 ### Every budget met
@@ -748,6 +1045,58 @@ Nothing was sent. No credential is printed above.
 [exit code 0]
 ```
 
+### A request logs dry run, which is two requests
+
+`errors` is the one preset whose dry run shows why it queries twice: one call
+filters on the response status, the other on the log level, and the merge happens
+here rather than at the API. Note the host, `vercel.com` rather than
+`api.vercel.com`, and the timestamps in Unix milliseconds, which is what this
+endpoint takes.
+
+```console
+$ vercel-insights errors --since 2026-08-17T10:36:00Z --until 2026-08-17T11:06:00Z --dry-run
+GET https://vercel.com/api/logs/request-logs
+
+Query parameters:
+  projectId   prj_9RkQm2vT7xLpN4dWbYcF3sJz
+  ownerId     team_8mHvK3nQpR6tXwZa
+  page        0
+  startDate   1786962960000
+  endDate     1786964760000
+  statusCode  5xx
+
+Headers:
+  Accept         application/json
+  Authorization  Bearer <redacted>
+  User-Agent     vercel-insights-skill/1.1.0
+
+Encoded URL (never contains the token):
+  https://vercel.com/api/logs/request-logs?projectId=prj_9RkQm2vT7xLpN4dWbYcF3sJz&ownerId=team_8mHvK3nQpR6tXwZa&page=0&startDate=1786962960000&endDate=1786964760000&statusCode=5xx
+
+Nothing was sent. No credential is printed above.
+
+GET https://vercel.com/api/logs/request-logs
+
+Query parameters:
+  projectId  prj_9RkQm2vT7xLpN4dWbYcF3sJz
+  ownerId    team_8mHvK3nQpR6tXwZa
+  page       0
+  startDate  1786962960000
+  endDate    1786964760000
+  level      error,fatal
+
+Headers:
+  Accept         application/json
+  Authorization  Bearer <redacted>
+  User-Agent     vercel-insights-skill/1.1.0
+
+Encoded URL (never contains the token):
+  https://vercel.com/api/logs/request-logs?projectId=prj_9RkQm2vT7xLpN4dWbYcF3sJz&ownerId=team_8mHvK3nQpR6tXwZa&page=0&startDate=1786962960000&endDate=1786964760000&level=error%2Cfatal
+
+Nothing was sent. No credential is printed above.
+[exit code 0]
+```
+
 ### A Speed Insights request, with its JSON body
 
 ```console
@@ -808,6 +1157,38 @@ $ vercel-insights vitals --since 2026-08-08 --until 2026-08-15
 error: HTTP 404 (not_found): Observability Data not found.
 This usually means the access token is scoped to a single project. Speed Insights is served by Vercel's observability API, which scopes by account rather than by project, so it needs a token with account (or team) scope. Web Analytics presets keep working with a project scoped token. Create an account scoped token at https://vercel.com/account/tokens, or confirm the scope of the current one with: npx vercel@latest metrics schema
 [exit code 1]
+```
+
+### A token that cannot reach request logs
+
+The logs endpoint is scoped by the owning account too, through an `ownerId`
+parameter it requires and cannot infer, so a project scoped token is refused with
+a `403`. The hint names that rather than pointing at `--team`, which this endpoint
+does not accept at all.
+
+```console
+$ vercel-insights errors --since 30m
+error: HTTP 403 (forbidden): You don't have permission to access this resource.
+Request logs are scoped by the owning account (the ownerId parameter), so a token scoped to a single project cannot read them: it cannot act for the account that owns the project. Create an account or team scoped token at https://vercel.com/account/tokens, and set VERCEL_TEAM_ID for a team owned project, since a team is its own owner.
+[exit code 1]
+```
+
+### A mistyped log level
+
+Refused rather than sent. This API answers an unknown `level` or `source` with
+HTTP 200 and zero rows, so a typo would read as "your site is fine", which is the
+worst answer available. The same applies to `--status-code`, where the error quotes
+the API's own rule.
+
+```console
+$ vercel-insights errors --level erro
+error: --level 'erro' is not a log level this API knows; it accepts error, warning, info, fatal, comma separated. This is checked here because the API answers an unknown value with HTTP 200 and zero rows rather than an error, which would read as 'nothing is broken'
+[exit code 2]
+```
+```console
+$ vercel-insights errors --status-code '>=500'
+error: --status-code '>=500' is not a status this API accepts. It says: "statusCode must contain only comma-separated integers, status code classes like 4xx or 5xx, or \"None\"". So --status-code 500, --status-code 5xx, --status-code 4xx,5xx and --status-code None all work; a comparison such as >=500 does not
+[exit code 2]
 ```
 
 ### No permission

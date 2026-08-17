@@ -266,12 +266,17 @@ class LogLine:
 class LogEntry:
     """One request, as the request logs surface reports it.
 
-    Every string field arrives sanitized. ``raw`` is the exception: it keeps
-    the row verbatim so ``--json`` can hand back everything the API sent
-    rather than only the columns this tool tabulates. That is safe because
+    Every string field arrives sanitized. ``raw`` is the exception: it keeps the
+    row as it arrived, unescaped, so ``--json`` can hand back everything the API
+    sent rather than only the columns this tool tabulates. That is safe because
     ``raw`` is only ever emitted through ``json.dumps``, which escapes control
     characters, so no escape sequence in it can reach a terminal. It must never
     be printed directly, and tests/test_logs_render.py holds that line.
+
+    One rewrite does reach ``raw``: this client's own credential is replaced
+    wherever it appears in a row, since a log line is free text an application
+    wrote and can echo the token that fetched it. That happens in
+    ``logs.normalize``, before this container exists.
     """
 
     request_id: str = ""
@@ -1293,9 +1298,10 @@ def _log_entry_json(entry: LogEntry) -> dict[str, Any]:
         entry: The entry to render.
 
     Returns:
-        A JSON-safe mapping. ``raw`` is included verbatim: this function's
-        result must only ever be handed to :func:`json.dumps`, never printed
-        directly, because ``raw`` is not sanitized.
+        A JSON-safe mapping. ``raw`` is included as the row arrived, save for
+        the credential rewrite ``logs.normalize`` applied to it: this
+        function's result must only ever be handed to :func:`json.dumps`, never
+        printed directly, because ``raw`` is not escaped.
     """
     return {
         "requestId": entry.request_id,
@@ -1332,8 +1338,10 @@ def _log_entry_json(entry: LogEntry) -> dict[str, Any]:
 def format_logs_json(report: LogReport) -> str:
     """Render a logs report as JSON, keeping every field the API sent.
 
-    ``raw`` carries the untouched row, which is safe here and only here: this
-    is the one output path that escapes control characters on the way out.
+    ``raw`` carries the unescaped row, which is safe here and only here: this
+    is the one output path that escapes control characters on the way out. It is
+    not entirely untouched, since ``logs.normalize`` rewrote this client's own
+    credential out of it, but nothing else in it was altered.
 
     Args:
         report: The report to render.

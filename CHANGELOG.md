@@ -7,6 +7,182 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-17
+
+A third surface: **request logs**. The skill could report how many people came
+and how fast the site felt, and could not answer the question people actually ask
+in a hurry, which is what broke. Now it can:
+
+```bash
+vercel-insights errors --since 30m
+```
+
+Two changes here alter what an existing command does, and both are the first two
+items under **Changed** below: `--budget` on a traffic preset now fails instead of
+being ignored, which can flip a CI job from green to red, and four cross-surface
+refusal messages were reworded, which matters only to a script matching on their
+text. Everything else in this release is additive.
+
+### Added
+
+- **Three presets on a new surface**, all read-only:
+  - `errors`, the headline. Failing requests over the window, newest first.
+  - `logs`, the same table without the error filter: recent requests whatever
+    their status.
+  - `error-summary`, the same errors tallied three ways, by status, by route and
+    by exact message.
+
+  Default window is 1 hour on `logs` and `errors` and 6 hours on `error-summary`,
+  rather than the global 7 days, because runtime logs are retained for one hour on
+  Hobby and one day on Pro: a 7 day default would report nothing and read as a
+  healthy site. An explicit `--since` still wins.
+
+- **`errors` issues two queries and merges them**, and that is the whole design
+  rather than caution. On this API `level` matches what a request *printed* and
+  `statusCode` matches what it *answered*, so a 500 that crashed without printing
+  is invisible to `level=error` and a 200 whose handler logged a stack trace is
+  invisible to `statusCode=5xx`. The two result sets are deduplicated by request
+  id, the copy carrying more log lines winning, then sorted newest first. Passing
+  `--level` or `--status-code` explicitly collapses it to one query, which is the
+  usual "an explicit flag overrides a preset value" rule.
+
+- **Nine new flags**, all logs-only and all validated before a request exists:
+  `--level`, `--status-code`, `--source`, `--method`, `--search`, `--request-id`,
+  `--branch`, `--deployment` and `--expand`. On any other preset each one exits 2
+  naming the three presets that accept it.
+
+  Local validation is not politeness here. This API answers an unknown `level` or
+  `source` with **HTTP 200 and zero rows**, so an unchecked typo would report a
+  healthy site, which is the most damaging answer available. `--status-code`
+  mirrors the API's own rule and quotes its sentence when refusing, so
+  `--status-code '>=500'` fails immediately rather than being sent.
+
+- **`--limit` counts rows on a logs preset**, 1 to 200, default 50. The API pages
+  50 rows at a time and ignores a `limit` of its own, so the budget is enforced
+  client-side and paging stops after 4 pages: a page took up to 6 seconds live,
+  and 4 pages is already 24 seconds against a 30 second timeout. Rows past the
+  limit are left out rather than rolled up into an `Others` row, and the footer
+  says so. On a two-query `errors` run it adds that the answer is the most recent
+  N *of each kind* rather than a global top N.
+
+- **The honesty rules, printed rather than implied.** An empty answer over a
+  window wider than an hour prints the retention figures (1 hour Hobby, 1 day Pro,
+  3 days Enterprise, 30 days with Observability Plus) and says an empty result may
+  mean the logs aged out rather than that nothing failed. Exit code is still 0: no
+  errors is an answer. The `errors` presets print what counted as an error above
+  the table. A 4xx is deliberately excluded, because a 401 on `/api/me` is the
+  application working, and `--status-code 4xx` asks for those by name.
+
+- **`--json` and `--csv` on the logs surface.** JSON carries `query`, `entries`,
+  `truncated`, `pagesFetched` and `notes`, with the whole original row under each
+  entry's `raw` key, so no field this tool has no column for is discarded. CSV is
+  one row per request. `--csv` is refused on `error-summary`, which prints three
+  tables, exactly as it is on `overview` and `vitals`.
+
+- **A 403 from the logs endpoint explains itself**: that endpoint is scoped by the
+  owning account through an `ownerId` parameter it requires and cannot infer, so
+  the message names token scope rather than pointing at `--team`, which this
+  endpoint does not accept at all.
+
+### Changed
+
+- **`--budget` on a Web Analytics preset now exits 2 instead of being ignored.**
+  It was only ever wired into the Speed Insights emitter, so a CI job that ran a
+  traffic preset with `--budget lcp=2500` had been exiting 0 and protecting
+  nothing. This is the one change here that can flip an existing pipeline from
+  green to red, and it is the right direction to fail in: the flag never did what
+  the job assumed. The fix is to point it at a Speed Insights preset, which is
+  where a measured value and a threshold both exist.
+
+- **Four Web-Analytics-only refusals were reframed.** `--dataset`,
+  `--event-name`, `--event-property` and `--flag` on a Speed Insights preset were
+  already errors, and still are. What changed is the wording: they used to read
+  "has no meaning on the *preset* preset, which queries Speed Insights", and they
+  now use the same frame as every other cross-surface refusal, naming the value
+  that was passed and listing the presets where the flag works. Exit code 2 either
+  way, but a script matching on the old text will need updating.
+
+  This came out of replacing the pairwise speed-versus-web check with one table
+  (`cli.SURFACE_OPTIONS`) mapping each option to the surfaces it is meaningful on,
+  which is what makes a three-way check readable. The refusals in the other
+  direction kept their frame and gained a reason clause, so
+  `--metric` on a traffic preset still opens the same way it always did.
+
+- **The allowlist goes from five entries to six, on two hosts.** The new entry is
+  `GET https://vercel.com/api/logs/request-logs`. Note the host: `vercel.com`, not
+  `api.vercel.com`. The claim in the documentation changes from "five-endpoint" to
+  "six-endpoint" accordingly, and the host set is now asserted explicitly in
+  `tests/test_security.py`, so a third host is a test failure rather than a quiet
+  widening. Everything else about the posture is unchanged: the dispatcher still
+  takes an operation key rather than a method or a host, there are still exactly
+  two HTTP call sites, neither follows redirects, and the token still travels only
+  in the `Authorization` header.
+
+- Documentation for the surface: a third verified-ground-truth chapter in
+  `docs/api-notes.md` carrying every live probe with its date, the presets, flags
+  and contract rules in `docs/cli-contract.md`, a logs section in `README.md`,
+  captured output in `examples/example_outputs.md`, and a rewritten `SKILL.md`
+  front-matter description so an agent routes an error question here at all. Three
+  documentation counts that had drifted since earlier releases were corrected while
+  in those files: `README.md` said "five-endpoint allowlist" in two places and
+  enumerated three operations, `docs/cli-contract.md` said "exactly three entries"
+  and "five-endpoint allowlist" a few lines apart, and `CONTRIBUTING.md` said
+  "exactly three entries". No test guards those files, which is how the drift
+  survived.
+
+### Security
+
+- **The client now scrubs its own token out of log rows.** This is the first
+  surface that prints arbitrary remote text: a log line is whatever an application
+  wrote, and applications do print their own environment, so a response can echo
+  back the very token that fetched it. The scrub runs inside response
+  normalization, over every string in every row including the verbatim copy that
+  `--json` emits under `raw`, so no rendering path can leak it.
+
+  An earlier draft of the design claimed the existing `scrub_credentials` already
+  covered this. It did not: that function ran only on strings heading into an
+  error, so a token echoed back on a successful response printed verbatim. It was
+  proved false by driving the CLI with a response whose log message contained the
+  token, and fixed rather than documented away.
+
+  **The limit, stated precisely.** The tool can recognise exactly one secret, the
+  one it holds. Nothing can distinguish a user's own API key, connection string or
+  customer record from ordinary log text, so no general redaction is possible or
+  claimed: what the application logged is what you will see. `SKILL.md` therefore
+  tells an agent to quote only the lines needed and never to forward log output to
+  another service.
+
+- Every string on a log row goes through the existing sanitizers at the one
+  normalization boundary, log messages keeping their newlines because a stack
+  trace's line structure carries meaning. `tests/test_untrusted_response.py` gains
+  logs cases: an ANSI escape, a carriage return, a newline, a very long message and
+  a hostile request path.
+
+### Known, and marked as assumptions
+
+Two things on this surface are inferred rather than observed, both marked
+ASSUMPTION in the code and recorded in `docs/api-notes.md`:
+
+- **The shape of a `logs[]` item**, `{level, message, messageTruncated}`, taken
+  from the Vercel CLI's own source. No probe ever saw one populated, because
+  neither test project had logged an error or fatal line in any window probed, so
+  normalization skips anything unexpected rather than trusting it.
+- **That a project scoped token cannot read this endpoint**, reasoned from the
+  `ownerId` requirement by analogy with Speed Insights. Only a team scoped token
+  was available to test with.
+
+One live observation is recorded as unresolved rather than as a fact: a single
+probe of `source=serverless` returned a row set indistinguishable from unfiltered,
+including rows whose only event source was `static`, while `source=edge-middleware`
+filtered as expected. Nobody has probed it a second time, so neither "it filters"
+nor "it does not" is claimed.
+
+Related and worth knowing: the display and filter vocabularies for `source` do
+not agree. A row's `source` column can read `serverless-middleware`, and the
+spelling that matches those rows as a filter is `edge-middleware`. This client
+accepts the displayed spelling and rewrites it, so a value copied out of its own
+table works.
+
 ## [1.0.3] - 2026-08-16
 
 Raises the `requests` floor past every published advisory. No code changes.
@@ -600,7 +776,8 @@ API, packaged as an OpenClaw skill.
   is ever built.
 - No `eval`, no `exec`, no `subprocess`, and no filesystem writes.
 
-[Unreleased]: https://github.com/anatoli-iliev/openclaw-vercel-insights/compare/v1.0.3...HEAD
+[Unreleased]: https://github.com/anatoli-iliev/openclaw-vercel-insights/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/anatoli-iliev/openclaw-vercel-insights/compare/v1.0.3...v1.1.0
 [1.0.3]: https://github.com/anatoli-iliev/openclaw-vercel-insights/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/anatoli-iliev/openclaw-vercel-insights/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/anatoli-iliev/openclaw-vercel-insights/compare/v1.0.0...v1.0.1

@@ -1,6 +1,7 @@
 # vercel-insights
 
-Your Vercel traffic **and** your Core Web Vitals, answered in one command line.
+What broke, how many people came, and how fast it felt: answered in one command
+line.
 
 ```console
 $ vercel-insights vitals
@@ -14,8 +15,9 @@ First Contentful Paint      1.6 s   1.8 s  meets target
 Time to First Byte         412 ms  800 ms  meets target
 ```
 
-Two Vercel APIs, one CLI: Web Analytics for how many people came and where from,
-Speed Insights for how fast the site felt when they got there.
+Three Vercel APIs, one CLI: request logs for what is failing right now, Web
+Analytics for how many people came and where from, and Speed Insights for how
+fast the site felt when they got there.
 
 ## Start here
 
@@ -39,7 +41,7 @@ always know whether it worked before moving on.
 clawhub install vercel-insights
 ```
 
-**You should see:** `Installed vercel-insights v1.0.1 -> ...`
+**You should see:** `Installed vercel-insights v1.1.0 -> ...`
 
 #### Step 2: make it runnable
 
@@ -55,7 +57,7 @@ python3 -m venv "$SKILL/.venv"
 "$SKILL/bin/vercel-insights" --version
 ```
 
-**You should see:** `vercel-insights 1.0.1` on the last line. Anything installed
+**You should see:** `vercel-insights 1.1.0` on the last line. Anything installed
 here goes inside the skill's own folder and touches nothing else on your
 computer.
 
@@ -93,6 +95,8 @@ openclaw config set skills.entries.vercel-insights.env.VERCEL_TEAM_ID team_xxxxx
 
 That is the whole setup. Now talk to OpenClaw normally:
 
+> **What errors did my site have in the last 30 minutes?**
+>
 > **How's my site traffic this week?**
 >
 > **Is my site fast?**
@@ -113,8 +117,9 @@ projects do I have?"**
 | `'requests' is not importable by this interpreter` | Step 2 was skipped, or its last line failed. Run it again and read the output. |
 | `openclaw skills check` still says missing | The token did not save. Re-run step 3 and check for a typo in the config path. |
 | `404 Observability Data not found.` | Your token is scoped to one project. Make a new account-scoped one, step 3. |
+| `403 You don't have permission to access this resource.` on an errors or logs question | Same cause: request logs are scoped by the owning account too. Make an account or team scoped token, step 3. |
 | Speed questions work, traffic questions fail with 403 or 404 | The project belongs to a team. Add `VERCEL_TEAM_ID`, end of step 3. |
-| Empty results, no error | That project genuinely has no data for that period, or the feature is switched off for it in Vercel. |
+| Empty results, no error | That project genuinely has no data for that period, or the feature is switched off for it in Vercel. On an errors or logs question the logs may instead have aged out: retention is one hour on Hobby. |
 
 Longer walkthrough, with every failure we actually hit and how to tell them
 apart: **[docs/openclaw-setup.md](docs/openclaw-setup.md)**.
@@ -154,6 +159,7 @@ command to see the exact request without sending it, no token required.
 
 | I want to | Read |
 | --- | --- |
+| Find out what is failing right now | [Errors and request logs](#errors-and-request-logs) |
 | See what the output looks like, for everything | [examples/example_outputs.md](examples/example_outputs.md) |
 | Know which presets exist | [Presets](#presets), or run `--list-presets` |
 | Fail a build when the site gets slower | [Guarding performance in CI](#guarding-performance-in-ci) |
@@ -191,7 +197,7 @@ looking at it.
 - **Agent-native.** It ships as an OpenClaw skill, so "how did the blog do this
   week" or "which pages are slowest on mobile" inside a conversation becomes a
   real query with a real table, not a guess.
-- **Safe by construction.** Read-only against a five-endpoint allowlist, and
+- **Safe by construction.** Read-only against a six-endpoint allowlist, and
   the token never leaves the `Authorization` header. See
   [Security and permissions](#security-and-permissions).
 
@@ -278,13 +284,14 @@ repairs `sys.path` before importing. And `pip install -e .` adds a
 Create one at <https://vercel.com/account/tokens>. Read scope is enough; this
 tool never writes.
 
-Vercel's two APIs scope differently, and a project scoped token silently reaches
-only one of them:
+Vercel's three APIs scope differently, and a project scoped token silently
+reaches only one of them:
 
 | Preset family | API scoped by | Project scoped token |
 | --- | --- | --- |
 | Web Analytics (`overview`, `top-pages`, `events`, ...) | `projectId` | works |
 | Speed Insights (`vitals`, `slowest-pages`, ...) | account | `404 Observability Data not found.` |
+| Request logs (`logs`, `errors`, `error-summary`) | account, as an `ownerId` parameter | expected to fail with `403`; only an account or team scoped token was available to test |
 
 To see what the current token can actually reach:
 `npx vercel@latest metrics schema`.
@@ -299,6 +306,11 @@ moment each is turned on, and only from deployed builds, not local development.
 
 `--list-projects` reports both per project: `data` collected, `empty` for
 enabled but nothing yet, `off` for not enabled.
+
+Request logs need no switch. Any deployed project produces them, which is why the
+listing has no third column: there is nothing to enable. It also means an empty
+logs answer is never explained by a feature being off, and retention is the thing
+to check instead.
 
 ### Environment variables
 
@@ -435,6 +447,112 @@ vercel-insights devices --json | jq '.rows[] | {(.key): .metrics.pageviews}'
 vercel-insights trend --granularity week --since 8w --csv > traffic.csv
 ```
 
+## Errors and request logs
+
+The question nobody asks a dashboard calmly: **what is broken right now.**
+
+```bash
+vercel-insights errors --since 30m
+```
+
+That is one command against your project's runtime request logs, and it is the
+third API this tool talks to. Traffic tells you how many people came, Speed
+Insights how fast it felt for them, and request logs what failed while they were
+there: the status a request answered, the log lines it printed, the route, the
+deployment, the region.
+
+Three presets, all read-only, all against the same endpoint:
+
+- **`errors`** is the headline. It issues two queries, one for `5xx` responses and
+  one for `error` and `fatal` log lines, and merges them. That is not
+  belt-and-braces: on this API the level filter matches what a request *printed*
+  and the status filter matches what it *answered*, so a 500 that crashed
+  silently and a 200 whose handler logged a stack trace each show up in exactly
+  one of the two. Either query alone gives you half the picture.
+- **`logs`** is the same table without the error filter: the most recent requests,
+  whatever their status. Use it with `--search`, `--request-id` or
+  `--status-code 4xx` when you know what you are looking for.
+- **`error-summary`** groups the same errors three ways, by status, by route and
+  by exact message, which is the "where is this concentrated" view.
+
+Here is a real run, captured against a live account:
+
+```console
+$ vercel-insights logs --since 30m --limit 5
+Vercel request logs: prj_tjgvYZgQGYqNxBP1nQffcF1A92Ag (logs, last 30 minutes)
+Range: 2026-08-17T17:02:42Z to 2026-08-17T17:32:42Z (UTC)
+
+time      level  status  method  route                     source                 message
+--------  -----  ------  ------  ------------------------  ---------------------  -------
+17:32:10  -         200  GET     /api/landing/[[...slug]]  serverless
+17:32:10  -         401  GET     /api/me                   serverless
+17:32:10  -         200  GET     /[locale]/[categorySlug]  serverless-middleware
+17:31:35  -         401  GET     /api/me                   serverless
+17:31:35  -         200  GET     /api/landing/[[...slug]]  serverless
+
+5 requests in 30 minutes: 3 x 200, 2 x 401.
+Most affected route: /api/landing/[[...slug]] (2).
+More rows matched than were shown: this is the most recent 5. Raise --limit (up to 200) or narrow the window.
+Add --expand for full messages, or --request-id to pull one request apart.
+```
+
+The `level` column is `-` on every row because none of those requests printed
+anything, which is the normal case. `--level error` would have matched none of
+them, and that is the trap this surface sets: a filter that matches nothing
+answers `200` with zero rows, and zero rows reads like a healthy site. Every
+vocabulary is therefore checked before the request goes out, so a typo is a
+refusal rather than a reassuring lie.
+
+### An empty answer is not a clean bill of health
+
+This is what it looks like when nothing failed, and it is the case most worth
+recognising:
+
+```console
+$ vercel-insights errors --since 24h
+Vercel request logs: prj_tjgvYZgQGYqNxBP1nQffcF1A92Ag (errors, last 24 hours)
+Range: 2026-08-16T17:34:31Z to 2026-08-17T17:34:31Z (UTC)
+Counted as an error: a 5xx response, a crashed function, or a request that logged an error or fatal line.
+
+No request logs for project prj_tjgvYZgQGYqNxBP1nQffcF1A92Ag between 2026-08-16T17:34:31Z and 2026-08-17T17:34:31Z.
+
+Runtime log retention is 1 hour on Hobby, 1 day on Pro, 3 days on Enterprise and 30 days with Observability Plus, so an empty result over a longer window can mean the logs aged out rather than that nothing failed.
+```
+
+Exit code 0: no errors is an answer, not a failure. The last line is there because
+runtime logs are kept for far less time than analytics data, so "no errors in the
+last 24 hours" can mean "nothing failed" or "the logs for most of that window are
+already gone", and the tool will not pretend to know which:
+
+| Plan | Runtime log retention |
+| --- | --- |
+| Hobby | 1 hour |
+| Pro | 1 day |
+| Enterprise | 3 days |
+| Pro or Enterprise with Observability Plus | 30 days |
+
+That is why the logs presets do not use the 7 day default the rest of the tool
+has: `logs` and `errors` look back 1 hour, `error-summary` 6 hours. Widen it with
+`--since` when you need to, and read an empty wide window with the retention line
+in mind. A 4xx is deliberately not an error here, by the way: a 401 on `/api/me`
+is the application working. `logs --status-code 4xx` asks for those by name.
+
+### Why this one reaches a second host
+
+Every other endpoint this tool calls is on `api.vercel.com`. Request logs are on
+`vercel.com`, which is worth explaining rather than hiding: it is the endpoint
+Vercel's own `vercel logs` command calls, and there is no equivalent on the API
+host. The documented streaming endpoint never returns response headers to a
+request-and-response client, and counting errors through the metrics API answers
+`402 payment_required` without the Observability Plus add-on, while request logs
+work without it. So this is the only endpoint here that is absent from Vercel's
+published OpenAPI document, and it could change without notice. Every claim this
+project makes about it was probed against a live account and is written down, with
+its date, in [docs/api-notes.md](docs/api-notes.md).
+
+There is no live tail, for the same reason: the streaming endpoint is unusable
+here. A logs command answers one window and exits.
+
 ## Beyond web vitals
 
 Speed Insights is one family among many on the same query API. Function
@@ -524,19 +642,31 @@ the optional first positional argument; with no arguments the tool runs
 | `vitals-trend` | `--metric`, default `lcp` | time, `1d` by default | n/a | Whether it is getting better or worse |
 | `data-points` | `<metric>_count` | `route` | 10 | How many measurements each route contributed |
 
-Any explicit flag overrides a preset value, with two exceptions. `overview`
+### Request logs
+
+| Preset | Queries | Default window | Default limit | What it shows |
+| --- | --- | --- | --- | --- |
+| `logs` | 1 call | 1 hour | 50 rows | Recent requests, newest first, whatever their status |
+| `errors` | 2 calls, merged | 1 hour | 50 rows | Failing requests: 5xx responses and logged error or fatal lines |
+| `error-summary` | the same 2 calls | 6 hours | 200 rows | The same errors tallied by status, by route and by message |
+
+Any explicit flag overrides a preset value, with three exceptions. `overview`
 issues its own three queries, so `--group-by`, `--event-property` and `--csv`
 are rejected there. `vitals` issues one query per web vital, so `--group-by`,
-`--csv` and `--metric` are rejected there. Both exit 2 and name a preset to use
-instead.
+`--csv` and `--metric` are rejected there. `error-summary` prints three tables, so
+`--csv` is rejected there and points at `errors --csv`. All of them exit 2 and
+name a preset to use instead.
 
 A preset also fixes which API is queried, and that is enforced rather than
-implied: every Speed Insights option is a configuration error on a Web Analytics
-preset, and every Web-Analytics-only option is a configuration error on a Speed
-Insights preset. The tables below say which is which for each flag.
+implied, in every direction: a Speed Insights option is a configuration error on a
+traffic or a logs preset, a logs option is one on either analytics preset, and so
+on. Nothing is silently ignored. The tables below say which surface each flag
+belongs to.
 
-Groups past the limit are never dropped: they roll into a single `Others` row
-that still counts toward the total.
+On the two analytics surfaces, groups past the limit are never dropped: they roll
+into a single `Others` row that still counts toward the total. A logs preset has
+no groups, so its limit counts rows, and rows past it are genuinely left out: the
+footer says so rather than letting a cut-off table read as complete.
 
 ## Flags
 
@@ -547,28 +677,30 @@ that still counts toward the total.
 | `--token TOKEN` | `VERCEL_TOKEN` | none | Required for real requests, not for `--dry-run`. |
 | `--project ID_OR_NAME` | `VERCEL_PROJECT_ID` | none | Project ID or project name. Required, except on a Speed Insights preset run with `--all`. |
 | `--team TEAM_ID` | `VERCEL_TEAM_ID` | none | Team-owned projects. Not with `--team-slug`. |
-| `--owner-id ID` | `VERCEL_OWNER_ID` | resolved | Account owning the project, required by a Speed Insights scope. A team is its own owner, so `--team` covers it; otherwise the personal account id is read once from the API. |
-| `--team-slug SLUG` | `VERCEL_TEAM_SLUG` | none | Sent as `slug`. Not with `--team`. |
+| `--owner-id ID` | `VERCEL_OWNER_ID`, then `VERCEL_ORG_ID` | resolved | Account owning the project, required by a Speed Insights scope and by request logs. A team is its own owner, so `--team` covers it; otherwise the personal account id is read once from the API. |
+| `--team-slug SLUG` | `VERCEL_TEAM_SLUG` | none | Sent as `slug`. Not with `--team`. A slug is a name rather than an account id, so on a Speed Insights or logs preset it cannot stand in for the owner and is refused rather than quietly answering for the wrong account. |
 
 ### Query shape
 
 | Flag | Surface | Default | Notes |
 | --- | --- | --- | --- |
-| `--dataset {visits,events}` | Web Analytics only | preset's choice, usually `visits` | `events` for custom events. Not with `--metric`, and a configuration error on a Speed Insights preset, which has no datasets. |
-| `--group-by DIM`, `--dimension DIM` | both | the preset's grouping | Repeatable, maximum 2. Web Analytics: at most one time bucket. The dimension *names* are not portable: a camelCase name on Speed Insights, or a snake_case one on Web Analytics, is a configuration error. |
-| `--granularity BUCKET` | both | none | `hour`, `1h`, `day`, `1d`, `week`, `month`, `1mo`, `year`. Both vocabularies accepted and translated per API; `week` and `year` are Web Analytics only, and a configuration error on Speed Insights. |
-| `--since WHEN` | both | `7d` | `30m`, `24h`, `7d`, `4w`, `now`, `today`, `yesterday`, `2026-08-01`, `2026-08-01T12:00:00Z`, or Unix ms. |
-| `--until WHEN` | both | `now` | Same forms. Must be strictly after `--since`. |
-| `--limit N` | both | preset's, usually 10 | 1 to 100, checked before the request. On Web Analytics the overflow becomes `Others`; on Speed Insights it bounds grouped results per time bucket. An ungrouped query (`total`, `vitals`) has nothing to limit, so the value is accepted and goes unused. |
-| `--event-property NAME` | Web Analytics, events dataset only | none | Adds `eventData/NAME` as a second grouping dimension next to `eventName`, and each dimension gets its own column. A configuration error on `visits`, on Speed Insights, and on `overview`. |
+| `--dataset {visits,events}` | Web Analytics only | preset's choice, usually `visits` | `events` for custom events. Not with `--metric`, and a configuration error on a Speed Insights or logs preset, neither of which has datasets. |
+| `--group-by DIM`, `--dimension DIM` | traffic and speed | the preset's grouping | Repeatable, maximum 2. Web Analytics: at most one time bucket. The dimension *names* are not portable: a camelCase name on Speed Insights, or a snake_case one on Web Analytics, is a configuration error. Logs are rows rather than groups, so it is an error there and the message points at `error-summary`. |
+| `--granularity BUCKET` | traffic and speed | none | `hour`, `1h`, `day`, `1d`, `week`, `month`, `1mo`, `year`. Both vocabularies accepted and translated per API; `week` and `year` are Web Analytics only, and a configuration error on Speed Insights. Any bucket at all is an error on a logs preset. |
+| `--since WHEN` | all three | `7d`, or 1 hour on `logs` and `errors` and 6 hours on `error-summary` | `30m`, `24h`, `7d`, `4w`, `now`, `today`, `yesterday`, `2026-08-01`, `2026-08-01T12:00:00Z`, or Unix ms. |
+| `--until WHEN` | all three | `now` | Same forms. Must be strictly after `--since`. |
+| `--limit N` | all three | preset's, usually 10 | 1 to 100 on the analytics surfaces, checked before the request. On Web Analytics the overflow becomes `Others`; on Speed Insights it bounds grouped results per time bucket. An ungrouped query (`total`, `vitals`) has nothing to limit, so the value is accepted and goes unused. On a logs preset it counts rows instead, 1 to 200, and rows past it are left out rather than rolled up. |
+| `--event-property NAME` | Web Analytics, events dataset only | none | Adds `eventData/NAME` as a second grouping dimension next to `eventName`, and each dimension gets its own column. A configuration error on `visits`, on the other two surfaces, and on `overview`. |
 
 ### Speed Insights
 
 Every flag in this table is a Speed Insights option. None of them is universal:
-on a Web Analytics preset (`overview`, `trend`, `top-pages`, `top-routes`,
-`referrers`, `countries`, `devices`, `browsers`, `operating-systems`,
-`campaigns`, `events`, `total`) each one exits 2 with a message naming the seven
-presets that do accept it. That is enforced in code, not a convention.
+on a traffic preset (`overview`, `trend`, `top-pages`, `top-routes`, `referrers`,
+`countries`, `devices`, `browsers`, `operating-systems`, `campaigns`, `events`,
+`total`) or a logs preset (`logs`, `errors`, `error-summary`) each one exits 2
+with a message naming the presets that do accept it. That is enforced in code, not
+a convention. `--budget` is in this table too: it compares a measured value
+against a threshold, and only Speed Insights measures one.
 
 | Flag | Default | Notes |
 | --- | --- | --- |
@@ -578,31 +710,54 @@ presets that do accept it. That is enforced in code, not a convention.
 | `--order-by COLUMN` | `count` | `count` or `value`. Grouped queries only; without a grouping it is an error. |
 | `--order DIRECTION` | `desc` | `asc` or `desc`. Grouped queries only. |
 | `--bucket-timezone IANA` | none | Aligns `1d` and `1mo` buckets, for example `Europe/Paris`. Timestamps stay UTC; a sub-daily bucket ignores it and the tool warns. |
-| `--all` | off | Query every project in the team, instead of one. Mutually exclusive with `--project`, and a configuration error on every Web Analytics preset: there is no team-wide traffic query, so compare those one `--project` at a time. |
+| `--all` | off | Query every project in the team, instead of one. Mutually exclusive with `--project`, and a configuration error on every Web Analytics and logs preset: there is no team-wide traffic or logs query, so compare those one `--project` at a time. |
 | `--data-points` | off | Report the number of measurements instead of the metric value. Defaults the aggregation to `sum`. |
+| `--budget NAME=VALUE` | none | Repeatable, for CI. Exit 3 when a vital exceeds VALUE, for example `--budget lcp=2500`. A metric with no data does not fail. See [Guarding performance in CI](#guarding-performance-in-ci). |
+
+### Request logs
+
+Every flag here is meaningful only on `logs`, `errors` or `error-summary`, and on
+any other preset each one exits 2 naming those three. Each value is checked before
+the request is built, because this API answers an unknown level or source with
+HTTP 200 and zero rows, and zero rows reads as "your site is fine".
+
+| Flag | Default | Notes |
+| --- | --- | --- |
+| `--level LEVEL` | none | `error`, `warning`, `info`, `fatal`, comma separated. Matches **log lines, not responses**: a 500 that printed nothing does not match it. |
+| `--status-code CODE` | none | An integer (`500`), a class (`5xx`, `40x`), `None` for a request with no status recorded, or a comma separated mix. No comparisons: `>=500` is refused, quoting the API's own rule. |
+| `--source SOURCE` | none | `serverless`, `edge-function`, `edge-middleware`, `static`. The `source` column can display `serverless-middleware`; pass that and it is rewritten to `edge-middleware`, which is the spelling that actually matches those rows. |
+| `--method METHOD` | none | One HTTP method, upper-cased for the wire. |
+| `--search TEXT` | none | Free text, not a query syntax: `status:500` is matched literally. |
+| `--request-id ID` | none | One request, by the id shown in the table. Pair it with `--expand`. |
+| `--branch NAME` | none | Only deployments built from this git branch. |
+| `--deployment ID` | none | One deployment, by its `dpl_` id. |
+| `--expand` | off | Print every full log line under its row instead of truncating the message to its column. |
 
 ### Filters
 
-Each adds one OData clause; all clauses are joined with `and`. A comma-separated
-value becomes an `in (...)` set, so `--country US,CA,MX` is one clause. The
-dimension name compiles to the spelling of whichever surface is active.
+On the analytics surfaces each adds one OData clause and all clauses are joined
+with `and`; a comma-separated value becomes an `in (...)` set, so
+`--country US,CA,MX` is one clause. The dimension name compiles to the spelling of
+whichever surface is active. On the logs surface these are query parameters
+instead, and `--path` and `--route` match exactly, so `--search` is the substring
+tool there.
 
-| Flag | On Web Analytics | On Speed Insights |
-| --- | --- | --- |
-| `--path VALUE` | `requestPath eq 'VALUE'` | `request_path eq 'VALUE'` |
-| `--route VALUE` | `route eq 'VALUE'` | `route eq 'VALUE'` |
-| `--country VALUE` | `country eq 'VALUE'` | `country eq 'VALUE'` |
-| `--device VALUE` | `deviceType eq 'VALUE'` | `device_type eq 'VALUE'` |
-| `--environment {production,preview}` | `environment eq 'VALUE'` | `environment eq 'VALUE'` |
-| `--browser VALUE` | `browserName eq 'VALUE'` | not collected, configuration error |
-| `--os VALUE` | `osName eq 'VALUE'` | not collected, configuration error |
-| `--referrer VALUE` | `referrerHostname eq 'VALUE'` | not collected, configuration error |
-| `--utm-source VALUE` | `utmSource eq 'VALUE'` | not collected, configuration error |
-| `--utm-medium VALUE` | `utmMedium eq 'VALUE'` | not collected, configuration error |
-| `--utm-campaign VALUE` | `utmCampaign eq 'VALUE'` | not collected, configuration error |
-| `--event-name VALUE` | `eventName eq 'VALUE'`, events dataset only | no custom events, configuration error |
-| `--flag NAME=VALUE` | `flags/NAME eq 'VALUE'`, repeatable. A name with punctuation is quoted for you: `--flag my-flag=on` builds `flags/'my-flag' eq 'on'` | no feature flags, configuration error |
-| `--filter ODATA` | appended verbatim, repeatable | appended verbatim, repeatable |
+| Flag | On Web Analytics | On Speed Insights | On request logs |
+| --- | --- | --- | --- |
+| `--path VALUE` | `requestPath eq 'VALUE'` | `request_path eq 'VALUE'` | `requestPath=VALUE`, exact |
+| `--route VALUE` | `route eq 'VALUE'` | `route eq 'VALUE'` | `route=VALUE`, exact |
+| `--country VALUE` | `country eq 'VALUE'` | `country eq 'VALUE'` | not collected, configuration error |
+| `--device VALUE` | `deviceType eq 'VALUE'` | `device_type eq 'VALUE'` | not collected, configuration error |
+| `--environment {production,preview}` | `environment eq 'VALUE'` | `environment eq 'VALUE'` | `environment=VALUE` |
+| `--browser VALUE` | `browserName eq 'VALUE'` | not collected, configuration error | not collected, configuration error |
+| `--os VALUE` | `osName eq 'VALUE'` | not collected, configuration error | not collected, configuration error |
+| `--referrer VALUE` | `referrerHostname eq 'VALUE'` | not collected, configuration error | not collected, configuration error |
+| `--utm-source VALUE` | `utmSource eq 'VALUE'` | not collected, configuration error | not collected, configuration error |
+| `--utm-medium VALUE` | `utmMedium eq 'VALUE'` | not collected, configuration error | not collected, configuration error |
+| `--utm-campaign VALUE` | `utmCampaign eq 'VALUE'` | not collected, configuration error | not collected, configuration error |
+| `--event-name VALUE` | `eventName eq 'VALUE'`, events dataset only | no custom events, configuration error | no custom events, configuration error |
+| `--flag NAME=VALUE` | `flags/NAME eq 'VALUE'`, repeatable. A name with punctuation is quoted for you: `--flag my-flag=on` builds `flags/'my-flag' eq 'on'` | no feature flags, configuration error | no feature flags, configuration error |
+| `--filter ODATA` | appended verbatim, repeatable | appended verbatim, repeatable | no OData at all, configuration error naming the flags that do filter |
 
 Web Analytics accepts `eq`, `ne`, `in`, `and`, `or`, `not`, parentheses and
 `startswith`. It has no comparison operators, so `gt`, `lt`, `ge` and `le` do
@@ -615,8 +770,8 @@ its own 400 with Vercel's message.
 
 | Flag | Default | Notes |
 | --- | --- | --- |
-| `--json` | off | Machine readable, with the untouched API payload under `raw`. Not with `--csv`. |
-| `--csv` | off | `csv.writer` quoting. Not with `--json`, and not with `overview` or `vitals`. |
+| `--json` | off | Machine readable, with the untouched API payload under `raw`. Not with `--csv`. On a logs preset each entry carries the whole original row under its own `raw` key. |
+| `--csv` | off | `csv.writer` quoting. Not with `--json`, and not with `overview`, `vitals` or `error-summary`, each of which prints several tables. |
 | `--dry-run` | off | Print the request, send nothing, no token needed. Prints the full JSON body on a POST. |
 | `--timeout SECONDS` | `30.0` | Per request. Must be a finite number greater than 0; anything else is a usage error. |
 | `--max-retries N` | `3` | Retries after the first attempt. Only 408, 429 and 5xx responses and network failures are retried. |
@@ -626,25 +781,51 @@ its own 400 with Vercel's message.
 | `--version` | | Print the version and exit 0. |
 
 Exit codes: `0` success including an empty result, `1` API or network failure,
-`2` configuration or usage error, `130` interrupted.
+`2` configuration or usage error, `3` a `--budget` was exceeded, `130`
+interrupted. An empty logs answer is a `0`: no errors is an answer, not a failure.
 
 ## Security and permissions
 
-- **Read-only against a five-endpoint allowlist.** One module-level table in
+- **Read-only against a six-endpoint allowlist.** One module-level table in
   `vercel_insights/http.py` maps an operation key to a fixed method and URL, and
-  it has exactly three entries: the Web Analytics query
-  (`GET /v1/query/web-analytics/{dataset}/{endpoint}`), the observability query
-  (`POST /v2/observability/query`), and the observability schema
-  (`GET /v2/observability/schema`). The dispatcher takes an operation key, never
-  a method and never a host, so no user input can select, extend or override an
-  entry. There are exactly two HTTP call sites in the package, `session.get` and
-  `session.post`, and both are inside that dispatcher.
+  it has exactly six entries:
+
+  | Method | Endpoint | What for |
+  | --- | --- | --- |
+  | GET | `/v1/query/web-analytics/{dataset}/{endpoint}` | traffic |
+  | POST | `/v2/observability/query` | speed, and any other metric |
+  | GET | `/v2/observability/schema` | which metrics this account can query |
+  | GET | `/v9/projects/{project}` | the owning account id, read at most once per run |
+  | GET | `/v10/projects` | `--list-projects` |
+  | GET | `https://vercel.com/api/logs/request-logs` | request logs |
+
+  The dispatcher takes an operation key, never a method and never a host, so no
+  user input can select, extend or override an entry. There are exactly two HTTP
+  call sites in the package, `session.get` and `session.post`, and both are
+  inside that dispatcher.
+- **Two hosts, and the second one is worth knowing about.** Five of those six are
+  on `api.vercel.com`. Request logs are served from the dashboard host,
+  `vercel.com`, because that is the endpoint Vercel's own `vercel logs` command
+  calls and there is no equivalent on the API host: the documented streaming
+  endpoint never answers a request-and-response client, and the metrics route
+  needs the Observability Plus add-on. It is a GET, the whole query travels in
+  the query string, and it is the one endpoint here that is absent from Vercel's
+  published OpenAPI document, so it could change without notice. The host set is
+  asserted in the test suite, so a third host cannot be added quietly.
 - **The allowlist binds every hop, not just the first.** Both call sites pass
   `allow_redirects=False`, and any 3xx is turned into an error rather than
   followed. That is what keeps a redirect from an allowlisted URL from carrying
   the `Authorization` header off to whatever host a `Location` header names. The
   error reports the location it refused, so a proxy or a captive network in the
   way is visible rather than silent.
+- **Log text is scrubbed of this tool's own token on the way in.** A log line is
+  whatever an application printed, so a response on the logs surface can echo
+  back the very token that fetched it. Every string in every row, `--json`
+  included, is rewritten at the point the response is parsed, which is the one
+  boundary a rendering path cannot skip. That covers the one secret this tool
+  knows about. It cannot tell your own API key or connection string from ordinary
+  log text, so no general redaction is claimed: what your application logged is
+  what you will see.
 - **Why one is a POST, and why it is still a read.** Vercel exposes no GET
   equivalent for an observability query. Speed Insights has no query API of its
   own, and the general observability surface takes its query in a JSON request
@@ -698,12 +879,25 @@ A `--since` beyond your plan's window is still a legal query, it just tends to
 come back empty. The plan tier is not discoverable through this API, so the tool
 warns on stderr past 24 months rather than blocking anything.
 
+**Runtime logs are a different clock.** The window above is for analytics data.
+Request logs are kept for 1 hour on Hobby, 1 day on Pro, 3 days on Enterprise and
+30 days with Observability Plus, which is why an empty logs answer over a wider
+window prints those figures instead of implying health. See
+[Errors and request logs](#errors-and-request-logs).
+
 **Plan-gated features.** Custom events need Pro or above, and UTM dimensions
 need Web Analytics Plus or Enterprise. Below those tiers the queries return
 nothing rather than failing. **Speed Insights needs no Observability Plus**:
 Vercel documents its metrics as readable on the query surface without it, and
 unlike the Web Analytics count endpoints it collects on every deployed
-environment, preview included.
+environment, preview included. **Request logs need none either**, which is the
+reason they are the right surface for an error question: counting errors through
+the metrics API instead (`--metric vercel.request.count --group-by http_status`)
+answers `402 payment_required` without the add-on, and no flag fixes that.
+
+**No live tail.** Vercel's documented streaming logs endpoint never returns
+response headers to a request-and-response client, so there is no follow mode
+here. Run a short `--since` again to see what has happened since.
 
 **Real Experience Score is dashboard-only.** Vercel states that RES is not
 available through the query API this tool uses, so it is not queryable here and
@@ -715,9 +909,10 @@ all queryable, and `vitals` reports them together.
 
 - [examples/example_outputs.md](examples/example_outputs.md) for fuller sample
   output.
-- [docs/api-notes.md](docs/api-notes.md) for the verified facts about both APIs,
-  including the response shapes, the parsing traps, and what the published
-  OpenAPI document does and does not pin down.
+- [docs/api-notes.md](docs/api-notes.md) for the verified facts about all three
+  APIs, including the response shapes, the parsing traps, what the published
+  OpenAPI document does and does not pin down, and every live probe behind the
+  request logs endpoint, which it does not cover at all.
 - [docs/cli-contract.md](docs/cli-contract.md) for the authoritative interface.
 - [CONTRIBUTING.md](CONTRIBUTING.md) to add a preset or report a bug.
 
