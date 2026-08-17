@@ -48,9 +48,18 @@ from .http import (
     validate_timeout,
     validate_token,
 )
+from .logs import DEFAULT_LIMIT as LOGS_DEFAULT_LIMIT
 from .logs import LEVELS as LOG_LEVELS
 from .logs import MAX_LIMIT as LOGS_MAX_LIMIT
 from .logs import SOURCES as LOG_SOURCES
+from .logs import build_request as build_logs_request
+from .logs import (
+    error_filter_sets,
+    validate_levels,
+    validate_sources,
+    validate_status_code,
+)
+from .logs import validate_limit as validate_logs_limit
 from .odata import build_clause, combine_filters, json_dimension
 from .presets import DEFAULT_METRIC, DEFAULT_PRESET, PRESETS, Preset, format_presets
 from .projects import (
@@ -305,8 +314,13 @@ def build_parser() -> argparse.ArgumentParser:
     shape.add_argument(
         "--since",
         metavar="WHEN",
-        default=DEFAULT_SINCE,
-        help=f"start of the window (default: {DEFAULT_SINCE}); {TIME_HELP}",
+        # No default here: a preset may own one, and only an unset value can
+        # tell "the user asked for 7d" apart from "nobody asked for anything".
+        default=None,
+        help=(
+            f"start of the window (default: {DEFAULT_SINCE}, or 1h on the logs "
+            f"and errors presets and 6h on error-summary); {TIME_HELP}"
+        ),
     )
     shape.add_argument(
         "--until",
@@ -597,10 +611,14 @@ class Settings:
     order_direction: str | None = None
     granularity: str | None = None
     bucket_timezone: str | None = None
-    #: Speed Insights only. A scope requires an ownerId, and for a team the
-    #: team id IS the owner. For a personal account it is read once from the
-    #: user endpoint at run time, because nothing else knows it.
+    #: Speed Insights and request logs. A scope requires an ownerId, and for a
+    #: team the team id IS the owner. For a personal account it is read once
+    #: from the project's own record at run time, because nothing else knows it.
     owner_id: str | None = None
+    #: Request logs only: wire-named filter values, keyed by
+    #: :data:`logs.FILTER_PARAMS`. Empty on the other two surfaces, which filter
+    #: with an OData expression in :attr:`filter_expr` instead.
+    log_filters: dict[str, str] = field(default_factory=dict)
 
     @property
     def aggregation_label(self) -> str:
@@ -616,6 +634,11 @@ class Settings:
     def is_speed(self) -> bool:
         """True when this run queries the Speed Insights surface."""
         return self.surface == SPEED_INSIGHTS
+
+    @property
+    def is_logs(self) -> bool:
+        """True when this run queries the request logs surface."""
+        return self.surface == LOGS
 
     @property
     def project_label(self) -> str:
@@ -715,12 +738,22 @@ def _resolve_filters(
         else:
             dimension = web_name
         if dimension is None:
-            subject, filterable = _NO_DIMENSION_HELP[surface]
+            # Looked up rather than indexed: a future shorthand with no Web
+            # Analytics dimension would reach a surface this table has no entry
+            # for, and a KeyError traceback is a worse answer than a ConfigError
+            # that names one thing less.
+            subject, filterable = _NO_DIMENSION_HELP.get(
+                surface, (SURFACE_LABELS[surface], ())
+            )
+            alternatives = (
+                f"That surface filters on {', '.join(filterable)}. "
+                if filterable
+                else ""
+            )
             raise ConfigError(
                 f"{flag} {value!r} is a Web Analytics filter: {subject} "
                 f"collects no {web_name} dimension, so it cannot filter on one. "
-                f"That surface filters on {', '.join(filterable)}; drop "
-                f"the flag, or run a Web Analytics preset instead"
+                f"{alternatives}Drop the flag, or run a Web Analytics preset instead"
             )
         clauses.append(build_clause(dimension, value))
 
@@ -747,6 +780,50 @@ def _resolve_filters(
             clauses.append(text)
 
     return combine_filters(clauses)
+
+
+def _resolve_log_filters(args: argparse.Namespace) -> dict[str, str]:
+    """Turn every logs filter flag into the query parameters the API takes.
+
+    This is the one place a flag becomes a wire parameter on this surface, and
+    each value goes through its validator here, before a request exists, because
+    the API answers an unknown level or source with HTTP 200 and zero rows: an
+    unchecked typo would read as a healthy site.
+
+    Args:
+        args: The parsed arguments.
+
+    Returns:
+        Wire-named filters, keyed by :data:`logs.FILTER_PARAMS`.
+
+    Raises:
+        ConfigError: From any validator, naming the flag and the accepted set.
+    """
+    filters: dict[str, str] = {}
+    if args.level:
+        filters["level"] = validate_levels(args.level)
+    if args.status_code:
+        filters["statusCode"] = validate_status_code(args.status_code)
+    if args.source:
+        filters["source"] = validate_sources(args.source)
+    if args.method:
+        # The API records the method in upper case, and matches it exactly.
+        filters["requestMethod"] = str(args.method).strip().upper()
+    if args.path:
+        filters["requestPath"] = args.path
+    if args.route:
+        filters["route"] = args.route
+    if args.environment:
+        filters["environment"] = args.environment
+    if args.branch:
+        filters["branch"] = args.branch
+    if args.deployment:
+        filters["deploymentId"] = args.deployment
+    if args.request_id:
+        filters["requestId"] = args.request_id
+    if args.search:
+        filters["search"] = args.search
+    return filters
 
 
 def _resolve_group_by(args: argparse.Namespace, preset: Preset) -> list[str]:
@@ -799,8 +876,9 @@ SURFACE_OPTIONS: tuple[tuple[str, str, frozenset[str], str], ...] = (
     # Web Analytics only. Each reason has to hold on both of the other two
     # surfaces, since either can be the one refusing.
     ("dataset", "--dataset", frozenset({WEB_ANALYTICS}),
-     "Speed Insights has no datasets: it queries one metric at a time, chosen "
-     "with --metric, and request logs are rows rather than a dataset"),
+     "neither Speed Insights nor request logs has datasets; Speed Insights "
+     "queries one metric at a time, chosen with --metric, and request logs "
+     "answer with rows"),
     ("event_name", "--event-name", frozenset({WEB_ANALYTICS}),
      "neither Speed Insights nor request logs collect custom events"),
     ("event_property", "--event-property", frozenset({WEB_ANALYTICS}),
@@ -834,8 +912,8 @@ SURFACE_OPTIONS: tuple[tuple[str, str, frozenset[str], str], ...] = (
     ("granularity", "--granularity", frozenset({WEB_ANALYTICS, SPEED_INSIGHTS}),
      "request logs are rows rather than time buckets"),
     ("raw_filters", "--filter", frozenset({WEB_ANALYTICS, SPEED_INSIGHTS}),
-     "the request logs API takes no OData; filter with --search, --path, "
-     "--route, --status-code, --level, --source, --method or --branch"),
+     "the request logs API takes no OData; filter with "
+     + ", ".join(LOGS_FILTER_FLAGS)),
 )
 
 
@@ -912,7 +990,14 @@ def _reject_cross_surface_options(args: argparse.Namespace, preset: Preset) -> N
             continue
         if preset.surface in surfaces:
             continue
-        shown = "" if isinstance(value, bool) else f" {value!r}"
+        if isinstance(value, bool):
+            shown = ""
+        elif isinstance(value, list):
+            # An appending flag holds a list, and printing the list itself would
+            # quote Python syntax back at a user who never typed any.
+            shown = f" {', '.join(str(item) for item in value)!r}"
+        else:
+            shown = f" {value!r}"
         raise ConfigError(
             f"{flag}{shown} only applies to the {_surface_phrase(surfaces)}, "
             f"but the {preset.name} preset queries "
@@ -1087,16 +1172,18 @@ def _resolve_settings(args: argparse.Namespace, env: Mapping[str, str]) -> Setti
         or _env_value(env, "VERCEL_ORG_ID")
         or team
     )
-    if preset.surface == SPEED_INSIGHTS and team_slug and not owner_id:
-        # A slug names a team but is not an account id, and scope.ownerId wants
-        # an id. Falling through to the personal account lookup here would
-        # silently answer for the wrong account rather than failing, which is
-        # the worst outcome available.
+    if preset.surface in (SPEED_INSIGHTS, LOGS) and team_slug and not owner_id:
+        # Both of these surfaces scope by an owning account: Speed Insights
+        # through scope.ownerId and request logs through the ownerId parameter.
+        # A slug names a team but is not an account id, so falling through to
+        # the personal account lookup here would silently answer for the wrong
+        # account rather than failing, which is the worst outcome available.
         raise ConfigError(
-            f"--team-slug {team_slug!r} cannot scope a Speed Insights query on "
-            "its own: that surface needs the account id, and a slug is a name. "
-            "Pass --team with the team id (Team Settings, General), or "
-            "--owner-id. A slug still works for Web Analytics presets"
+            f"--team-slug {team_slug!r} cannot scope a "
+            f"{SURFACE_LABELS[preset.surface]} query on its own: that surface "
+            "needs the account id, and a slug is a name. Pass --team with the "
+            "team id (Team Settings, General), or --owner-id. A slug still "
+            "works for Web Analytics presets"
         )
     if team and team_slug:
         raise ConfigError(
@@ -1160,6 +1247,7 @@ def _resolve_settings(args: argparse.Namespace, env: Mapping[str, str]) -> Setti
     order_by: str | None = None
     order_direction: str | None = None
     bucket_timezone: str | None = None
+    log_filters: dict[str, str] = {}
 
     if speed:
         metrics = _resolve_metrics(args, preset)
@@ -1183,12 +1271,23 @@ def _resolve_settings(args: argparse.Namespace, env: Mapping[str, str]) -> Setti
             # The limit bounds grouped results per bucket, so an ungrouped
             # query has nothing to bound and the field is left out entirely.
             limit = None
+    elif preset.is_logs:
+        # This surface returns rows rather than groups, so there is nothing to
+        # group by, the limit counts requests, and the filters are query
+        # parameters rather than one OData expression.
+        group_by = []
+        limit = args.limit if args.limit is not None else preset.limit
+        limit = validate_logs_limit(limit if limit is not None else LOGS_DEFAULT_LIMIT)
+        log_filters = _resolve_log_filters(args)
     else:
         group_by = validate_group_by(_resolve_group_by(args, preset), dataset)
         limit = args.limit if args.limit is not None else preset.limit
         if limit is not None:
             limit = validate_limit(limit)
         if args.environment == "preview" and select_endpoint(group_by) == "count":
+            # Web Analytics only, which is what this branch is. A logs preset is
+            # ungrouped too, but it refuses --group-by outright, so the advice
+            # below would send its reader to a flag that surface does not take.
             raise ConfigError(
                 "--environment preview cannot be used with a count query: the "
                 "count endpoints report production traffic only. Add --group-by "
@@ -1196,10 +1295,21 @@ def _resolve_settings(args: argparse.Namespace, env: Mapping[str, str]) -> Setti
                 "instead"
             )
 
+    # This runs on every surface, because it is what refuses a shorthand the
+    # active surface has no dimension for (--country on request logs, say).
     filter_expr = _resolve_filters(args, dataset, preset.surface)
+    if preset.is_logs:
+        # Request logs take no OData at all: their filters are already query
+        # parameters in log_filters, and leaving this empty is what keeps the
+        # header line from claiming a filter that was never sent.
+        filter_expr = None
 
     now = datetime.now(timezone.utc)
-    time_range = resolve_range(args.since, args.until, now)
+    # A preset may own a window default, and an explicit --since still wins:
+    # runtime logs are retained for an hour on Hobby and a day on Pro, so the
+    # global 7 day default would report nothing there and read as a healthy site.
+    since = args.since or preset.default_since or DEFAULT_SINCE
+    time_range = resolve_range(since, args.until, now)
 
     warning = reporting_window_warning(time_range[0], now)
     if warning:
@@ -1223,6 +1333,7 @@ def _resolve_settings(args: argparse.Namespace, env: Mapping[str, str]) -> Setti
         group_by=group_by,
         limit=limit,
         filter_expr=filter_expr,
+        log_filters=log_filters,
         time_range=time_range,
         timeout=timeout,
         warnings=warnings,
@@ -1258,6 +1369,43 @@ def _plan_speed_requests(settings: Settings) -> list[PreparedRequest]:
         "token": settings.token,
     }
     return [build_speed_request(metric=metric, **common) for metric in settings.metrics]
+
+
+def _plan_log_requests(settings: Settings, page: int = 0) -> list[PreparedRequest]:
+    """One request logs call per filter set, all for the same page.
+
+    An errors preset needs two: ``level`` matches application log lines and
+    ``statusCode`` matches responses, so a 5xx that printed nothing is invisible
+    to the first and a 200 that logged a stack trace is invisible to the second.
+    An explicit ``--level`` or ``--status-code`` collapses that to one call.
+
+    It takes a page rather than looping over pages, because ``--dry-run`` prints
+    exactly what one page would ask for.
+
+    Args:
+        settings: The resolved settings for this run.
+        page: Zero based page index, the same for every filter set.
+
+    Returns:
+        One prepared request per filter set, in the order they are queried.
+    """
+    filter_sets = (
+        error_filter_sets(settings.log_filters)
+        if settings.preset.calls > 1
+        else [dict(settings.log_filters)]
+    )
+    return [
+        build_logs_request(
+            project=settings.project,
+            owner_id=settings.owner_id or "",
+            since=settings.time_range[0],
+            until=settings.time_range[1],
+            page=page,
+            filters=filters,
+            token=settings.token,
+        )
+        for filters in filter_sets
+    ]
 
 
 #: Shown in a dry run when the owner is not known without asking the API. A dry
@@ -1587,9 +1735,16 @@ def _overview_granularity(settings: Settings) -> str:
 
 
 def _plan_requests(settings: Settings) -> list[PreparedRequest]:
-    """Build every request a run needs: one, three for the overview, five for vitals."""
+    """Build every request a run needs.
+
+    One for most presets, two for an errors preset (one per filter set), three
+    for the overview and five for vitals. On the request logs surface these are
+    the first page only, which is what a dry run shows.
+    """
     if settings.is_speed:
         return _plan_speed_requests(settings)
+    if settings.is_logs:
+        return _plan_log_requests(settings)
 
     common: dict[str, Any] = {
         "dataset": settings.dataset,

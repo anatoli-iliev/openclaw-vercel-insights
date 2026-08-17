@@ -246,8 +246,11 @@ def logs_request(**overrides: Any) -> PreparedRequest:
 def dry_run_calls(out: str) -> list[tuple[str, list[tuple[str, str]]]]:
     """Parse a ``--dry-run`` dump into ``(endpoint, query parameter pairs)``.
 
-    One entry per request, so the three request overview parses too. The
-    endpoint is the tail of the path, for example ``visits/aggregate``.
+    One entry per request, so the three request overview parses too, as do the
+    two calls an errors preset makes. On Web Analytics the endpoint is the tail
+    of the path after that surface's own prefix, for example
+    ``visits/aggregate``; any other surface is named by its last path segment,
+    so a request-logs call yields ``request-logs``.
     """
     calls: list[tuple[str, list[tuple[str, str]]]] = []
     lines = out.splitlines()
@@ -255,7 +258,11 @@ def dry_run_calls(out: str) -> list[tuple[str, list[tuple[str, str]]]]:
         if not line.startswith("Encoded URL"):
             continue
         split = urlsplit(lines[index + 1].strip())
-        endpoint = split.path.split("/web-analytics/", 1)[1]
+        marker = "/web-analytics/"
+        if marker in split.path:
+            endpoint = split.path.split(marker, 1)[1]
+        else:
+            endpoint = split.path.rsplit("/", 1)[-1]
         calls.append((endpoint, parse_qsl(split.query, keep_blank_values=True)))
     return calls
 
