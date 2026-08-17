@@ -65,3 +65,6 @@ pip-wheel-metadata/
 Thumbs.db
 ehthumbs.db
 desktop.ini
+
+# Subagent-driven development scratch: ledger, task briefs, review packages.
+.superpowers/
