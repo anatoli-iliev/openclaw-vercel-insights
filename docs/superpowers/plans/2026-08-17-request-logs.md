@@ -1,6 +1,10 @@
 # Request Logs Surface Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Completed, and kept as history.** This plan was executed and the surface
+> shipped in 1.1.0. Nothing below is a pending instruction or a step to carry
+> out: it is the record of how the work was sequenced and what each step was
+> for. For API facts and current behaviour, read `docs/api-notes.md` and
+> `docs/cli-contract.md`, which are the maintained records.
 
 **Goal:** Add a third query surface to this skill so an OpenClaw user can ask
 "give me the errors my project has had for the last 30 minutes" and get a
@@ -82,7 +86,7 @@ argues from it.
 - Produces: `LOGS_BASE_URL: str = "https://vercel.com"`, and the allowlist entry
   `OPERATIONS["request_logs"] == ("GET", "https://vercel.com/api/logs/request-logs")`.
 
-- [ ] **Step 1: Write the failing tests**
+- **Step 1: Write the failing tests**
 
 In `tests/test_security.py`, add `request_logs` to `DOCUMENTED_OPERATIONS`:
 
@@ -136,13 +140,13 @@ def test_request_logs_cannot_address_anything_else(url: str) -> None:
         )
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- **Step 2: Run the tests to verify they fail**
 
 Run: `.venv/bin/pytest tests/test_security.py -x -q`
 Expected: FAIL, `KeyError: 'request_logs'` or an assertion that the table has 5
 entries.
 
-- [ ] **Step 3: Add the constant and the entry**
+- **Step 3: Add the constant and the entry**
 
 In `vercel_insights/__init__.py`, after `BASE_URL`:
 
@@ -168,7 +172,7 @@ the entry at the end of `OPERATIONS`:
     "request_logs": ("GET", LOGS_BASE_URL + "/api/logs/request-logs"),
 ```
 
-- [ ] **Step 4: Update the prose that counts entries**
+- **Step 4: Update the prose that counts entries**
 
 The `http.py` module docstring says "One of the three operations is a POST" and
 speaks of "the three above". Correct both to six, and add one sentence: the
@@ -176,14 +180,14 @@ allowlist now spans two hosts, `api.vercel.com` for five operations and
 `vercel.com` for request logs, and a redirect is still refused so the allowlist
 binds every hop. Same for the `__init__.py` docstring if it counts.
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- **Step 5: Run the tests to verify they pass**
 
 Run: `.venv/bin/pytest tests/test_security.py -q && .venv/bin/ruff check . && .venv/bin/mypy --strict vercel_insights tests`
 Expected: PASS. `tests/test_skill_manifest.py` will now fail on the endpoint
 count and on the undocumented operation; that is Task 14 and is expected to stay
 red until then. Note it in the commit message.
 
-- [ ] **Step 6: Commit**
+- **Step 6: Commit**
 
 ```bash
 git add vercel_insights/__init__.py vercel_insights/http.py tests/test_security.py
@@ -210,7 +214,7 @@ MSG
 - Produces: `LOGS: str = "logs"`, `SURFACE_LABELS[LOGS] == "request logs"`,
   `to_unix_ms(dt: datetime) -> str`.
 
-- [ ] **Step 1: Write the failing test**
+- **Step 1: Write the failing test**
 
 Append to `tests/test_timerange.py`:
 
@@ -236,13 +240,13 @@ Import `utc` from `helpers` in that module if it is not already imported, and
 confirm `1786964768000` by computing it once rather than trusting this plan:
 `python3 -c "import datetime;print(int(datetime.datetime(2026,8,17,11,6,8,tzinfo=datetime.timezone.utc).timestamp()*1000))"`.
 
-- [ ] **Step 2: Run the test to verify it fails**
+- **Step 2: Run the test to verify it fails**
 
 Run: `.venv/bin/pytest tests/test_timerange.py -x -q`
 Expected: FAIL with `AttributeError: module 'vercel_insights.timerange' has no
 attribute 'to_unix_ms'`.
 
-- [ ] **Step 3: Implement**
+- **Step 3: Implement**
 
 ```python
 #: The three query surfaces, spelled as the user facing messages spell them.
@@ -282,12 +286,12 @@ def to_unix_ms(dt: datetime) -> str:
     return str(int(dt.astimezone(timezone.utc).timestamp() * 1000))
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- **Step 4: Run the test to verify it passes**
 
 Run: `.venv/bin/pytest tests/test_timerange.py -q && .venv/bin/mypy --strict vercel_insights tests`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add vercel_insights/timerange.py tests/test_timerange.py
@@ -322,7 +326,7 @@ git commit -m "Name the logs surface and render Unix millisecond timestamps"
 Every validator takes what the user typed and returns the exact string to put on
 the wire, or raises `ConfigError`.
 
-- [ ] **Step 1: Write the failing tests**
+- **Step 1: Write the failing tests**
 
 Create `tests/test_logs.py`:
 
@@ -438,12 +442,12 @@ def test_the_level_vocabulary_matches_the_severity_table() -> None:
     assert vi_logs.ERROR_LEVELS == ("error", "fatal")
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- **Step 2: Run the tests to verify they fail**
 
 Run: `.venv/bin/pytest tests/test_logs.py -x -q`
 Expected: FAIL with `ModuleNotFoundError: No module named 'vercel_insights.logs'`.
 
-- [ ] **Step 3: Create the module with the vocabularies**
+- **Step 3: Create the module with the vocabularies**
 
 Create `vercel_insights/logs.py`:
 
@@ -630,7 +634,7 @@ def validate_limit(limit: int) -> int:
     )
 ```
 
-- [ ] **Step 4: Add the severity table and the error levels to render.py**
+- **Step 4: Add the severity table and the error levels to render.py**
 
 In `vercel_insights/render.py`, near the top with the other module constants:
 
@@ -652,12 +656,12 @@ LOG_LEVEL_SEVERITY: dict[str, int] = {
 ERROR_LEVELS: tuple[str, ...] = ("error", "fatal")
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- **Step 5: Run the tests to verify they pass**
 
 Run: `.venv/bin/pytest tests/test_logs.py -q && .venv/bin/ruff check . && .venv/bin/mypy --strict vercel_insights tests`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- **Step 6: Commit**
 
 ```bash
 git add vercel_insights/logs.py vercel_insights/render.py tests/test_logs.py
@@ -700,7 +704,7 @@ MSG
   plus `tests/helpers.py::logs_request(**overrides) -> PreparedRequest` and
   `LOGS_URL: str = "https://vercel.com/api/logs/request-logs"`.
 
-- [ ] **Step 1: Write the failing tests**
+- **Step 1: Write the failing tests**
 
 Add to `tests/helpers.py`:
 
@@ -806,12 +810,12 @@ def test_build_request_sends_no_team_parameter() -> None:
 Recompute both millisecond expectations rather than trusting this plan:
 `python3 -c "import datetime as d;print([int(d.datetime(2026,8,17,h,6,8,tzinfo=d.timezone.utc).timestamp()*1000) for h in (10,11)])"`.
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- **Step 2: Run the tests to verify they fail**
 
 Run: `.venv/bin/pytest tests/test_logs.py -x -q`
 Expected: FAIL with `ImportError: cannot import name 'build_request'`.
 
-- [ ] **Step 3: Implement**
+- **Step 3: Implement**
 
 Add to `vercel_insights/logs.py`:
 
@@ -903,12 +907,12 @@ Add the imports this needs: `from collections.abc import Mapping`,
 `from .http import PreparedRequest, default_headers, operation_url`,
 `from .timerange import to_unix_ms`.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- **Step 4: Run the tests to verify they pass**
 
 Run: `.venv/bin/pytest tests/test_logs.py -q && .venv/bin/mypy --strict vercel_insights tests`
 Expected: PASS.
 
-- [ ] **Step 5: Add the security test for the new request shape**
+- **Step 5: Add the security test for the new request shape**
 
 In `tests/test_security.py`, wherever the equivalent Web Analytics and Speed
 Insights assertions live, add `logs_request()` to the parametrized list that
@@ -916,7 +920,7 @@ asserts no credential reaches a URL, a parameter or a `repr`, and that
 `format_dry_run` redacts the header. Follow the existing test names; do not
 invent a new pattern.
 
-- [ ] **Step 6: Run the whole suite and commit**
+- **Step 6: Run the whole suite and commit**
 
 ```bash
 .venv/bin/pytest -q && .venv/bin/ruff check . && .venv/bin/mypy --strict vercel_insights tests
@@ -983,7 +987,7 @@ git commit -m "Build one page of request logs, with a parameter allowlist"
 - Produces for tests: `tests/helpers.py::LOGS_PAGE`, `LOGS_ERROR_PAGE`,
   `LOGS_EMPTY_PAGE`, `logs_row(**overrides)`.
 
-- [ ] **Step 1: Add the payload fixtures**
+- **Step 1: Add the payload fixtures**
 
 In `tests/helpers.py`, under the payload fixtures section, with a comment saying
 these rows are copied from `docs/api-notes.md` (which in turn holds real probed
@@ -1058,7 +1062,7 @@ LOGS_ERROR_PAGE: dict[str, Any] = {
 LOGS_EMPTY_PAGE: dict[str, Any] = {"rows": [], "hasMoreRows": False}
 ```
 
-- [ ] **Step 2: Write the failing tests**
+- **Step 2: Write the failing tests**
 
 Add to `tests/test_logs.py`:
 
@@ -1195,13 +1199,13 @@ def test_a_multi_line_log_message_keeps_its_lines_but_is_indented() -> None:
     assert entry.headline.splitlines()[1].startswith("  ")
 ```
 
-- [ ] **Step 3: Run the tests to verify they fail**
+- **Step 3: Run the tests to verify they fail**
 
 Run: `.venv/bin/pytest tests/test_logs.py tests/test_untrusted_response.py -x -q`
 Expected: FAIL with `AttributeError: module 'vercel_insights.logs' has no
 attribute 'normalize'`.
 
-- [ ] **Step 4: Add the containers to render.py**
+- **Step 4: Add the containers to render.py**
 
 In `vercel_insights/render.py`, after `Result`:
 
@@ -1295,7 +1299,7 @@ class LogEntry:
 `max` over `lines` is stable in Python, so the first line of the worst level
 wins a tie, which is the earliest one. Note that in a comment.
 
-- [ ] **Step 5: Implement the parser in logs.py**
+- **Step 5: Implement the parser in logs.py**
 
 ```python
 def _text(row: Mapping[str, Any], name: str) -> str:
@@ -1464,12 +1468,12 @@ Add the imports: `import math`, `from datetime import datetime, timezone`,
 sanitize_message`, and extend the existing `from .render import ERROR_LEVELS`
 line to `from .render import ERROR_LEVELS, LogEntry, LogLine`.
 
-- [ ] **Step 6: Run the tests to verify they pass**
+- **Step 6: Run the tests to verify they pass**
 
 Run: `.venv/bin/pytest tests/test_logs.py tests/test_untrusted_response.py -q && .venv/bin/mypy --strict vercel_insights tests`
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- **Step 7: Commit**
 
 ```bash
 git add vercel_insights/logs.py vercel_insights/render.py tests/
@@ -1513,7 +1517,7 @@ MSG
 `collect` takes the fetcher as a callable so the loop is testable with no HTTP
 at all; `cli.py` passes a closure over `execute`.
 
-- [ ] **Step 1: Write the failing tests**
+- **Step 1: Write the failing tests**
 
 ```python
 from typing import Any, Mapping
@@ -1640,12 +1644,12 @@ def test_an_explicit_filter_collapses_the_errors_preset_to_one_call(
     assert vi_logs.error_filter_sets(override) == [override]
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- **Step 2: Run the tests to verify they fail**
 
 Run: `.venv/bin/pytest tests/test_logs.py -x -q`
 Expected: FAIL, `module 'vercel_insights.logs' has no attribute 'collect'`.
 
-- [ ] **Step 3: Implement**
+- **Step 3: Implement**
 
 ```python
 def collect(
@@ -1770,12 +1774,12 @@ sort it here: the order is part of the constant so the wire value is stable.
 Extend the imports: `from collections.abc import Callable, Mapping, Sequence`
 (`Mapping` is already imported from Task 4).
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- **Step 4: Run the tests to verify they pass**
 
 Run: `.venv/bin/pytest tests/test_logs.py -q && .venv/bin/mypy --strict vercel_insights tests`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add vercel_insights/logs.py tests/test_logs.py
@@ -1828,7 +1832,7 @@ MSG
   `summarize(entries: Sequence[LogEntry]) -> LogSummary`,
   `NO_LOG_LINE: str = "(no log line)"`.
 
-- [ ] **Step 1: Write the failing tests**
+- **Step 1: Write the failing tests**
 
 ```python
 def test_summarize_counts_by_status_worst_first() -> None:
@@ -1923,12 +1927,12 @@ def test_summarize_of_nothing_is_empty_rather_than_an_error() -> None:
     assert summary.by_status == () and summary.by_route == ()
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- **Step 2: Run the tests to verify they fail**
 
 Run: `.venv/bin/pytest tests/test_logs.py -x -q`
 Expected: FAIL, no attribute `summarize`.
 
-- [ ] **Step 3: Implement the containers, then `summarize`**
+- **Step 3: Implement the containers, then `summarize`**
 
 Add the three dataclasses to `render.py` exactly as in the Interfaces block
 above, each with a one-line docstring saying what it tallies. Then in `logs.py`:
@@ -2009,12 +2013,12 @@ def summarize(entries: Sequence[LogEntry]) -> LogSummary:
     )
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- **Step 4: Run the tests to verify they pass**
 
 Run: `.venv/bin/pytest tests/test_logs.py -q && .venv/bin/mypy --strict vercel_insights tests`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add vercel_insights/logs.py vercel_insights/render.py tests/test_logs.py
@@ -2036,7 +2040,7 @@ git commit -m "Tally errors by status, route and exact message"
   `Preset.default_since: str | None`, `Preset.is_logs: bool`,
   and `LOGS_DATASET: str = "logs"`.
 
-- [ ] **Step 1: Write the failing tests**
+- **Step 1: Write the failing tests**
 
 Add to `tests/test_presets.py`:
 
@@ -2082,12 +2086,12 @@ def test_the_preset_table_renders_with_the_logs_presets() -> None:
     assert "request-logs" in text
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- **Step 2: Run the tests to verify they fail**
 
 Run: `.venv/bin/pytest tests/test_presets.py -x -q`
 Expected: FAIL with `KeyError: 'logs'`.
 
-- [ ] **Step 3: Implement**
+- **Step 3: Implement**
 
 In `presets.py`, add to the `Preset` dataclass:
 
@@ -2159,13 +2163,13 @@ with `LOGS_DATASET = "logs"` beside `SPEED_DATASET`. In `format_presets`, add a
 closing note line: a logs preset reports rows rather than groups, so its limit
 counts requests, and it takes no `--group-by` and no `--granularity`.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- **Step 4: Run the tests to verify they pass**
 
 Run: `.venv/bin/pytest tests/test_presets.py -q && .venv/bin/mypy --strict vercel_insights tests`
 Expected: PASS. `tests/test_cli.py` may fail where it asserts the full preset
 list; update those expectations in this task.
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add vercel_insights/presets.py tests/
@@ -2191,7 +2195,7 @@ git commit -m "Add the logs, errors and error-summary presets"
   rejects every option on a surface where it means nothing, in all three
   directions.
 
-- [ ] **Step 1: Write the failing tests**
+- **Step 1: Write the failing tests**
 
 Create `tests/test_logs_cli.py`:
 
@@ -2313,12 +2317,12 @@ def test_path_and_route_are_accepted_on_a_logs_preset(cli: Cli, flag: list[str])
     assert "request-logs" in out
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- **Step 2: Run the tests to verify they fail**
 
 Run: `.venv/bin/pytest tests/test_logs_cli.py -x -q`
 Expected: FAIL with `unrecognized arguments: --level`.
 
-- [ ] **Step 3: Add the parser group**
+- **Step 3: Add the parser group**
 
 In `build_parser`, after the `speed` group:
 
@@ -2402,7 +2406,7 @@ Import `LEVELS as LOG_LEVELS`, `SOURCES as LOG_SOURCES` from `.logs`. Extend the
 `--limit` help to say that on a logs preset it counts rows, up to
 `LOGS_MAX_LIMIT`. Extend the parser `description` to name all three surfaces.
 
-- [ ] **Step 4: Rewrite the surface guard as a table**
+- **Step 4: Rewrite the surface guard as a table**
 
 Replace `SPEED_ONLY_OPTIONS` and `WEB_ONLY_OPTIONS` with one table. Migrate every
 existing entry into it **with its current reason text copied verbatim**, so no
@@ -2510,13 +2514,13 @@ Imports this task needs in `cli.py`: `LOGS` and `SURFACE_LABELS` from
 `.timerange`, and `LEVELS as LOG_LEVELS`, `SOURCES as LOG_SOURCES`,
 `MAX_LIMIT as LOGS_MAX_LIMIT` from `.logs`.
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- **Step 5: Run the tests to verify they pass**
 
 Run: `.venv/bin/pytest tests/test_logs_cli.py tests/test_cli.py tests/test_speed_cli.py -q`
 Expected: PASS. Any existing message that changed wording is a regression to fix
 here, not a test to relax.
 
-- [ ] **Step 6: Commit**
+- **Step 6: Commit**
 
 ```bash
 git add vercel_insights/cli.py tests/
@@ -2545,7 +2549,7 @@ MSG
   `--expand` is read straight off `args` by the emitter in Task 13, so it gets no
   `Settings` field: a field nothing reads is a field that goes stale.
 
-- [ ] **Step 1: Write the failing tests**
+- **Step 1: Write the failing tests**
 
 ```python
 from helpers import dry_run_calls, dry_run_values
@@ -2642,13 +2646,13 @@ def test_a_logs_run_needs_an_owner_and_says_so(cli: Cli) -> None:
 to fall back to the last path segment when that marker is absent, and note in
 its docstring that a request-logs call yields the endpoint `request-logs`.
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- **Step 2: Run the tests to verify they fail**
 
 Run: `.venv/bin/pytest tests/test_logs_cli.py -x -q`
 Expected: FAIL: the window default test fails first, because `--since` still
 defaults to `7d` at the parser.
 
-- [ ] **Step 3: Move the window default off the parser**
+- **Step 3: Move the window default off the parser**
 
 In `build_parser`, change `--since` to `default=None` and adjust the help:
 
@@ -2666,7 +2670,7 @@ In `_resolve_settings`, resolve it:
     time_range = resolve_range(since, args.until, now)
 ```
 
-- [ ] **Step 4: Add the logs branch to `_resolve_settings`**
+- **Step 4: Add the logs branch to `_resolve_settings`**
 
 Add the fields to `Settings`:
 
@@ -2744,14 +2748,14 @@ naming the active surface in the message rather than hard-coding "Speed
 Insights". Set `filter_expr=None` for a logs run: this surface sends no OData,
 and leaving the field empty is what keeps the header line honest.
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- **Step 5: Run the tests to verify they pass**
 
 Run: `.venv/bin/pytest tests/test_logs_cli.py tests/test_cli.py -q && .venv/bin/mypy --strict vercel_insights tests`
 Expected: PASS except the tests from Step 1 that need `_plan_log_requests`, which
 arrives in Task 13. If a dry-run test fails with "no requests printed", mark it
 `xfail` with a reason naming Task 13 and remove the marker there.
 
-- [ ] **Step 6: Commit**
+- **Step 6: Commit**
 
 ```bash
 git add vercel_insights/cli.py tests/
@@ -2823,7 +2827,7 @@ MSG
   out what it is given, so the API knowledge stays on this side of the layering
   line.
 
-- [ ] **Step 1: Write the failing tests**
+- **Step 1: Write the failing tests**
 
 Create `tests/test_logs_render.py`:
 
@@ -2932,12 +2936,12 @@ def test_the_footer_counts_the_errors_by_status() -> None:
     assert "2 errors" in text
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- **Step 2: Run the tests to verify they fail**
 
 Run: `.venv/bin/pytest tests/test_logs_render.py -x -q`
 Expected: FAIL, `cannot import name 'render_logs'`.
 
-- [ ] **Step 3: Add the prose to logs.py**
+- **Step 3: Add the prose to logs.py**
 
 ```python
 #: What the errors presets count, stated in the output so the reader is never
@@ -3070,7 +3074,7 @@ def build_report(
 
 Add `from datetime import timedelta` to the imports for `SHORTEST_RETENTION`.
 
-- [ ] **Step 4: Implement `render_logs`**
+- **Step 4: Implement `render_logs`**
 
 Columns exactly as the spec's section 8.1. Reuse `render_grid`, `_truncate` and
 `Style`; add no new layout primitive.
@@ -3185,12 +3189,12 @@ def render_logs(
     return "\n".join(parts)
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- **Step 5: Run the tests to verify they pass**
 
 Run: `.venv/bin/pytest tests/test_logs_render.py -q && .venv/bin/mypy --strict vercel_insights tests`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- **Step 6: Commit**
 
 ```bash
 git add vercel_insights/logs.py vercel_insights/render.py tests/test_logs_render.py
@@ -3222,7 +3226,7 @@ MSG
   def format_logs_csv(report: LogReport) -> str
   ```
 
-- [ ] **Step 1: Write the failing tests**
+- **Step 1: Write the failing tests**
 
 ```python
 import csv
@@ -3316,12 +3320,12 @@ def test_csv_keeps_a_hostile_message_inside_one_cell() -> None:
     assert len(rows) == 2
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- **Step 2: Run the tests to verify they fail**
 
 Run: `.venv/bin/pytest tests/test_logs_render.py -x -q`
 Expected: FAIL, `cannot import name 'render_error_summary'`.
 
-- [ ] **Step 3: Implement**
+- **Step 3: Implement**
 
 `render_error_summary` prints the title and range line, then three
 `render_grid` tables:
@@ -3442,12 +3446,12 @@ def format_logs_csv(report: LogReport) -> str:
 and `NaN` is not JSON. `csv` and `io` and `json` are already imported by
 `render.py`.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- **Step 4: Run the tests to verify they pass**
 
 Run: `.venv/bin/pytest tests/test_logs_render.py -q && .venv/bin/mypy --strict vercel_insights tests`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add vercel_insights/render.py tests/test_logs_render.py
@@ -3470,7 +3474,7 @@ git commit -m "Render the error summary, plus logs JSON and CSV"
   `_emit_logs(settings, args, report, style, out) -> int`,
   `_explain_request_logs_403(exc: ApiError) -> ApiError`.
 
-- [ ] **Step 1: Write the failing tests**
+- **Step 1: Write the failing tests**
 
 ```python
 from helpers import LOGS_EMPTY_PAGE, LOGS_ERROR_PAGE, LOGS_URL, error_payload
@@ -3549,13 +3553,13 @@ def test_the_token_never_reaches_the_output(cli: Cli) -> None:
 
 Remove any `xfail` markers added in Task 10.
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- **Step 2: Run the tests to verify they fail**
 
 Run: `.venv/bin/pytest tests/test_logs_cli.py -x -q`
 Expected: FAIL, the logs presets currently fall through to the Web Analytics
 planner.
 
-- [ ] **Step 3: Implement the planner and the collector**
+- **Step 3: Implement the planner and the collector**
 
 ```python
 def _plan_log_requests(settings: Settings, page: int = 0) -> list[PreparedRequest]:
@@ -3673,7 +3677,7 @@ def _explain_request_logs_403(exc: ApiError) -> ApiError:
     )
 ```
 
-- [ ] **Step 4: Branch in `_run` and add the emitter**
+- **Step 4: Branch in `_run` and add the emitter**
 
 In `_run`, extend `needs_lookup` to cover logs (an owner is required there too,
 and a project name is fine on this endpoint, so only the owner forces a lookup),
@@ -3733,12 +3737,12 @@ build_logs_request`, `collect as collect_logs`, `merge as merge_logs`,
 `validate_limit as validate_logs_limit`, `validate_levels`,
 `validate_sources`, `validate_status_code`).
 
-- [ ] **Step 5: Run the whole suite**
+- **Step 5: Run the whole suite**
 
 Run: `.venv/bin/pytest -q && .venv/bin/ruff check . && .venv/bin/mypy --strict vercel_insights tests`
 Expected: PASS, except `tests/test_skill_manifest.py`, which Task 14 fixes.
 
-- [ ] **Step 6: Run it against the real API**
+- **Step 6: Run it against the real API**
 
 This is the first point where the feature exists end to end, and the payload
 fixtures came from a live probe, so check the real thing once:
@@ -3756,7 +3760,7 @@ Expected: real rows or an honest empty line with the retention note. Any
 difference from the fixtures is a fact for `docs/api-notes.md`, not something to
 paper over in the parser.
 
-- [ ] **Step 7: Commit**
+- **Step 7: Commit**
 
 ```bash
 git add vercel_insights/cli.py tests/
@@ -3784,13 +3788,13 @@ MSG
 - Produces: a SKILL.md that routes an error question to this skill, and
   `VERSION == "1.1.0"` in all three places.
 
-- [ ] **Step 1: Run the manifest tests to see what is red**
+- **Step 1: Run the manifest tests to see what is red**
 
 Run: `.venv/bin/pytest tests/test_skill_manifest.py -q`
 Expected: FAIL on the endpoint count, on `request_logs` being undocumented, and
 on the version once it is bumped.
 
-- [ ] **Step 2: Rewrite the front-matter description**
+- **Step 2: Rewrite the front-matter description**
 
 ```yaml
 description: >-
@@ -3810,7 +3814,7 @@ enforces. Check it rather than trusting this plan:
 
 Bump `version:` in the front matter to `1.1.0`.
 
-- [ ] **Step 3: Document the sixth endpoint**
+- **Step 3: Document the sixth endpoint**
 
 In the read-only section, change "five-endpoint allowlist" to
 "six-endpoint allowlist" and "exactly five entries" to "exactly six entries",
@@ -3828,7 +3832,7 @@ official `vercel logs` command calls; the documented alternative is an endless
 stream and the metrics route needs Observability Plus; it is read-only and can
 change without notice.
 
-- [ ] **Step 4: Add the logs surface to the guidance**
+- **Step 4: Add the logs surface to the guidance**
 
 - Change "Two surfaces, one command" to three, adding a logs column: answers
   "what broke", rows rather than aggregates, presets `logs`, `errors`,
@@ -3849,17 +3853,17 @@ change without notice.
   anything there (it does not add a variable: the owner comes from the same
   place Speed Insights gets it).
 
-- [ ] **Step 5: Bump the version in the package and the project file**
+- **Step 5: Bump the version in the package and the project file**
 
 `vercel_insights/__init__.py`: `VERSION = "1.1.0"`. `pyproject.toml`:
 `version = "1.1.0"`.
 
-- [ ] **Step 6: Run the tests to verify they pass**
+- **Step 6: Run the tests to verify they pass**
 
 Run: `.venv/bin/pytest -q && .venv/bin/ruff check . && .venv/bin/mypy --strict vercel_insights tests`
 Expected: PASS, the whole suite, including every manifest test.
 
-- [ ] **Step 7: Commit**
+- **Step 7: Commit**
 
 ```bash
 git add SKILL.md vercel_insights/__init__.py pyproject.toml tests/
@@ -3885,7 +3889,7 @@ MSG
 - Consumes: the finished feature and the spec.
 - Produces: documentation that matches the code.
 
-- [ ] **Step 1: Add the third chapter to `docs/api-notes.md`**
+- **Step 1: Add the third chapter to `docs/api-notes.md`**
 
 Copy the spec's section 2 in full, in the house style of the two existing
 chapters: a sources list, endpoint table, parameters, response shape with a real
@@ -3895,27 +3899,27 @@ the 402. Mark the two ASSUMPTION items (the `logs[]` item shape and
 project-scoped tokens) the way the existing chapters mark theirs. Date the
 chapter 2026-08-17 and name the CLI source file that ground-truths the endpoint.
 
-- [ ] **Step 2: Extend `docs/cli-contract.md`**
+- **Step 2: Extend `docs/cli-contract.md`**
 
 Add the three presets to the preset table, the nine new flags to the flag table
 with their surfaces and validation, the per-preset window defaults, the row
 meaning of `--limit` on a logs preset, and the rejection rules from Task 9 as
 numbered contract rules in the same style as the existing ones.
 
-- [ ] **Step 3: Extend `README.md`**
+- **Step 3: Extend `README.md`**
 
 A logs section after the speed section: what it answers, the three presets, the
 one-line "errors in the last 30 minutes" example, the retention table, and the
 note about the second host and why it exists. Update any place the README says
 this skill covers two APIs or five endpoints.
 
-- [ ] **Step 4: Extend `examples/example_outputs.md`**
+- **Step 4: Extend `examples/example_outputs.md`**
 
 Paste the three real outputs captured in Task 13 step 6 (redacting the project
 name if it matters), or the spec's section 8 mockups if the live account had no
 errors to show, labelled as illustrative in that case.
 
-- [ ] **Step 5: Update `CONTRIBUTING.md`**
+- **Step 5: Update `CONTRIBUTING.md`**
 
 Add `logs.py` to the layout block with a one-line responsibility, and add
 `tests/test_logs*.py` to the tests line. Extend the layering paragraph: the log
@@ -3923,14 +3927,14 @@ containers live in `render.py` beside `Row` and `Result` because `render.py` mus
 not import a surface module, and the log prose is composed in `logs.py` so API
 knowledge stays out of the renderer.
 
-- [ ] **Step 6: Add the CHANGELOG entry**
+- **Step 6: Add the CHANGELOG entry**
 
 A `1.1.0` entry in the existing style: what was added (the surface, three
 presets, nine flags), what was verified live and what remains an assumption, the
 allowlist going from five entries to six on two hosts, and the honesty rules for
 an empty result.
 
-- [ ] **Step 7: Verify and commit**
+- **Step 7: Verify and commit**
 
 ```bash
 .venv/bin/pytest -q && .venv/bin/ruff check . && .venv/bin/mypy --strict vercel_insights tests
@@ -3943,14 +3947,14 @@ git commit -m "Document the logs surface across the docs set"
 
 ## Verification of the whole branch
 
-- [ ] `.venv/bin/pytest -q` passes with no skips other than pre-existing ones.
-- [ ] `.venv/bin/ruff check .` clean.
-- [ ] `.venv/bin/mypy --strict vercel_insights tests` clean, no new ignores.
-- [ ] `python3 -m vercel_insights --help` names all three surfaces.
-- [ ] `python3 -m vercel_insights --list-presets` lists the three logs presets.
-- [ ] `python3 /abs/path/vercel_insights/__main__.py errors --dry-run` works from
-      an unrelated directory.
-- [ ] `python3 -m vercel_insights errors --since 30m` answers against the real
-      account, and an empty answer carries the retention note.
-- [ ] No em dash anywhere in the diff.
-- [ ] `git log --oneline` reads as a sequence of small, honest steps.
+- `.venv/bin/pytest -q` passes with no skips other than pre-existing ones.
+- `.venv/bin/ruff check .` clean.
+- `.venv/bin/mypy --strict vercel_insights tests` clean, no new ignores.
+- `python3 -m vercel_insights --help` names all three surfaces.
+- `python3 -m vercel_insights --list-presets` lists the three logs presets.
+- `python3 /abs/path/vercel_insights/__main__.py errors --dry-run` works from
+  an unrelated directory.
+- `python3 -m vercel_insights errors --since 30m` answers against the real
+  account, and an empty answer carries the retention note.
+- No em dash anywhere in the diff.
+- `git log --oneline` reads as a sequence of small, honest steps.

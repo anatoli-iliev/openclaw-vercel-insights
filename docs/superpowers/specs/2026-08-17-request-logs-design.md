@@ -1,6 +1,15 @@
 # Request logs: a third surface for this skill
 
-Design agreed 2026-08-17. Status: approved, not yet implemented.
+Design agreed 2026-08-17. Status: **implemented**, shipped as the request logs
+surface in 1.1.0.
+
+This file is kept as the record of what was decided and why, corrections
+included, and it is read as history rather than as instructions. **For API facts
+and current behaviour it is superseded by `docs/api-notes.md` and
+`docs/cli-contract.md`, which are the maintained records**: where this file
+disagrees with them, they win, and details here that the implementation went on
+to change are left in place deliberately rather than rewritten to match the
+outcome.
 
 ## 1. What this is for
 
