@@ -408,6 +408,11 @@ class LogReport:
 LOG_MESSAGE_WIDTH = 34
 LOG_ROUTE_WIDTH = 32
 
+#: Message width for the error-summary's message table, wider than the row
+#: table's since that table has no route or status column competing for
+#: space.
+LOG_SUMMARY_MESSAGE_WIDTH = 48
+
 #: Printed in the message column for an error that logged nothing, so a blank
 #: cell there reads as the fact that the response failed before any handler
 #: printed rather than as a rendering fault.
@@ -1029,13 +1034,36 @@ def render_vitals(
     return "\n".join(lines)
 
 
+def _clock_pattern(time_range: tuple[datetime, datetime]) -> str:
+    """The strftime pattern a clock in this report should use.
+
+    ``HH:MM:SS`` is enough to tell rows apart inside one day; a window
+    spanning more than a day needs the date too, or two rows a day apart would
+    print identical times. Shared by :func:`_log_time` and the error-summary's
+    per tally "first seen" and "last seen" columns, so both read the same
+    window the same way.
+    """
+    span = time_range[1] - time_range[0]
+    return "%H:%M:%S" if span <= timedelta(hours=24) else "%m-%d %H:%M:%S"
+
+
 def _log_time(entry: LogEntry, time_range: tuple[datetime, datetime]) -> str:
     """The row's clock, at a precision the window justifies."""
     if entry.timestamp is None:
         return "(no time)"
-    span = time_range[1] - time_range[0]
-    pattern = "%H:%M:%S" if span <= timedelta(hours=24) else "%m-%d %H:%M:%S"
-    return entry.timestamp.strftime(pattern)
+    return entry.timestamp.strftime(_clock_pattern(time_range))
+
+
+def _seen_cell(timestamp: datetime | None, time_range: tuple[datetime, datetime]) -> str:
+    """A tally's ``first seen`` or ``last seen`` cell, or a mark when it has none.
+
+    A route or message group can end up with no timestamped member (a row can
+    arrive with no ``timestamp`` at all), and a blank cell there would read as
+    a rendering fault rather than as the fact that nothing was recorded.
+    """
+    if timestamp is None:
+        return "(no time)"
+    return timestamp.strftime(_clock_pattern(time_range))
 
 
 def _log_message_cell(entry: LogEntry, style: Style) -> str:
@@ -1142,3 +1170,245 @@ def render_logs(
     if report.hint and not expand:
         parts.append(style.dim(report.hint))
     return "\n".join(parts)
+
+
+def _share(count: int, total: int) -> str:
+    """A share of ``total``, formatted like ``format_table``'s share column."""
+    share = (count / total * 100) if total else 0.0
+    return f"{share:.1f}%"
+
+
+def _status_table(summary: LogSummary, style: Style) -> list[str]:
+    """The status breakdown: grouped by HTTP status alone.
+
+    A request that is an error only because it logged an error or fatal line
+    still appears under its real status here rather than under a level name:
+    mixing a level into this column would read as though ``fatal`` were a
+    status code. ``report.notes`` is what explains how many rows qualify that
+    way; this table only counts.
+    """
+    headers = ["status", "count", "share"]
+    aligns = ["left", "right", "right"]
+    body = [
+        [status, str(count), _share(count, summary.total)]
+        for status, count in summary.by_status
+    ]
+    footer = ["TOTAL", str(summary.total), _share(summary.total, summary.total)]
+    return render_grid(headers, aligns, body, footer, style)
+
+
+def _route_table(
+    summary: LogSummary, time_range: tuple[datetime, datetime], style: Style
+) -> list[str]:
+    """The per route breakdown. No totals row: a worst status does not add up."""
+    headers = ["route", "count", "worst status", "first seen", "last seen"]
+    aligns = ["left", "right", "right", "left", "left"]
+    body = [
+        [
+            tally.route,
+            str(tally.count),
+            str(tally.worst_status) if tally.worst_status is not None else "(none)",
+            _seen_cell(tally.first_seen, time_range),
+            _seen_cell(tally.last_seen, time_range),
+        ]
+        for tally in summary.by_route
+    ]
+    return render_grid(headers, aligns, body, None, style)
+
+
+def _message_table(
+    summary: LogSummary, time_range: tuple[datetime, datetime], style: Style
+) -> list[str]:
+    """The per exact message breakdown. No totals row, for the same reason as routes."""
+    headers = ["message", "count", "first seen", "last seen"]
+    aligns = ["left", "right", "left", "left"]
+    body = [
+        [
+            _truncate(tally.message, LOG_SUMMARY_MESSAGE_WIDTH, style),
+            str(tally.count),
+            _seen_cell(tally.first_seen, time_range),
+            _seen_cell(tally.last_seen, time_range),
+        ]
+        for tally in summary.by_message
+    ]
+    return render_grid(headers, aligns, body, None, style)
+
+
+def render_error_summary(
+    report: LogReport, summary: LogSummary, *, style: Style = PLAIN_STYLE
+) -> str:
+    """Render a logs report as three grouped tables: status, route and message.
+
+    Unlike :func:`render_logs`, which prints one row per request, this groups
+    the same entries three ways so "what is breaking" reads off a handful of
+    rows instead of scrolling a table of individual requests. ``summary`` is
+    supplied rather than recomputed here so a caller building both the report
+    and its summary controls exactly which entries were tallied.
+
+    The report's notes are printed verbatim and are the only prose this
+    function adds: ``build_report`` already composes the sentence explaining
+    a non-5xx row in the status table (the ``logged_only`` count), so this
+    renderer must not print a second copy of it.
+
+    Args:
+        report: The report to print.
+        summary: The same report's entries, tallied by status, route and
+            message.
+        style: Colour and glyph settings.
+
+    Returns:
+        The report as text, with no trailing newline.
+    """
+    title = (
+        f"Vercel request logs: {report.project_label} "
+        f"({report.preset}, last {report.window_label})"
+    )
+    parts: list[str] = [style.bold(title), _range_line(report.time_range)]
+
+    if not report.entries:
+        since, until = report.time_range
+        parts.append("")
+        parts.append(
+            f"No request logs for project {report.project_label} between "
+            f"{to_api_timestamp(since)} and {to_api_timestamp(until)}."
+        )
+    else:
+        parts.append("")
+        parts.extend(_status_table(summary, style))
+        parts.append("")
+        parts.extend(_route_table(summary, report.time_range, style))
+        parts.append("")
+        parts.extend(_message_table(summary, report.time_range, style))
+
+    if report.notes:
+        parts.append("")
+        parts.extend(style.dim(note) for note in report.notes)
+    return "\n".join(parts)
+
+
+def _log_entry_json(entry: LogEntry) -> dict[str, Any]:
+    """One entry as a JSON object, keeping the whole row alongside the columns.
+
+    Args:
+        entry: The entry to render.
+
+    Returns:
+        A JSON-safe mapping. ``raw`` is included verbatim: this function's
+        result must only ever be handed to :func:`json.dumps`, never printed
+        directly, because ``raw`` is not sanitized.
+    """
+    return {
+        "requestId": entry.request_id,
+        "timestamp": entry.timestamp.isoformat() if entry.timestamp else None,
+        "status": entry.status,
+        "method": entry.method,
+        "path": entry.path,
+        "route": entry.route,
+        "source": entry.source,
+        "environment": entry.environment,
+        "deploymentId": entry.deployment_id,
+        "durationMs": entry.duration_ms,
+        "region": entry.region,
+        "errorCode": entry.error_code,
+        "branch": entry.branch,
+        "domain": entry.domain,
+        "traceId": entry.trace_id,
+        "crashed": entry.crashed,
+        "isError": entry.is_error,
+        "level": entry.worst_level,
+        "message": entry.headline,
+        "lines": [
+            {
+                "level": line.level,
+                "message": line.message,
+                "truncated": line.truncated,
+            }
+            for line in entry.lines
+        ],
+        "raw": entry.raw,
+    }
+
+
+def format_logs_json(report: LogReport) -> str:
+    """Render a logs report as JSON, keeping every field the API sent.
+
+    ``raw`` carries the untouched row, which is safe here and only here: this
+    is the one output path that escapes control characters on the way out.
+
+    Args:
+        report: The report to render.
+
+    Returns:
+        The report as an indented JSON document, with strict JSON semantics:
+        ``NaN`` and ``Infinity`` are refused rather than emitted, since the
+        README sells piping ``--json`` into ``jq``.
+
+    Raises:
+        ValueError: If a value in ``report`` is a non-finite float, since
+            ``json.dumps`` is called with ``allow_nan=False``.
+    """
+    since, until = report.time_range
+    document = {
+        "query": {
+            "project": report.project_label,
+            "preset": report.preset,
+            "since": to_api_timestamp(since),
+            "until": to_api_timestamp(until),
+            "filters": report.filters,
+            "limit": report.requested_limit,
+        },
+        "entries": [_log_entry_json(entry) for entry in report.entries],
+        "truncated": report.truncated,
+        "pagesFetched": report.pages_fetched,
+        "notes": list(report.notes),
+    }
+    return json.dumps(document, indent=2, allow_nan=False)
+
+
+#: The CSV columns, in order. Kept next to the writer so the header and the
+#: row cannot drift apart.
+LOG_CSV_COLUMNS: tuple[str, ...] = (
+    "time",
+    "level",
+    "status",
+    "method",
+    "route",
+    "path",
+    "source",
+    "requestId",
+    "message",
+)
+
+
+def format_logs_csv(report: LogReport) -> str:
+    """Render a logs report as CSV, one row per request.
+
+    Messages are already sanitized, so a newline inside one is the visible
+    escape ``\\x0a`` and cannot break a row open. The csv module quotes the
+    rest.
+
+    Args:
+        report: The report to render.
+
+    Returns:
+        The report as CSV text, header first, with the columns named in
+        :data:`LOG_CSV_COLUMNS`.
+    """
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(LOG_CSV_COLUMNS)
+    for entry in report.entries:
+        writer.writerow(
+            [
+                entry.timestamp.isoformat() if entry.timestamp else "",
+                entry.worst_level or "",
+                entry.status if entry.status is not None else "",
+                entry.method,
+                entry.route,
+                entry.path,
+                entry.source,
+                entry.request_id,
+                entry.headline,
+            ]
+        )
+    return buffer.getvalue()

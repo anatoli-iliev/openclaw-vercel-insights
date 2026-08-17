@@ -567,6 +567,27 @@ def merge(
     return merged[:limit], len(merged) > limit
 
 
+def _is_two_call(filters: Mapping[str, str]) -> bool:
+    """Whether the errors preset's two-call merge rule applies to ``filters``.
+
+    :func:`error_filter_sets` and :func:`build_report` both need to agree on
+    this: the former decides whether to actually issue two calls, and the
+    latter decides whether to caveat a truncated answer as "the most recent N
+    of each kind" rather than a global top N. Stating the rule once here,
+    rather than once in each, is what keeps them from drifting apart.
+
+    Args:
+        filters: The wire-named filters the user asked for.
+
+    Returns:
+        True when neither ``level`` nor ``statusCode`` was supplied, meaning
+        the errors preset queries both and merges the results; false when an
+        explicit ``--level`` or ``--status-code`` already narrowed the query
+        to one call.
+    """
+    return not ({"level", "statusCode"} & set(filters))
+
+
 def error_filter_sets(filters: Mapping[str, str]) -> list[dict[str, str]]:
     """The filter sets the errors preset queries with.
 
@@ -585,7 +606,7 @@ def error_filter_sets(filters: Mapping[str, str]) -> list[dict[str, str]]:
         One filter mapping when the user already narrowed by level or status;
         otherwise two, each a complete filter set for one call.
     """
-    if "level" in filters or "statusCode" in filters:
+    if not _is_two_call(filters):
         return [dict(filters)]
     return [
         {**filters, "statusCode": "5xx"},
@@ -783,7 +804,7 @@ def build_report(
             f"{requested_limit}. Raise --limit (up to {MAX_LIMIT}) or narrow the "
             "window."
         )
-        if counts_errors and not {"level", "statusCode"} & set(filters):
+        if counts_errors and _is_two_call(filters):
             notes.append(
                 "Both filters were paging, so this is the most recent "
                 f"{requested_limit} of each kind rather than a global top "

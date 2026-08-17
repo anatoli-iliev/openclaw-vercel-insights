@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+import csv
+import io
+import json
 from collections.abc import Mapping
 from typing import Any
 
 from helpers import LOGS_EMPTY_PAGE, LOGS_ERROR_PAGE, utc
 
 from vercel_insights import logs as vi_logs
-from vercel_insights.render import LogReport, render_logs
+from vercel_insights.render import (
+    LogReport,
+    format_logs_csv,
+    format_logs_json,
+    render_error_summary,
+    render_logs,
+)
 
 WINDOW = (utc(2026, 8, 17, 10, 36), utc(2026, 8, 17, 11, 6))
 
@@ -186,3 +195,92 @@ def test_a_window_over_a_day_shows_the_date_in_the_time_column() -> None:
         )
     )
     assert "08-17 11:04:52" in text
+
+
+# ---------------------------------------------------------------------------
+# render_error_summary
+# ---------------------------------------------------------------------------
+
+
+def test_the_summary_prints_three_tables() -> None:
+    report = _report(LOGS_ERROR_PAGE, preset="error-summary")
+    text = render_error_summary(report, vi_logs.summarize(report.entries))
+    assert "status" in text and "route" in text and "message" in text
+    assert "TOTAL" in text
+    assert "100.0%" in text
+
+
+def test_the_summary_explains_a_non_5xx_row_in_the_status_table() -> None:
+    payload = {
+        "rows": [
+            {
+                "requestId": "a",
+                "statusCode": 200,
+                "timestamp": "2026-08-17T11:00:00.000Z",
+                "logs": [{"level": "fatal", "message": "pool exhausted"}],
+            }
+        ]
+    }
+    report = _report(payload, preset="error-summary")
+    text = render_error_summary(report, vi_logs.summarize(report.entries))
+    assert "logged" in text
+
+
+def test_json_output_keeps_every_field_the_api_sent() -> None:
+    report = _report(LOGS_ERROR_PAGE)
+    parsed = json.loads(format_logs_json(report))
+    assert parsed["truncated"] is False
+    assert parsed["pagesFetched"] == 1
+    first = parsed["entries"][0]
+    assert first["requestId"] == "err-1"
+    assert first["status"] == 500
+    assert first["lines"][0]["level"] == "error"
+    # Nothing probed is thrown away: the whole row is still there.
+    assert first["raw"]["cache"] == "MISS"
+
+
+def test_json_output_is_strict_json() -> None:
+    # The README sells piping --json into jq, so NaN and Infinity must never
+    # reach the output.
+    text = format_logs_json(_report(LOGS_ERROR_PAGE))
+    assert "NaN" not in text and "Infinity" not in text
+
+
+def test_json_output_escapes_a_control_character_in_the_raw_row() -> None:
+    # raw is the one field kept verbatim, so this is what makes that safe: it
+    # only ever leaves through json.dumps, which escapes the escape.
+    payload = {"rows": [{"requestId": "a", "cacheReason": "\x1b[2Jgone"}]}
+    text = format_logs_json(_report(payload))
+    assert "\x1b" not in text
+    assert "\\u001b" in text
+
+
+def test_csv_output_has_one_row_per_request() -> None:
+    text = format_logs_csv(_report(LOGS_ERROR_PAGE))
+    rows = list(csv.reader(io.StringIO(text)))
+    assert rows[0] == [
+        "time",
+        "level",
+        "status",
+        "method",
+        "route",
+        "path",
+        "source",
+        "requestId",
+        "message",
+    ]
+    assert len(rows) == 3
+
+
+def test_csv_keeps_a_hostile_message_inside_one_cell() -> None:
+    payload = {
+        "rows": [
+            {
+                "requestId": "a",
+                "statusCode": 500,
+                "logs": [{"level": "error", "message": "a\r\nerror: fine"}],
+            }
+        ]
+    }
+    rows = list(csv.reader(io.StringIO(format_logs_csv(_report(payload)))))
+    assert len(rows) == 2
