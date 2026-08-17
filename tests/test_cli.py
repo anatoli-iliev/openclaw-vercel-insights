@@ -135,6 +135,21 @@ CONFIG_ERROR_CASES: list[tuple[str, list[str], dict[str, str], list[str]]] = [
         ["--since must be strictly earlier than --until"],
     ),
     (
+        # An empty value is a value: it has to reach the time parser and be
+        # refused there. Quietly reading it as "nobody asked" would report the
+        # default window as though the user had chosen it.
+        "empty-since",
+        ["top-pages", "--since", ""],
+        dict(BASE_ENV),
+        ["empty time value"],
+    ),
+    (
+        "empty-until",
+        ["top-pages", "--until", ""],
+        dict(BASE_ENV),
+        ["empty time value"],
+    ),
+    (
         "rule13-flag-without-equals",
         ["top-pages", "--flag", "beta_banner"],
         dict(BASE_ENV),

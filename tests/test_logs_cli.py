@@ -204,6 +204,17 @@ def test_an_explicit_since_beats_the_preset_default(cli: Cli) -> None:
     assert abs(_window_ms(out) - HOUR_MS // 2) <= TOLERANCE_MS
 
 
+def test_an_empty_since_is_refused_rather_than_read_as_the_preset_default(
+    cli: Cli,
+) -> None:
+    # A preset default answers "nobody asked for a window". An empty --since is
+    # somebody asking for nothing, and substituting the default there would
+    # report an hour of logs as though it had been chosen.
+    code, _out, err = cli.run(["logs", "--since", ""], dict(BASE_ENV))
+    assert code == 2
+    assert "empty time value" in err
+
+
 def test_a_traffic_preset_still_defaults_to_seven_days(cli: Cli) -> None:
     # Only a logs preset owns a window default. Moving the default off the
     # parser must leave every other preset asking for exactly what it did.
@@ -280,6 +291,34 @@ def test_the_shorthand_filters_compile_to_query_parameters(cli: Cli) -> None:
     assert sent["requestMethod"] == "POST"
     # This surface takes no OData, so nothing compiles to a filter expression.
     assert "filter" not in sent
+
+
+#: The filters this surface has and the two analytics surfaces do not, with the
+#: parameter each one has to arrive as. Spelled out by hand rather than read from
+#: the package, so a rename on either side of the mapping fails a test instead of
+#: being mirrored by it.
+LOGS_ONLY_MAPPINGS: list[tuple[list[str], str]] = [
+    (["--branch", "release/2026-08"], "branch"),
+    (["--deployment", "dpl_8fQLGTTwTZXixzmKhKm9DaXeadTJ"], "deploymentId"),
+    (["--request-id", "zgzc9-1786964768933-ce3a0a3fb303"], "requestId"),
+    (["--search", "Cannot read properties"], "search"),
+]
+
+
+@pytest.mark.parametrize(
+    ("flag", "parameter"),
+    LOGS_ONLY_MAPPINGS,
+    ids=[flag[0] for flag, _parameter in LOGS_ONLY_MAPPINGS],
+)
+def test_a_logs_only_filter_arrives_under_its_own_wire_name(
+    cli: Cli, flag: list[str], parameter: str
+) -> None:
+    # Four of the eleven filters this surface takes are spelled differently on
+    # the wire than on the command line, and a filter that never arrives narrows
+    # nothing while still looking like it did.
+    code, out, err = cli.run(["logs", *flag, "--dry-run"], dict(DRY_RUN_ENV))
+    assert code == 0, err
+    assert dry_run_values(out, parameter) == [flag[1]]
 
 
 def test_preview_environment_is_accepted_on_a_logs_preset(cli: Cli) -> None:

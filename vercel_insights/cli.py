@@ -1308,7 +1308,12 @@ def _resolve_settings(args: argparse.Namespace, env: Mapping[str, str]) -> Setti
     # A preset may own a window default, and an explicit --since still wins:
     # runtime logs are retained for an hour on Hobby and a day on Pro, so the
     # global 7 day default would report nothing there and read as a healthy site.
-    since = args.since or preset.default_since or DEFAULT_SINCE
+    # Tested against None rather than for truthiness, so --since "" still reaches
+    # the time parser and is still refused: silently substituting a default for
+    # an empty value would report a window nobody asked for as though they had.
+    since = args.since
+    if since is None:
+        since = preset.default_since or DEFAULT_SINCE
     time_range = resolve_range(since, args.until, now)
 
     warning = reporting_window_warning(time_range[0], now)
