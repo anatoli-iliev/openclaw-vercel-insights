@@ -475,11 +475,52 @@ def _entry(row: Mapping[str, Any]) -> LogEntry:
     )
 
 
-def normalize(payload: Mapping[str, Any]) -> tuple[list[LogEntry], bool]:
+def _scrub_json(value: Any, scrub: Callable[[str], str]) -> Any:
+    """Return ``value`` with ``scrub`` applied to every string inside it.
+
+    This surface is the only one whose rows are free text an application wrote,
+    so it is the only one where a response can echo a string the caller never
+    meant to publish. ``scrub`` is injected rather than named here: this module
+    knows nothing about credentials, only that some strings must be rewritten
+    before they become rows.
+
+    Keys are rewritten as well as values, because ``--json`` prints the whole
+    row back and a key is exactly as visible there as the string beside it. Two
+    keys colliding under rewriting would lose a field rather than disclose one,
+    which is the right direction to fail in.
+
+    Args:
+        value: Any decoded JSON value: a row, a nested object, a list, a scalar.
+        scrub: The rewrite to apply to each string.
+
+    Returns:
+        A value of the same shape with every string passed through ``scrub``.
+        Non-string scalars are returned unchanged.
+    """
+    if isinstance(value, str):
+        return scrub(value)
+    if isinstance(value, Mapping):
+        return {
+            _scrub_json(key, scrub): _scrub_json(item, scrub)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_scrub_json(item, scrub) for item in value]
+    return value
+
+
+def normalize(
+    payload: Mapping[str, Any], *, scrub: Callable[[str], str] | None = None
+) -> tuple[list[LogEntry], bool]:
     """Parse one page of request logs.
 
     Args:
         payload: The decoded response body.
+        scrub: Applied to every string in every row before it becomes a
+            :class:`LogEntry`, including the untouched copy kept in
+            :attr:`LogEntry.raw` that ``--json`` prints. This is the one
+            boundary at which it happens, so no renderer has to remember to.
+            ``None`` leaves the rows exactly as they arrived.
 
     Returns:
         The page's entries in the order they arrived, and whether the API said
@@ -510,7 +551,7 @@ def normalize(payload: Mapping[str, Any]) -> tuple[list[LogEntry], bool]:
                 "the request logs response carried a row that was not an "
                 "object; run with --json to see it",
             )
-        entries.append(_entry(row))
+        entries.append(_entry(_scrub_json(row, scrub) if scrub else row))
     return entries, bool(payload.get("hasMoreRows"))
 
 
@@ -524,6 +565,7 @@ def collect(
     *,
     limit: int,
     max_pages: int = MAX_PAGES,
+    scrub: Callable[[str], str] | None = None,
 ) -> tuple[list[LogEntry], bool, int]:
     """Read pages until the row budget is met, and say whether more existed.
 
@@ -542,6 +584,9 @@ def collect(
             A page took up to six seconds against a live account, so the
             default is already 24 seconds against a 30 second per request
             timeout.
+        scrub: Passed straight to :func:`normalize` for every page, so a caller
+            that holds the request's headers can have its own credential
+            rewritten out of anything a response echoes back.
 
     Returns:
         The entries, never more than ``limit``; whether rows were left
@@ -557,7 +602,7 @@ def collect(
     for page in range(max(1, max_pages)):
         payload = call(page)
         pages = page + 1
-        page_entries, has_more = normalize(payload)
+        page_entries, has_more = normalize(payload, scrub=scrub)
         entries.extend(page_entries)
         short_page = len(page_entries) < PAGE_SIZE
         if len(entries) >= limit or short_page or not has_more:

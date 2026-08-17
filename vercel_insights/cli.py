@@ -45,6 +45,7 @@ from .http import (
     execute,
     format_dry_run,
     redact_headers,
+    scrub_credentials,
     validate_timeout,
     validate_token,
 )
@@ -1971,6 +1972,18 @@ def _collect_logs(
             explanation when it was a 403; or with code ``invalid_response``
             when a page was not an object carrying ``rows``.
         RateLimitError: When retrying did not clear a rate limit.
+
+    Note:
+        This is where the credential scrub is supplied, because this is the
+        caller that holds the prepared request and therefore its headers. Rows
+        on this surface are free text an application wrote, so a response can
+        echo the very token that fetched it; this tool knows exactly one secret
+        and must never be the thing that discloses it. The scrub is handed to
+        the normalization step, which is the single boundary where a payload
+        becomes typed rows, so no renderer and no output format has to remember
+        it. It rewrites this client's own credential only: nothing can tell a
+        user's own API key from ordinary log text, and pretending otherwise
+        would be a promise this tool cannot keep.
     """
     limit = settings.limit or LOGS_DEFAULT_LIMIT
     # Built once, for the filter set count and for the header line below. The
@@ -1982,6 +1995,13 @@ def _collect_logs(
     pages = 0
 
     for index, first_page in enumerate(planned):
+        # Bound per filter set from the request that will carry it, rather than
+        # rebuilt from the token here: the headers are the authority on what the
+        # credential actually is, and every page of a set carries the same ones.
+        def scrub(text: str, headers: Mapping[str, str] = first_page.headers) -> str:
+            """Rewrite this client's own credential out of a response string."""
+            return scrub_credentials(text, headers)
+
         if args.verbose:
             # Once per filter set rather than once per page, so the output stays
             # proportional to the paging. This is also the line that shows a
@@ -2019,7 +2039,9 @@ def _collect_logs(
                 )
             return answer
 
-        entries, call_truncated, call_pages = collect_logs(call, limit=limit)
+        entries, call_truncated, call_pages = collect_logs(
+            call, limit=limit, scrub=scrub
+        )
         groups.append(entries)
         truncated = truncated or call_truncated
         pages += call_pages

@@ -36,6 +36,7 @@ from helpers import (
     dry_run_values,
     error_payload,
     logs_request,
+    logs_row,
     no_jitter,
     package_source_text,
     package_sources,
@@ -580,6 +581,96 @@ def test_a_logs_dry_run_prints_no_credential() -> None:
     assert "Bearer <redacted>" in text
     assert "GET https://vercel.com/api/logs/request-logs" in text
     assert "Nothing was sent" in text
+
+
+def logs_page_echoing_the_token() -> dict[str, Any]:
+    """One row quoting the token in both places a response can put it.
+
+    Vercel receives this token on every call, so a response carrying it back is
+    not hypothetical, and request log rows are the only output this tool prints
+    that some other program wrote: a log message is free text, and a request path
+    is whatever a caller sent. Neither goes anywhere near the error paths that
+    the rest of section 3 covers, so they need their own tests.
+
+    The credential opens the message rather than closing it, so that an
+    unscrubbed run shows part of it even in the table, whose message column
+    truncates. A prefix of a credential is still a disclosure, which is why
+    :data:`LEAKED_TOKEN_PREFIX` is asserted against as well as the whole value.
+    """
+    return {
+        "rows": [
+            logs_row(
+                requestId="leak-1",
+                statusCode=500,
+                requestPath=f"/api/callback?key={TOKEN}",
+                logs=[
+                    {
+                        "level": "error",
+                        "message": f"Bearer {TOKEN} was rejected by upstream",
+                        "messageTruncated": False,
+                    }
+                ],
+            )
+        ],
+        "hasMoreRows": False,
+    }
+
+
+#: Enough of the token to be worth protecting on its own. A truncated column
+#: cannot print the whole value, so only a prefix check can tell a scrubbed
+#: table from one that merely ran out of room.
+LEAKED_TOKEN_PREFIX = TOKEN[:16]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["errors"],
+        ["errors", "--expand"],
+        ["errors", "--json"],
+        ["errors", "--csv"],
+        ["error-summary"],
+    ],
+    ids=["table", "expand", "json", "csv", "summary"],
+)
+def test_a_response_echoing_the_token_never_reaches_any_logs_output(
+    cli: Cli, argv: list[str]
+) -> None:
+    # The tool holds exactly one secret and must never be the thing that
+    # discloses it, whatever a response carries. Every output format is covered
+    # because each renders the row differently: the table truncates a message,
+    # --expand prints it whole, --csv writes its own columns, --json carries the
+    # row verbatim, and error-summary groups by the message text.
+    session = FakeSession(
+        FakeResponse(200, logs_page_echoing_the_token()),
+        FakeResponse(200, {"rows": [], "hasMoreRows": False}),
+    )
+    code, out, err = cli.run(argv, env=dict(BASE_ENV), session=session)
+    assert code == 0, err
+    for text in (out, err):
+        assert TOKEN not in text
+        assert LEAKED_TOKEN_PREFIX not in text
+
+
+def test_the_token_is_rewritten_in_a_logs_row_rather_than_dropped(cli: Cli) -> None:
+    # --json is where this has to be checked: every other format renders chosen
+    # fields, while "raw" is the whole row as it arrived, so it is the copy that
+    # would leak if the scrub were applied at rendering time instead of at
+    # normalization. The placeholder proves the string was rewritten and the
+    # surrounding text kept, rather than the field being blanked.
+    session = FakeSession(
+        FakeResponse(200, logs_page_echoing_the_token()),
+        FakeResponse(200, {"rows": [], "hasMoreRows": False}),
+    )
+    code, out, err = cli.run(["errors", "--json"], env=dict(BASE_ENV), session=session)
+    assert code == 0, err
+    entry = json.loads(out)["entries"][0]
+    # "Bearer <token>" goes as one unit, because the whole header value is a
+    # credential in its own right and is replaced ahead of the bare token.
+    assert entry["message"] == "<redacted> was rejected by upstream"
+    assert entry["path"] == "/api/callback?key=<redacted>"
+    assert entry["raw"]["logs"][0]["message"] == "<redacted> was rejected by upstream"
+    assert entry["raw"]["requestPath"] == "/api/callback?key=<redacted>"
 
 
 # ---------------------------------------------------------------------------
