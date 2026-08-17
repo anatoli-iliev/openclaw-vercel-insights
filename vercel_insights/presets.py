@@ -1,9 +1,9 @@
 """The preset table: named bundles of defaults, and how to print them.
 
-A preset also decides which of the two APIs a run talks to. That is the one
-thing about it that no flag overrides: ``--metric`` chooses which web vital a
-Speed Insights preset reports, it does not turn a Web Analytics preset into a
-Speed Insights one.
+A preset also decides which API a run talks to. That is the one thing about it
+that no flag overrides: ``--metric`` chooses which web vital a Speed Insights
+preset reports, it does not turn a Web Analytics preset into a Speed Insights
+one.
 """
 
 from __future__ import annotations
@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from . import OTHERS_LABEL
+from .logs import DEFAULT_LIMIT as LOGS_DEFAULT_LIMIT
+from .logs import MAX_LIMIT as LOGS_MAX_LIMIT
 from .render import (
     OVERVIEW_TABLE_LIMIT,
     PLAIN_STYLE,
@@ -19,12 +21,16 @@ from .render import (
 )
 from .speedinsights import COUNT_AGGREGATION
 from .speedinsights import DEFAULT_LIMIT as SPEED_DEFAULT_LIMIT
-from .timerange import SPEED_INSIGHTS, WEB_ANALYTICS
+from .timerange import LOGS, SPEED_INSIGHTS, WEB_ANALYTICS
 from .webanalytics import DEFAULT_LIMIT, MAX_LIMIT, select_endpoint
 
 #: What the ``dataset`` column shows for a Speed Insights preset, which has no
 #: dataset in the Web Analytics sense: it queries one metric at a time.
 SPEED_DATASET = "speed"
+
+#: What the ``dataset`` column shows for a request logs preset, which has no
+#: dataset in the Web Analytics sense either: it queries rows, not groups.
+LOGS_DATASET = "logs"
 
 #: The metric a Speed Insights preset reports when the user names none.
 DEFAULT_METRIC = "lcp"
@@ -53,6 +59,10 @@ class Preset:
     granularity: str | None = None
     #: Speed Insights only: query the ``*_count`` metric instead of the value.
     data_points: bool = False
+    #: A per-surface window default, overriding the global one. Only the logs
+    #: presets set it: runtime logs are retained for an hour on Hobby, so a 7
+    #: day default there would report nothing and read as a healthy site.
+    default_since: str | None = None
 
     @property
     def is_speed(self) -> bool:
@@ -60,9 +70,19 @@ class Preset:
         return self.surface == SPEED_INSIGHTS
 
     @property
+    def is_logs(self) -> bool:
+        """True when this preset queries the request logs surface."""
+        return self.surface == LOGS
+
+    @property
     def endpoint(self) -> str:
         """The endpoint this preset hits, for display purposes."""
-        endpoint = "query" if self.is_speed else select_endpoint(list(self.group_by))
+        if self.is_logs:
+            endpoint = "request-logs"
+        elif self.is_speed:
+            endpoint = "query"
+        else:
+            endpoint = select_endpoint(list(self.group_by))
         if self.calls > 1:
             return f"{self.calls} x {endpoint}"
         return endpoint
@@ -229,6 +249,35 @@ PRESETS: dict[str, Preset] = {
         aggregation=COUNT_AGGREGATION,
         data_points=True,
     ),
+    "logs": Preset(
+        name="logs",
+        dataset=LOGS_DATASET,
+        group_by=(),
+        limit=LOGS_DEFAULT_LIMIT,
+        description="Recent requests, newest first, whatever their status",
+        surface=LOGS,
+        default_since="1h",
+    ),
+    "errors": Preset(
+        name="errors",
+        dataset=LOGS_DATASET,
+        group_by=(),
+        limit=LOGS_DEFAULT_LIMIT,
+        description="Failing requests: 5xx responses and logged error lines",
+        calls=2,
+        surface=LOGS,
+        default_since="1h",
+    ),
+    "error-summary": Preset(
+        name="error-summary",
+        dataset=LOGS_DATASET,
+        group_by=(),
+        limit=LOGS_MAX_LIMIT,
+        description="The same errors grouped by status, route and message",
+        calls=2,
+        surface=LOGS,
+        default_since="6h",
+    ),
 }
 
 DEFAULT_PRESET = "overview"
@@ -272,6 +321,13 @@ def format_presets(style: Style = PLAIN_STYLE) -> str:
             f"A {SPEED_DATASET!r} preset queries Speed Insights, which reports one "
             "metric per request: pick it with --metric, and note that this API "
             "spells its dimensions in snake_case (request_path, device_type)."
+        )
+    )
+    lines.append(
+        style.dim(
+            f"A {LOGS_DATASET!r} preset queries request logs, which has no groups: "
+            "its limit counts requests, not groups, and it takes no --group-by "
+            "and no --granularity."
         )
     )
     return "\n".join(lines)
