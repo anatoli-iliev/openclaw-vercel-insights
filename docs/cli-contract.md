@@ -313,9 +313,9 @@ unit (`ms` or a unitless score), and the number of data points when available.
 - `--expand` prints every line of the request in full underneath its row, marks any line Vercel itself truncated, and names the request id.
 - Every sentence beyond the table is composed in `logs.py` and carried on the report as data, so `render.py` states no API fact of its own.
 
-`error-summary` prints three tables over the same merged rows: by status with a
-share column and a total, by route with the worst status and a first and last
-seen, and by exact message. Messages are grouped by **exact text**, never
+`error-summary` prints the same title, range and filter lines and then three
+tables over the same merged rows: by status with a share column and a total, by
+route with the worst status and a first and last seen, and by exact message. Messages are grouped by **exact text**, never
 clustered by a guessed pattern, because merging two different bugs into one row is
 a worse answer than two rows. `(no log line)` is its own group. A request that
 counts as an error only because it logged an error or fatal line appears under its
@@ -328,7 +328,8 @@ The honesty rules are part of the contract, not presentation:
 2. **4xx is excluded from `errors` deliberately**: a 401 on `/api/me` is the application working. `--status-code 4xx` asks for them by name.
 3. **`--level` only sees requests that logged**, stated in `--help`, in `SKILL.md` and in the `errors` header line.
 4. **Truncation is always visible.** When more rows matched than were shown, the footer says how many were kept and what to do; when a two-call `errors` run truncated, it adds that the result is the most recent N of each kind rather than a global top N.
-5. The `errors` preset prints what counted as an error above the table: a 5xx response, a crashed function, or a request that logged an error or fatal line. `error-summary` counts the same three things and does **not** print that line, because the header note is carried on the report but only the row renderer prints it; its `logged_only` footer is what states the non-5xx part there.
+5. **The header line describes the query that actually ran.** The `errors` preset prints what counted as an error above the table (a 5xx response, a crashed function, or a request that logged an error or fatal line) while it applied that definition itself. An explicit `--level` or `--status-code` collapses it to a single call carrying the user's filter, so the rows become whatever that filter matched: the header then names that filter and says it replaced the definition rather than narrowing it, and the footer counts "requests" rather than "errors", because `--status-code 4xx` returns 401s and a 401 is not an error by any definition this tool holds. `error-summary` prints no header note at all, because the note is carried on the report but only the row renderer prints it; it prints the filter line and its `logged_only` footer instead.
+6. **No sentence outruns its own table.** `logged_only` counts a row only when it is a non-5xx that did not crash *and* carries an error or fatal log line, all three checked, so the "count as errors only because they logged an error or fatal line" footer can never appear beside a message table whose every group reads `(no log line)`.
 
 `--json` emits `{"query", "entries", "truncated", "pagesFetched", "notes"}`, each
 entry carrying the tabulated columns plus the whole original row under `raw`, so

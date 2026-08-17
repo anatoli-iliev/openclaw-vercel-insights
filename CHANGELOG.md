@@ -71,9 +71,18 @@ text. Everything else in this release is additive.
   mean the logs aged out rather than that nothing failed. Exit code is still 0: no
   errors is an answer. The `errors` preset prints what counted as an error above
   the table; `error-summary` counts the same three things without that line, and
-  says in its footer how many rows qualified on a log line alone. A 4xx is
-  deliberately excluded, because a 401 on `/api/me` is the application working, and
-  `--status-code 4xx` asks for those by name.
+  says in its footer how many rows qualified on a log line alone. That footer
+  requires the log line itself, not merely a non-5xx status, so it cannot appear
+  beside a message table reading `(no log line)`. A 4xx is deliberately excluded,
+  because a 401 on `/api/me` is the application working, and `--status-code 4xx`
+  asks for those by name.
+
+  **An explicit `--level` or `--status-code` changes what the output may claim**,
+  because it collapses the preset to one query carrying that filter: the rows are
+  then whatever the filter matched. The header names that filter and says it
+  replaced the error definition rather than narrowing it, and the footer counts
+  "requests" rather than "errors", since `--status-code 4xx` answers with 401s and
+  no definition in this tool calls one an error.
 
 - **`--json` and `--csv` on the logs surface.** JSON carries `query`, `entries`,
   `truncated`, `pagesFetched` and `notes`, with the whole original row under each

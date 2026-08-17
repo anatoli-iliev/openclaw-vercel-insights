@@ -1269,6 +1269,12 @@ def render_error_summary(
         f"({report.preset}, last {report.window_label})"
     )
     parts: list[str] = [style.bold(title), _range_line(report.time_range)]
+    if report.filters:
+        # Same line as render_logs, for the same reason: this report's footer
+        # counts the rows that matched, and a count of matching rows read
+        # without the filter beside it reads as a count of everything.
+        shown = ", ".join(f"{name} {value}" for name, value in report.filters.items())
+        parts.append(f"Filter: {shown}")
 
     if not report.entries:
         since, until = report.time_range

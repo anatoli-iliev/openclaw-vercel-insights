@@ -9,7 +9,9 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 from datetime import datetime, timedelta
+from typing import Any
 
 import pytest
 from conftest import Cli
@@ -30,6 +32,7 @@ from helpers import (
     logs_row,
 )
 
+from vercel_insights import logs as vi_logs
 from vercel_insights.cli import OWNER_PLACEHOLDER
 
 LOGS_ONLY_FLAGS: list[list[str]] = [
@@ -594,6 +597,191 @@ def test_verbose_says_which_filter_set_each_page_belonged_to(cli: Cli) -> None:
     # Headers once per filter set rather than once per page, so a run that pages
     # four times deep does not print the same three headers four times over.
     assert err.count("Bearer <redacted>") == 2
+
+
+# ---------------------------------------------------------------------------
+# Every printed sentence has to survive being read next to its own table
+# ---------------------------------------------------------------------------
+
+#: The ordinary 4xx: a 401 that printed nothing, which is the application
+#: turning an unauthenticated request away.
+FOURXX_PAGE = {
+    "rows": [logs_row(requestId="unauth", statusCode=401, logs=[])],
+    "hasMoreRows": False,
+}
+
+#: Two of them, for the summary preset: a 401 and a 404, neither logging.
+FOURXX_PAIR_PAGE = {
+    "rows": [
+        logs_row(requestId="unauth", statusCode=401, logs=[]),
+        logs_row(requestId="gone", statusCode=404, requestPath="/missing", route="", logs=[]),
+    ],
+    "hasMoreRows": False,
+}
+
+#: A 200 whose handler logged a warning and nothing worse.
+WARNING_PAGE = {
+    "rows": [
+        logs_row(
+            requestId="slow",
+            statusCode=200,
+            logs=[{"level": "warning", "message": "slow query", "messageTruncated": False}],
+        )
+    ],
+    "hasMoreRows": False,
+}
+
+#: A request the API recorded no status for, which --status-code None selects.
+NO_STATUS_PAGE = {
+    "rows": [logs_row(requestId="nostatus", statusCode=None, logs=[])],
+    "hasMoreRows": False,
+}
+
+#: The three documented ways to collapse an errors run to a single call, each
+#: with a page whose rows this tool would not itself call errors. Every one of
+#: them printed the error definition and counted its rows as errors that had
+#: "logged an error or fatal line", four lines above a table showing otherwise.
+COLLAPSED_RUNS: list[tuple[list[str], dict[str, Any], str]] = [
+    (["errors", "--status-code", "4xx"], FOURXX_PAGE, "statusCode 4xx"),
+    (["errors", "--level", "warning"], WARNING_PAGE, "level warning"),
+    (["errors", "--status-code", "None"], NO_STATUS_PAGE, "statusCode None"),
+]
+
+#: The sentence that claims a row was an error only because of what it printed.
+LOGGED_CLAIM = "count as errors only because they logged an error or fatal line"
+
+#: Words no sentence may use about a row this tool would not call an error.
+ERROR_NOUN = re.compile(r"\berrors?\b")
+
+
+def _table_rows(out: str) -> list[list[str]]:
+    """The row table's body cells, split on whitespace, as printed.
+
+    Parsed out of the rendered output rather than read off the report, because
+    what the reader compares a sentence against is the table on screen.
+    """
+    lines = out.splitlines()
+    head = next(
+        index for index, line in enumerate(lines) if line.split()[:2] == ["time", "level"]
+    )
+    rows: list[list[str]] = []
+    for line in lines[head + 2 :]:
+        if not line.strip():
+            break
+        rows.append(line.split())
+    return rows
+
+
+def _footer(out: str) -> list[str]:
+    """Every line printed after the table, which is where the sentences are."""
+    lines = out.splitlines()
+    head = next(
+        index for index, line in enumerate(lines) if line.split()[:2] == ["time", "level"]
+    )
+    blank = lines.index("", head)
+    return [line for line in lines[blank + 1 :] if line.strip()]
+
+
+def _row_is_an_error(cells: list[str]) -> bool:
+    """Whether the printed row is an error by the definition the tool states."""
+    level, status = cells[1], cells[2]
+    if status.isdigit() and int(status) >= 500:
+        return True
+    return level in ("error", "fatal")
+
+
+@pytest.mark.parametrize(
+    ("argv", "page", "filter_shown"),
+    COLLAPSED_RUNS,
+    ids=[" ".join(argv[1:]) for argv, _page, _shown in COLLAPSED_RUNS],
+)
+def test_a_collapsed_errors_run_prints_no_sentence_its_table_contradicts(
+    cli: Cli, argv: list[str], page: dict[str, Any], filter_shown: str
+) -> None:
+    session = FakeSession(FakeResponse(200, page))
+    code, out, err = cli.run(argv, BASE_ENV, session)
+    assert code == 0, err
+    # One call, because the explicit filter replaced the preset's own query.
+    assert len(session.calls) == 1
+    rows = _table_rows(out)
+    footer = _footer(out)
+    assert rows and footer
+
+    # 1. The header must not state a definition the query did not apply.
+    assert vi_logs.ERROR_DEFINITION not in out
+    assert f"These rows are what {filter_shown} matched" in out
+
+    # 2. No sentence may call these rows errors while the table shows a row that
+    #    is not one by the tool's own definition.
+    if any(not _row_is_an_error(cells) for cells in rows):
+        offenders = [line for line in footer if ERROR_NOUN.search(line)]
+        assert not offenders, offenders
+
+    # 3. The "logged an error or fatal line" claim needs a row that logged one.
+    if LOGGED_CLAIM in out:
+        assert any(cells[1] in ("error", "fatal") for cells in rows)
+
+    # 4. The count has to be the number of rows on screen.
+    assert f"{len(rows)} request" in out
+
+
+def test_the_summary_footer_does_not_claim_a_log_line_its_table_denies(cli: Cli) -> None:
+    # The same defect on the multi-table preset, where the message table is what
+    # contradicted it: every group read "(no log line)" while the footer said
+    # both rows had logged an error or fatal line.
+    session = FakeSession(FakeResponse(200, FOURXX_PAIR_PAGE))
+    code, out, err = cli.run(["error-summary", "--status-code", "4xx"], BASE_ENV, session)
+    assert code == 0, err
+    assert "(no log line)" in out
+    assert LOGGED_CLAIM not in out
+    assert "Filter: statusCode 4xx" in out
+    assert "2 requests in 6 hours" in out
+    assert not ERROR_NOUN.search(out.splitlines()[-1])
+
+
+def test_an_unnarrowed_errors_run_still_states_the_definition_and_counts_errors(
+    cli: Cli,
+) -> None:
+    # The control for the three cases above: with no explicit level or status the
+    # preset does apply its own definition, both rows are 5xx, and calling them
+    # errors is exactly right. A fix that simply stopped saying "errors" would
+    # pass those three and fail this one.
+    session = FakeSession(
+        FakeResponse(200, LOGS_ERROR_PAGE), FakeResponse(200, LOGS_EMPTY_PAGE)
+    )
+    code, out, err = cli.run(["errors", "--since", "30m"], BASE_ENV, session)
+    assert code == 0, err
+    assert vi_logs.ERROR_DEFINITION in out
+    assert "2 errors in 30 minutes" in out
+    assert LOGGED_CLAIM not in out
+
+
+def test_a_logged_error_on_a_non_5xx_is_still_reported_as_one(cli: Cli) -> None:
+    # The other direction: a 200 that logged a fatal line is an error only
+    # because it logged one, and that sentence has to survive the fix, with the
+    # row it describes visible in the table.
+    page = {
+        "rows": [
+            logs_row(
+                requestId="cron",
+                statusCode=200,
+                route="/api/cron/sync",
+                logs=[
+                    {
+                        "level": "fatal",
+                        "message": "FATAL: connection pool exhausted",
+                        "messageTruncated": False,
+                    }
+                ],
+            )
+        ],
+        "hasMoreRows": False,
+    }
+    session = FakeSession(FakeResponse(200, LOGS_EMPTY_PAGE), FakeResponse(200, page))
+    code, out, err = cli.run(["errors"], BASE_ENV, session)
+    assert code == 0, err
+    assert f"1 of them returned a non-5xx status and {LOGGED_CLAIM}" in out
+    assert [cells[1] for cells in _table_rows(out)] == ["fatal"]
 
 
 # ---------------------------------------------------------------------------

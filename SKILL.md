@@ -621,9 +621,14 @@ difference between a useful answer and a confidently wrong one.
   returned 200 whose handler logged a stack trace is invisible to
   `--status-code 5xx`. That is the entire reason `errors` runs two queries. An
   explicit `--level` or `--status-code` collapses it back to one, which is
-  sometimes what you want and always half the picture. In `error-summary` such a
-  request is tallied under its real status, so a `200` row in a table of errors
-  is not a bug, and the footer says how many rows qualify that way.
+  sometimes what you want and always half the picture: the rows are then whatever
+  your filter matched rather than what this tool calls an error, and the output
+  says so, naming the filter in place of the error definition and counting
+  "requests" rather than "errors". `errors --status-code 4xx` is a list of 4xx
+  responses, not a list of faults. In `error-summary` a request that is an error
+  only because it logged is tallied under its real status, so a `200` row in a
+  table of errors is not a bug, and the footer says how many rows qualify that
+  way.
 - **Truncation is stated, never silent.** When more rows matched than were
   shown, the footer says so, names how many were kept and says what to do about
   it. On a two-query `errors` run it adds that the result is the most recent N

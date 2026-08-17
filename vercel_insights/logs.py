@@ -63,6 +63,44 @@ SOURCES: tuple[str, ...] = (
 #: displayed spelling means a user can filter by what this tool showed them.
 SOURCE_ALIASES: dict[str, str] = {"serverless-middleware": "edge-middleware"}
 
+
+def _source_alias_note() -> str:
+    """Compose the sentence that warns the two source vocabularies differ.
+
+    Returns:
+        One sentence naming every display spelling in :data:`SOURCE_ALIASES`
+        with the filter spelling it resolves to. Composed rather than written
+        out because two places print it, ``--source``'s help text and the
+        refusal :func:`validate_sources` raises, and a probed API fact copied
+        by hand into two strings is a fact that can drift in one of them.
+    """
+    pairs = [
+        f"{display!r}, which is filtered as {resolved!r}"
+        for display, resolved in sorted(SOURCE_ALIASES.items())
+    ]
+    return "The source column may display " + "; ".join(pairs) + "."
+
+
+#: The alias warning, for ``--source``'s help and for its refusal message.
+SOURCE_ALIAS_NOTE = _source_alias_note()
+
+#: The HTTP methods worth naming when a ``--method`` value looks like a typo.
+#: A method outside this set is still sent: a custom verb is legal HTTP and
+#: refusing one would remove capability the API may well have. What is not
+#: acceptable is silence, because this API answers a method it never recorded
+#: with 200 and zero rows, which reads as a healthy site.
+METHODS: tuple[str, ...] = (
+    "GET",
+    "HEAD",
+    "POST",
+    "PUT",
+    "PATCH",
+    "DELETE",
+    "OPTIONS",
+    "TRACE",
+    "CONNECT",
+)
+
 #: Rows per page. Fixed by the API: the ``limit`` parameter is accepted and
 #: ignored, which is why a row limit is enforced in this client instead.
 PAGE_SIZE = 50
@@ -194,10 +232,7 @@ def validate_sources(value: str) -> str:
             "source", "source", _resolve_source_aliases(value), SOURCES
         )
     except ConfigError as error:
-        raise ConfigError(
-            f"{error}. The source column may display 'serverless-middleware', "
-            "which is filtered as 'edge-middleware'."
-        ) from error
+        raise ConfigError(f"{error}. {SOURCE_ALIAS_NOTE}") from error
 
 
 def validate_status_code(value: str) -> str:
@@ -238,6 +273,45 @@ def validate_status_code(value: str) -> str:
             "4xx or 5xx, or None for requests with no status recorded"
         )
     return ",".join(normalized)
+
+
+def normalize_method(value: str) -> str:
+    """Spell a ``--method`` value the way the API records one.
+
+    Args:
+        value: The method as the user typed it, with any surrounding space.
+
+    Returns:
+        The method upper-cased and stripped, which is how the API records it
+        and therefore how it matches.
+    """
+    return value.strip().upper()
+
+
+def method_warning(method: str) -> str | None:
+    """Say when a method is outside the standard set, without refusing it.
+
+    A custom verb is legal HTTP, so this warns rather than raising: refusing
+    would remove capability. Silence is what is not acceptable, because this
+    API answers a method it never recorded with HTTP 200 and zero rows, and
+    zero rows reads as "nothing is broken" rather than as "nothing matched".
+
+    Args:
+        method: The method as :func:`normalize_method` spelled it.
+
+    Returns:
+        One line of warning text when ``method`` is not one of
+        :data:`METHODS`, and ``None`` when it is.
+    """
+    if not method or method in METHODS:
+        return None
+    return (
+        f"--method {method} is not one of the standard HTTP methods "
+        f"({', '.join(METHODS)}); it is still sent, because a custom method is "
+        "legal, but this API answers a method it never recorded with zero rows "
+        "rather than with an error, so check the spelling before reading an "
+        "empty answer as a quiet window"
+    )
 
 
 def validate_limit(limit: int) -> int:
@@ -434,7 +508,12 @@ def _lines(row: Mapping[str, Any]) -> tuple[LogLine, ...]:
 
 
 def _source(row: Mapping[str, Any]) -> str:
-    """Where the request was served from, read off its first event."""
+    """Where the request was served from, off the first event carrying a source.
+
+    Not simply the first event: a real row can carry several, and the leading
+    one need not name a source at all. docs/api-notes.md records it the same
+    way.
+    """
     events = row.get("events")
     if isinstance(events, list):
         for event in events:
@@ -444,7 +523,12 @@ def _source(row: Mapping[str, Any]) -> str:
 
 
 def _region(row: Mapping[str, Any]) -> str:
-    """The region that served the request, off its first event or the client."""
+    """The serving region, off the first event carrying one, else the client's.
+
+    Same rule as :func:`_source`: the first event that actually names a region
+    wins rather than the first event outright, and ``clientRegion`` is the
+    fallback when no event names one.
+    """
     events = row.get("events")
     if isinstance(events, list):
         for event in events:
@@ -661,6 +745,33 @@ def merge(
     return merged[:limit], len(merged) > limit
 
 
+#: The two filters that, supplied explicitly, replace the errors presets' own
+#: definition of an error rather than narrowing it. Either one collapses the two
+#: calls to one, and that one call asks the user's question instead of this
+#: tool's: what came back is what the filter matched, error or not.
+NARROWING_FILTERS: tuple[str, ...] = ("level", "statusCode")
+
+
+def _narrowed_by(filters: Mapping[str, str]) -> list[str]:
+    """Which of :data:`NARROWING_FILTERS` the user supplied, in a fixed order.
+
+    Three decisions read this: whether to issue one call or two, what the header
+    line above the table may claim, and whether the rows may be called errors at
+    all. Stating the rule once is what keeps those three from disagreeing, which
+    is exactly how the output came to print an error definition that did not
+    describe the query it ran.
+
+    Args:
+        filters: The wire-named filters the user asked for.
+
+    Returns:
+        The narrowing filter names present with a non-empty value, in the order
+        :data:`NARROWING_FILTERS` lists them; empty when the errors presets are
+        free to run their own two-call query.
+    """
+    return [name for name in NARROWING_FILTERS if filters.get(name)]
+
+
 def _is_two_call(filters: Mapping[str, str]) -> bool:
     """Whether the errors preset's two-call merge rule applies to ``filters``.
 
@@ -679,7 +790,7 @@ def _is_two_call(filters: Mapping[str, str]) -> bool:
         explicit ``--level`` or ``--status-code`` already narrowed the query
         to one call.
     """
-    return not ({"level", "statusCode"} & set(filters))
+    return not _narrowed_by(filters)
 
 
 def error_filter_sets(filters: Mapping[str, str]) -> list[dict[str, str]]:
@@ -730,8 +841,10 @@ def summarize(entries: Sequence[LogEntry]) -> LogSummary:
     Returns:
         The tallies, each ordered by count and then by name so the output is
         stable across runs. ``logged_only`` counts entries that are errors
-        only because they logged an error or fatal line, and is meaningful
-        only when ``entries`` has already been filtered down to errors.
+        only because they logged an error or fatal line: a non-5xx response
+        that did not crash and did carry such a line. All three conditions are
+        checked, so the count means what the sentence built from it says even
+        when the entries were never narrowed to errors at all.
     """
     status_counts: dict[str, int] = {}
     routes: dict[str, list[LogEntry]] = {}
@@ -743,7 +856,16 @@ def summarize(entries: Sequence[LogEntry]) -> LogSummary:
         status_counts[status] = status_counts.get(status, 0) + 1
         routes.setdefault(entry.label, []).append(entry)
         messages.setdefault(entry.headline or NO_LOG_LINE, []).append(entry)
-        if (entry.status is None or entry.status < 500) and not entry.crashed:
+        # The log line is the point of this count, not an afterthought: a
+        # non-5xx that never printed anything is not an error at all, and
+        # counting it here made the output claim a log line the message table
+        # beside it showed as "(no log line)". Any error or fatal line makes
+        # this the worst level, so the worst level is the whole test.
+        if (
+            (entry.status is None or entry.status < 500)
+            and not entry.crashed
+            and entry.worst_level in ERROR_LEVELS
+        ):
             logged_only += 1
 
     def seen(group: Sequence[LogEntry]) -> tuple[datetime | None, datetime | None]:
@@ -801,7 +923,9 @@ def summarize(entries: Sequence[LogEntry]) -> LogSummary:
 # ---------------------------------------------------------------------------
 
 #: What the errors presets count, stated in the output so the reader is never
-#: guessing. Both halves matter: see the module docstring.
+#: guessing. Both halves matter: see the module docstring. Printed only when the
+#: presets actually got to apply it, which an explicit ``--level`` or
+#: ``--status-code`` prevents: see :func:`_header_note`.
 ERROR_DEFINITION = (
     "Counted as an error: a 5xx response, a crashed function, or a request "
     "that logged an error or fatal line."
@@ -819,6 +943,39 @@ RETENTION_NOTE = (
 #: The shortest retention any plan has. Below this there is nothing to warn
 #: about, and a warning on every empty answer trains the reader to ignore it.
 SHORTEST_RETENTION = timedelta(hours=1)
+
+
+def _header_note(*, counts_errors: bool, filters: Mapping[str, str]) -> str | None:
+    """The line above the table saying what the rows in it are.
+
+    An errors preset with no ``--level`` and no ``--status-code`` applies its own
+    definition of an error, and :data:`ERROR_DEFINITION` states it. An explicit
+    one of either replaces that definition rather than narrowing it: the preset
+    collapses to a single call carrying the user's filter, so what comes back is
+    whatever that filter matched, which may include a 401 this tool would never
+    call an error. Printing the definition there would describe a query that did
+    not run, and the table underneath would disprove it.
+
+    Args:
+        counts_errors: True for the presets that go looking for failures.
+        filters: The wire-named filters the user asked for.
+
+    Returns:
+        :data:`ERROR_DEFINITION` for an errors preset running its own query, a
+        note naming the filter that ran instead when one narrowed it, and
+        ``None`` for a preset that never claimed to be counting errors.
+    """
+    if not counts_errors:
+        return None
+    narrowed = _narrowed_by(filters)
+    if not narrowed:
+        return ERROR_DEFINITION
+    shown = " and ".join(f"{name} {filters[name]}" for name in narrowed)
+    return (
+        f"These rows are what {shown} matched, not what this tool counts as an "
+        "error: an explicit --level or --status-code replaces the error "
+        "definition rather than narrowing it."
+    )
 
 
 def _window_prose(time_range: tuple[datetime, datetime]) -> str:
@@ -873,7 +1030,12 @@ def build_report(
 
     if entries:
         summary = summarize(entries)
-        noun = "error" if counts_errors else "request"
+        # Only a preset that got to apply its own error definition may call
+        # these rows errors. Narrowed by an explicit --level or --status-code,
+        # the rows are whatever that filter matched, and a 401 among them is
+        # not an error by any definition this tool holds.
+        counted_as_errors = counts_errors and _is_two_call(filters)
+        noun = "error" if counted_as_errors else "request"
         plural = "" if summary.total == 1 else "s"
         breakdown = ", ".join(
             f"{count} x {status}" for status, count in summary.by_status
@@ -883,6 +1045,9 @@ def build_report(
             worst = summary.by_route[0]
             notes.append(f"Most affected route: {worst.route} ({worst.count}).")
         if counts_errors and summary.logged_only:
+            # summarize checks for the log line itself, so this sentence is
+            # about rows that really carry one. It said the opposite for every
+            # non-5xx row while that check was missing.
             notes.append(
                 f"{summary.logged_only} of them returned a non-5xx status and "
                 "count as errors only because they logged an error or fatal line."
@@ -926,7 +1091,7 @@ def build_report(
         truncated=truncated,
         pages_fetched=pages_fetched,
         requested_limit=requested_limit,
-        header_note=ERROR_DEFINITION if counts_errors else None,
+        header_note=_header_note(counts_errors=counts_errors, filters=filters),
         notes=tuple(notes),
         hint=hint,
     )

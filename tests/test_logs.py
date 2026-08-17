@@ -583,6 +583,78 @@ def test_summarize_counts_the_errors_that_are_only_errors_because_they_logged() 
     assert vi_logs.summarize(entries).logged_only == 1
 
 
+#: Rows that are not 5xx and did not crash, and whose log lines do not make them
+#: errors either. Every one of them was counted as "an error only because it
+#: logged an error or fatal line" while that count looked at the status alone,
+#: which made the output claim a log line its own message table denied.
+NOT_LOGGED_ERRORS: list[tuple[str, dict[str, Any]]] = [
+    ("a-401-that-logged-nothing", {"statusCode": 401, "logs": []}),
+    ("a-404-that-logged-nothing", {"statusCode": 404, "logs": []}),
+    (
+        "a-200-that-only-warned",
+        {"statusCode": 200, "logs": [{"level": "warning", "message": "slow"}]},
+    ),
+    (
+        "a-200-that-only-noted",
+        {"statusCode": 200, "logs": [{"level": "info", "message": "served"}]},
+    ),
+    ("a-row-with-no-status-at-all", {"statusCode": None, "logs": []}),
+]
+
+
+@pytest.mark.parametrize(
+    "row", [row for _name, row in NOT_LOGGED_ERRORS], ids=[n for n, _r in NOT_LOGGED_ERRORS]
+)
+def test_summarize_does_not_count_a_row_that_logged_no_error_line(
+    row: dict[str, Any],
+) -> None:
+    # The sentence built from this count says the row "logged an error or fatal
+    # line", so a row that logged nothing, or logged only a warning, must not be
+    # in it. Only the positive case was covered before, which is why an errors
+    # run narrowed with --status-code 4xx printed that sentence over a table
+    # whose every message cell read "(no log line)".
+    entries = vi_logs.normalize({"rows": [logs_row(requestId="x", **row)]})[0]
+    assert vi_logs.summarize(entries).logged_only == 0
+
+
+def test_summarize_counts_a_logged_error_even_on_a_set_nobody_filtered() -> None:
+    # The count is about the row, not about how the row was found: on a plain
+    # logs run a 200 that logged a stack trace is still an error only because it
+    # logged one, and the two ordinary rows beside it are not.
+    entries = vi_logs.normalize(
+        {
+            "rows": [
+                logs_row(requestId="a", statusCode=200),
+                logs_row(requestId="b", statusCode=401),
+                logs_row(
+                    requestId="c",
+                    statusCode=200,
+                    logs=[{"level": "error", "message": "boom"}],
+                ),
+            ]
+        }
+    )[0]
+    assert vi_logs.summarize(entries).logged_only == 1
+
+
+def test_summarize_does_not_count_a_crashed_function_as_logging_its_way_in() -> None:
+    # A crash is its own reason to be an error, so "only because it logged" is
+    # false of it even when it did also log.
+    entries = vi_logs.normalize(
+        {
+            "rows": [
+                logs_row(
+                    requestId="a",
+                    statusCode=200,
+                    hasFunctionCrashed=True,
+                    logs=[{"level": "fatal", "message": "boom"}],
+                )
+            ]
+        }
+    )[0]
+    assert vi_logs.summarize(entries).logged_only == 0
+
+
 def test_summarize_of_nothing_is_empty_rather_than_an_error() -> None:
     summary = vi_logs.summarize([])
     assert summary.total == 0

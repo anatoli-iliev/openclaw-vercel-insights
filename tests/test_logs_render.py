@@ -56,6 +56,42 @@ def test_the_header_says_what_counts_as_an_error() -> None:
     assert vi_logs.ERROR_DEFINITION in text
 
 
+@pytest.mark.parametrize(
+    ("filters", "expected"),
+    [
+        ({"statusCode": "4xx"}, "statusCode 4xx"),
+        ({"level": "warning"}, "level warning"),
+        ({"level": "error", "statusCode": "5xx"}, "level error and statusCode 5xx"),
+    ],
+    ids=["status", "level", "both"],
+)
+def test_an_explicit_filter_replaces_the_error_definition_with_what_ran(
+    filters: dict[str, str], expected: str
+) -> None:
+    # An explicit --level or --status-code collapses the errors preset to one
+    # call carrying that filter, so the rows are whatever it matched. Printing
+    # the error definition there would describe a query that never ran.
+    text = render_logs(_report(LOGS_ERROR_PAGE, filters=filters))
+    assert vi_logs.ERROR_DEFINITION not in text
+    assert f"These rows are what {expected} matched" in text
+
+
+def test_a_narrowed_run_does_not_call_its_rows_errors() -> None:
+    # Same reason: --status-code 4xx asks for 401s, and a 401 is not an error by
+    # any definition this tool holds, so the count sentence must not say it is.
+    text = render_logs(_report(LOGS_ERROR_PAGE, filters={"statusCode": "4xx"}))
+    assert "2 requests in 30 minutes" in text
+    assert "2 errors" not in text
+
+
+def test_a_plain_logs_report_still_carries_no_header_note() -> None:
+    # counts_errors is False there, so there is no definition to state and no
+    # filter to explain away: the table speaks for itself.
+    report = _report(LOGS_ERROR_PAGE, preset="logs", counts_errors=False)
+    assert report.header_note is None
+    assert "2 requests in 30 minutes" in render_logs(report)
+
+
 def test_a_request_that_logged_nothing_says_so_rather_than_showing_a_blank() -> None:
     text = render_logs(_report(LOGS_ERROR_PAGE))
     assert "(no log line" in text
@@ -253,6 +289,19 @@ def test_the_summary_explains_a_non_5xx_row_in_the_status_table() -> None:
     status_table = lines[start : lines.index("", start)]
     assert any(line.split()[0] == "200" for line in status_table)
     assert not any("fatal" in line for line in status_table)
+
+
+def test_the_summary_names_the_filter_that_produced_its_tables() -> None:
+    # This renderer prints no header note, so without this line a narrowed run
+    # showed three tables and a count of matching rows with nothing on screen
+    # saying what they had been narrowed to.
+    report = _report(
+        LOGS_ERROR_PAGE, preset="error-summary", filters={"statusCode": "4xx"}
+    )
+    text = render_error_summary(report, vi_logs.summarize(report.entries))
+    assert "Filter: statusCode 4xx" in text
+    assert "2 requests in 30 minutes" in text
+    assert "2 errors" not in text
 
 
 def test_the_summary_names_the_window_rather_than_printing_empty_tables() -> None:
