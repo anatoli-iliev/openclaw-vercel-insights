@@ -6,11 +6,31 @@ change to one surface cannot quietly rewrite another's behaviour.
 
 from __future__ import annotations
 
+import csv
+import io
+import json
 from datetime import datetime, timedelta
 
 import pytest
 from conftest import Cli
-from helpers import BASE_ENV, DRY_RUN_ENV, dry_run_calls, dry_run_values
+from helpers import (
+    BASE_ENV,
+    DRY_RUN_ENV,
+    LOGS_EMPTY_PAGE,
+    LOGS_ERROR_PAGE,
+    LOGS_PAGE,
+    LOGS_URL,
+    PROJECT,
+    TOKEN,
+    FakeResponse,
+    FakeSession,
+    dry_run_calls,
+    dry_run_values,
+    error_payload,
+    logs_row,
+)
+
+from vercel_insights.cli import OWNER_PLACEHOLDER
 
 LOGS_ONLY_FLAGS: list[list[str]] = [
     ["--level", "error"],
@@ -346,3 +366,244 @@ def test_a_logs_run_needs_an_account_id_and_says_so(cli: Cli) -> None:
     # Naming the surface that needs the id is what stops the reader concluding
     # a slug never works.
     assert "request logs" in err
+
+
+# ---------------------------------------------------------------------------
+# A real run: every filter set pages, then the sets are merged and printed
+# ---------------------------------------------------------------------------
+
+#: A refusal, as this endpoint words one.
+FORBIDDEN = error_payload("forbidden", "You don't have permission")
+
+
+def test_errors_reports_both_kinds_of_failure(cli: Cli) -> None:
+    # The statusCode call finds both failures here and the level call finds
+    # nothing, so an errors run has to report the union of its two calls: taking
+    # only what both returned would report a healthy site.
+    session = FakeSession(
+        FakeResponse(200, LOGS_ERROR_PAGE),
+        FakeResponse(200, LOGS_EMPTY_PAGE),
+    )
+    code, out, err = cli.run(["errors", "--since", "30m"], BASE_ENV, session)
+    assert code == 0, err
+    assert "/api/checkout" in out
+    assert "TypeError" in out
+    assert [call["url"] for call in session.calls] == [LOGS_URL, LOGS_URL]
+
+
+def test_a_request_that_matched_both_filters_is_reported_once(cli: Cli) -> None:
+    # The same 500 comes back from both calls, and only one copy carries the log
+    # line, because level matches the request and statusCode matches the
+    # response. Reporting it twice would double every count in the summary, and
+    # keeping the silent copy would print a blank message for a request that
+    # logged a stack trace.
+    silent = logs_row(requestId="both", statusCode=500, logs=[])
+    logged = logs_row(
+        requestId="both",
+        statusCode=500,
+        logs=[{"level": "error", "message": "TypeError: boom", "messageTruncated": False}],
+    )
+    session = FakeSession(
+        FakeResponse(200, {"rows": [silent], "hasMoreRows": False}),
+        FakeResponse(200, {"rows": [logged], "hasMoreRows": False}),
+    )
+    code, out, err = cli.run(["errors", "--json"], BASE_ENV, session)
+    assert code == 0, err
+    entries = json.loads(out)["entries"]
+    assert len(entries) == 1
+    assert entries[0]["message"] == "TypeError: boom"
+
+
+def test_an_empty_window_is_a_success_not_a_failure(cli: Cli) -> None:
+    session = FakeSession(
+        FakeResponse(200, LOGS_EMPTY_PAGE), FakeResponse(200, LOGS_EMPTY_PAGE)
+    )
+    code, out, _err = cli.run(["errors"], BASE_ENV, session)
+    assert code == 0
+    assert "No request logs" in out
+
+
+def test_an_empty_answer_over_a_wide_window_says_the_logs_may_have_aged_out(
+    cli: Cli,
+) -> None:
+    # error-summary looks back six hours by default, which is longer than the
+    # shortest retention any plan has, so "nothing failed" and "the logs are
+    # gone" are both live readings of an empty answer and the output says so.
+    session = FakeSession(
+        FakeResponse(200, LOGS_EMPTY_PAGE), FakeResponse(200, LOGS_EMPTY_PAGE)
+    )
+    code, out, err = cli.run(["error-summary"], BASE_ENV, session)
+    assert code == 0, err
+    assert "retention" in out and "aged out" in out
+
+
+def test_the_logs_preset_makes_one_call(cli: Cli) -> None:
+    session = FakeSession(FakeResponse(200, LOGS_ERROR_PAGE))
+    code, _out, _err = cli.run(["logs"], BASE_ENV, session)
+    assert code == 0
+    assert len(session.calls) == 1
+
+
+def test_paging_stops_at_the_limit(cli: Cli) -> None:
+    full = {
+        "rows": [logs_row(requestId=f"r{index}") for index in range(50)],
+        "hasMoreRows": True,
+    }
+    session = FakeSession(*[FakeResponse(200, full) for _ in range(4)])
+    code, out, _err = cli.run(["logs", "--limit", "120"], BASE_ENV, session)
+    assert code == 0
+    assert len(session.calls) == 3
+    # Each call asks for the next page. Re-requesting page 0 would fill the
+    # budget just as fast and report the same 50 requests three times over.
+    assert [dict(call["params"])["page"] for call in session.calls] == ["0", "1", "2"]
+    assert "more" in out.lower()
+
+
+def test_error_summary_prints_the_grouped_tables(cli: Cli) -> None:
+    session = FakeSession(
+        FakeResponse(200, LOGS_ERROR_PAGE), FakeResponse(200, LOGS_EMPTY_PAGE)
+    )
+    code, out, _err = cli.run(["error-summary"], BASE_ENV, session)
+    assert code == 0
+    assert "worst status" in out
+
+
+def test_expand_prints_the_whole_message_under_its_row(cli: Cli) -> None:
+    session = FakeSession(
+        FakeResponse(200, LOGS_ERROR_PAGE), FakeResponse(200, LOGS_EMPTY_PAGE)
+    )
+    code, out, err = cli.run(["errors", "--expand"], BASE_ENV, session)
+    assert code == 0, err
+    # The row itself only has room for 34 characters of message.
+    assert "TypeError: Cannot read properties of undefined" in out
+    assert "request err-1" in out
+
+
+def test_json_output_goes_through_the_logs_formatter(cli: Cli) -> None:
+    session = FakeSession(FakeResponse(200, LOGS_ERROR_PAGE))
+    code, out, _err = cli.run(["logs", "--json"], BASE_ENV, session)
+    assert code == 0
+    assert json.loads(out)["entries"][0]["requestId"] == "err-1"
+
+
+def test_csv_output_is_one_row_per_request(cli: Cli) -> None:
+    session = FakeSession(
+        FakeResponse(200, LOGS_ERROR_PAGE), FakeResponse(200, LOGS_EMPTY_PAGE)
+    )
+    code, out, err = cli.run(["errors", "--csv"], BASE_ENV, session)
+    assert code == 0, err
+    rows = list(csv.reader(io.StringIO(out)))
+    assert rows[0][0] == "time"
+    assert [row[7] for row in rows[1:]] == ["err-1", "err-2"]
+
+
+def test_a_403_explains_token_scope(cli: Cli) -> None:
+    session = FakeSession(FakeResponse(403, FORBIDDEN))
+    code, _out, err = cli.run(["logs"], BASE_ENV, session)
+    assert code == 1
+    # Vercel's own wording is kept, then explained rather than replaced.
+    assert "You don't have permission" in err
+    assert "account" in err and "team" in err
+    assert "vercel.com/account/tokens" in err
+
+
+def test_a_403_here_does_not_get_the_web_analytics_team_advice(cli: Cli) -> None:
+    # Nothing configured a team, which is the condition the Web Analytics hint
+    # fires on. That advice is wrong here twice over: this endpoint takes no
+    # teamId at all, and a team id only helps here by being the ownerId.
+    session = FakeSession(FakeResponse(403, FORBIDDEN))
+    code, _out, err = cli.run(["logs"], BASE_ENV, session)
+    assert code == 1
+    assert "--team with the team id" not in err
+    assert "--list-projects" not in err
+
+
+def test_a_top_level_array_is_refused_rather_than_read_as_no_rows(cli: Cli) -> None:
+    # This endpoint answers with an object carrying "rows". A JSON array is a
+    # shape this client cannot read, and reporting it as zero requests would
+    # read as a quiet hour on the site.
+    session = FakeSession(FakeResponse(200, [1, 2]))
+    code, _out, err = cli.run(["logs"], BASE_ENV, session)
+    assert code == 1
+    assert "rows" in err
+
+
+def test_the_token_never_reaches_the_output(cli: Cli) -> None:
+    session = FakeSession(FakeResponse(200, LOGS_ERROR_PAGE))
+    code, out, err = cli.run(["logs", "--verbose"], BASE_ENV, session)
+    assert code == 0
+    # The verbose line is in the captured stream, so this really is the run's
+    # own diagnostics being checked rather than a run that printed none: a line
+    # sent to the process stderr instead would escape both of these.
+    assert "verbose: GET" in err
+    assert TOKEN not in out and TOKEN not in err
+
+
+# ---------------------------------------------------------------------------
+# ownerId is required, so an unresolved owner is resolved before the query
+# ---------------------------------------------------------------------------
+
+#: A project record, as /v9/projects answers it. ``accountId`` is the owning
+#: account, and is the only place a personal account's ownerId can be read.
+PROJECT_RECORD = {"id": PROJECT, "name": "demo", "accountId": "own_from_api"}
+
+
+def test_an_unconfigured_owner_is_read_off_the_project_record(cli: Cli) -> None:
+    # This endpoint requires ownerId: omitting it is a 400 and a wrong value a
+    # 403, so a run with no owner configured has to resolve one first, the same
+    # way a Speed Insights run does.
+    session = FakeSession(
+        FakeResponse(200, PROJECT_RECORD), FakeResponse(200, LOGS_PAGE)
+    )
+    code, _out, err = cli.run(
+        ["logs"], {"VERCEL_TOKEN": TOKEN, "VERCEL_PROJECT_ID": PROJECT}, session
+    )
+    assert code == 0, err
+    assert session.calls[0]["url"].endswith(f"/v9/projects/{PROJECT}")
+    assert ("ownerId", "own_from_api") in session.calls[1]["params"]
+
+
+def test_a_project_record_with_no_account_id_names_the_flag_to_set(cli: Cli) -> None:
+    # Nothing else knows the account, so this is where the run stops. The
+    # refusal names the surface that could not be scoped, and this one is not
+    # Speed Insights.
+    session = FakeSession(FakeResponse(200, {"id": PROJECT, "name": "demo"}))
+    code, _out, err = cli.run(
+        ["errors"], {"VERCEL_TOKEN": TOKEN, "VERCEL_PROJECT_ID": PROJECT}, session
+    )
+    assert code == 2
+    assert "--owner-id" in err and "VERCEL_OWNER_ID" in err
+    assert "request logs" in err
+    assert "Speed Insights" not in err
+
+
+def test_a_project_name_does_not_force_a_lookup_on_this_surface(cli: Cli) -> None:
+    # Unlike Speed Insights, which scopes by projectIds and needs identifiers,
+    # this endpoint takes a project name as happily as an id. Only a missing
+    # owner is worth an extra request here.
+    session = FakeSession(FakeResponse(200, LOGS_PAGE))
+    code, _out, err = cli.run(
+        ["logs"],
+        {"VERCEL_TOKEN": TOKEN, "VERCEL_PROJECT_ID": "my-site", "VERCEL_OWNER_ID": "own_x"},
+        session,
+    )
+    assert code == 0, err
+    assert len(session.calls) == 1
+    assert ("projectId", "my-site") in session.calls[0]["params"]
+
+
+def test_a_dry_run_without_an_owner_names_the_parameter_this_surface_sends(
+    cli: Cli,
+) -> None:
+    # A dry run sends nothing, including the one GET that would resolve the
+    # owner, so the placeholder needs explaining. The explanation has to name
+    # the plain ownerId parameter: this API has no scope object to look for, and
+    # pointing at Speed Insights' one would send the reader hunting for a field
+    # that does not exist here.
+    code, out, err = cli.run(["logs", "--dry-run"], {"VERCEL_PROJECT_ID": PROJECT})
+    assert code == 0, err
+    assert dry_run_values(out, "ownerId") == [OWNER_PLACEHOLDER]
+    assert "ownerId parameter" in out
+    assert "scope.ownerId" not in out
+    assert "Speed Insights" not in out
+    assert "--owner-id" in out

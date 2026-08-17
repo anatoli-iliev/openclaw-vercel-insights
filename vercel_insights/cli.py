@@ -51,14 +51,19 @@ from .http import (
 from .logs import DEFAULT_LIMIT as LOGS_DEFAULT_LIMIT
 from .logs import LEVELS as LOG_LEVELS
 from .logs import MAX_LIMIT as LOGS_MAX_LIMIT
+from .logs import OPERATION as REQUEST_LOGS_QUERY
 from .logs import SOURCES as LOG_SOURCES
+from .logs import build_report as build_log_report
 from .logs import build_request as build_logs_request
+from .logs import collect as collect_logs
 from .logs import (
     error_filter_sets,
+    summarize,
     validate_levels,
     validate_sources,
     validate_status_code,
 )
+from .logs import merge as merge_logs
 from .logs import validate_limit as validate_logs_limit
 from .odata import build_clause, combine_filters, json_dimension
 from .presets import DEFAULT_METRIC, DEFAULT_PRESET, PRESETS, Preset, format_presets
@@ -78,13 +83,19 @@ from .projects import (
 from .render import (
     DATA_POINTS_METRIC,
     OVERVIEW_TABLE_LIMIT,
+    LogEntry,
+    LogReport,
     Result,
     Style,
     _result_document,
     format_csv,
     format_json,
+    format_logs_csv,
+    format_logs_json,
     format_table,
     format_value,
+    render_error_summary,
+    render_logs,
     render_overview,
     render_vitals,
 )
@@ -1485,6 +1496,70 @@ def _explain_observability_404(exc: ApiError) -> ApiError:
     )
 
 
+#: Appended to a 403 from the request logs endpoint. That endpoint is scoped by
+#: the owning account, through an ``ownerId`` query parameter it requires and
+#: cannot infer, so the commonest cause is a token that has no account to scope
+#: to. It accepts no ``teamId`` at all, which is why the Web Analytics team hint
+#: above would send the reader to a parameter this surface does not have.
+REQUEST_LOGS_SCOPE_HINT = (
+    "Request logs are scoped by the owning account (the ownerId parameter), so "
+    "a token scoped to a single project cannot read them: it cannot act for the "
+    "account that owns the project. Create an account or team scoped token at "
+    "https://vercel.com/account/tokens, and set VERCEL_TEAM_ID for a team owned "
+    "project, since a team is its own owner."
+)
+
+
+def _explain_request_logs_403(exc: ApiError) -> ApiError:
+    """Turn a 403 from the logs endpoint into the answer, not just the status.
+
+    ASSUMPTION: only a team scoped token was available to verify this against,
+    so the project scoped case is reasoned from the ``ownerId`` requirement
+    (omitting it is a 400, and a value the token cannot reach is a 403) rather
+    than observed. See docs/api-notes.md.
+
+    Args:
+        exc: The failure as the API reported it.
+
+    Returns:
+        A new :class:`ApiError` carrying Vercel's own message and then the
+        scope explanation, or ``exc`` unchanged for any other status.
+    """
+    if exc.status != 403:
+        return exc
+    return ApiError(
+        exc.status,
+        exc.code,
+        f"{exc.message}\n{REQUEST_LOGS_SCOPE_HINT}",
+        attempts=exc.attempts,
+    )
+
+
+def _explain_failure(exc: ApiError, operation: str, settings: Settings) -> ApiError:
+    """Add whatever explanation the failing operation's own scoping rules call for.
+
+    One dispatch point for all three surfaces, so a refusal can only ever
+    collect advice that fits the endpoint that refused: the Web Analytics team
+    hint on a request logs 403 would point at ``--team``, which that endpoint
+    does not accept, and would say nothing about the ``ownerId`` it does need.
+
+    Args:
+        exc: The failure as the API reported it.
+        operation: The operation key of the request that failed.
+        settings: The resolved settings, which decide whether the Web Analytics
+            team hint applies at all.
+
+    Returns:
+        Either a new :class:`ApiError` carrying the explanation, or ``exc``
+        unchanged when this status on this operation explains itself.
+    """
+    if operation == OBSERVABILITY_QUERY:
+        return _explain_observability_404(exc)
+    if operation == REQUEST_LOGS_QUERY:
+        return _explain_request_logs_403(exc)
+    return _explain_missing_team(exc, settings)
+
+
 class MissingProject(ConfigError):
     """No project was named, and one account may hold many.
 
@@ -1677,16 +1752,21 @@ def _resolve_project_record(
 ) -> tuple[str | None, str | None]:
     """Read one project record, returning its canonical id and owning account.
 
-    Called for the Speed Insights surface when either piece is missing. Two
-    things come from the one request, which is why they resolve together:
+    Called for the two surfaces that scope by an owning account, whenever
+    something they need is missing. Two things come from the one request, which
+    is why they resolve together:
 
-    * The **owner**, because a scope requires ``ownerId`` and only the API knows
-      it for a personal account. The account endpoint is not equivalent: a team
-      scoped token has no personal user and it answers 404 "User not found."
-    * The **canonical project id**, because this surface scopes by
+    * The **owner**, because both surfaces require one (Speed Insights as
+      ``scope.ownerId``, request logs as the ``ownerId`` parameter) and only the
+      API knows it for a personal account. The account endpoint is not
+      equivalent: a team scoped token has no personal user and it answers 404
+      "User not found."
+    * The **canonical project id**, because Speed Insights scopes by
       ``projectIds`` and wants identifiers, while Web Analytics happily accepts
       a project name. Resolving the name here is what stops ``--project
       my-site`` working for traffic and silently returning nothing for speed.
+      Request logs take a name or an id, so that surface never needs this on
+      its own.
 
     Returns:
         ``(project_id, owner_id)``, either of which may be ``None`` when the
@@ -1721,6 +1801,35 @@ def _resolve_project_record(
             "pass --owner-id and a prj_ identifier explicitly"
         )
     return resolve_project_id(payload, settings.project), owner_from_project(payload)
+
+
+def _needs_owner_lookup(settings: Settings) -> bool:
+    """Whether this run must read the project record before it can query.
+
+    Both scoped surfaces need the owning account, and for a personal account
+    only the project's own record knows it. What each surface needs beyond that
+    differs:
+
+    * **Speed Insights** scopes by ``scope.ownerId`` and ``scope.projectIds``,
+      so it needs the owner and a real project id. A project name is legal input
+      and works as-is on Web Analytics, so it is resolved here rather than handed
+      to a field that cannot match it.
+    * **Request logs** require ``ownerId`` too: omitting it is a 400 and a value
+      the token cannot reach is a 403. That endpoint takes a project name as
+      happily as an id, so only a missing owner is worth the extra request.
+
+    Args:
+        settings: The resolved settings for this run.
+
+    Returns:
+        True when one extra GET is needed before the query can be built.
+    """
+    if settings.is_logs:
+        return not settings.owner_id
+    return settings.is_speed and (
+        not settings.owner_id
+        or not (settings.all_projects or looks_like_project_id(settings.project))
+    )
 
 
 def _overview_granularity(settings: Settings) -> str:
@@ -1819,6 +1928,91 @@ def _empty_message(settings: Settings, group_by: Sequence[str]) -> str:
     )
 
 
+def _collect_logs(
+    settings: Settings,
+    args: argparse.Namespace,
+    session: Any,
+    on_retry: Callable[[str], None],
+    err: TextIO,
+) -> LogReport:
+    """Fetch every filter set, page by page, and build one report from them.
+
+    Each filter set gets its own paging budget, and the sets are then merged and
+    deduplicated by request id: one request can arrive from both of an errors
+    run's filter sets, because ``level`` matches what a request logged while
+    ``statusCode`` matches what it answered.
+
+    Args:
+        settings: The resolved settings for this run.
+        args: The parsed command line, for ``--verbose`` and ``--max-retries``.
+        session: The session every request is issued on.
+        on_retry: Called with one line of reason each time a request is retried.
+        err: Where the verbose lines go. Passed in rather than taken from
+            ``sys.stderr`` so they reach the same stream as the rest of the CLI's
+            diagnostics, which is also the stream the tests capture.
+
+    Returns:
+        One report covering every filter set, newest first.
+
+    Raises:
+        ApiError: On a failure the API reported, carrying the token scope
+            explanation when it was a 403; or with code ``invalid_response``
+            when a page was not an object carrying ``rows``.
+        RateLimitError: When retrying did not clear a rate limit.
+    """
+    limit = settings.limit or LOGS_DEFAULT_LIMIT
+    groups: list[list[LogEntry]] = []
+    truncated = False
+    pages = 0
+
+    for index in range(len(_plan_log_requests(settings))):
+
+        def call(page: int, index: int = index) -> Mapping[str, Any]:
+            """Fetch one page of one filter set. Injected into logs.collect."""
+            prepared = _plan_log_requests(settings, page)[index]
+            if args.verbose:
+                print(
+                    f"verbose: {prepared.method} {prepared.url} page {page}",
+                    file=err,
+                )
+            try:
+                answer = execute(
+                    prepared,
+                    session,
+                    max_retries=args.max_retries,
+                    timeout=settings.timeout,
+                    on_retry=on_retry,
+                )
+            except ApiError as exc:
+                raise _explain_failure(exc, prepared.operation, settings) from None
+            if not isinstance(answer, Mapping):
+                raise ApiError(
+                    200,
+                    "invalid_response",
+                    "the request logs response was a JSON array, but this "
+                    "endpoint answers with an object carrying 'rows'",
+                )
+            return answer
+
+        entries, call_truncated, call_pages = collect_logs(call, limit=limit)
+        groups.append(entries)
+        truncated = truncated or call_truncated
+        pages += call_pages
+
+    merged, merge_truncated = merge_logs(groups, limit=limit)
+    return build_log_report(
+        merged,
+        time_range=settings.time_range,
+        project_label=settings.project_label,
+        preset=settings.preset.name,
+        filters=settings.log_filters,
+        truncated=truncated or merge_truncated,
+        pages_fetched=pages,
+        requested_limit=limit,
+        counts_errors=settings.preset.name in ("errors", "error-summary"),
+    )
+
+
 def _run(
     args: argparse.Namespace,
     env: Mapping[str, str],
@@ -1845,13 +2039,7 @@ def _run(
     for warning in settings.warnings:
         print(f"warning: {warning}", file=err)
 
-    # Speed Insights needs both an owner and a real project id. A name is legal
-    # input and works as-is on Web Analytics, so it is only resolved here, where
-    # scope.projectIds would otherwise be handed something it cannot match.
-    needs_lookup = settings.is_speed and (
-        not settings.owner_id
-        or not (settings.all_projects or looks_like_project_id(settings.project))
-    )
+    needs_lookup = _needs_owner_lookup(settings)
 
     if args.dry_run:
         # A dry run sends nothing, including the GET that would resolve the
@@ -1863,8 +2051,13 @@ def _run(
                 print(file=out)
             print(format_dry_run(prepared), file=out)
         if needs_lookup and settings.owner_id == OWNER_PLACEHOLDER:
+            # The two surfaces carry the owner differently: Speed Insights posts
+            # it inside a scope object, request logs send it as a plain query
+            # parameter. Naming a scope object the logs API does not have would
+            # send its reader hunting for a field that is not there.
+            owner_field = "the ownerId parameter" if settings.is_logs else "scope.ownerId"
             print(
-                f"\nscope.ownerId shows {OWNER_PLACEHOLDER} because no --team "
+                f"\n{owner_field} shows {OWNER_PLACEHOLDER} because no --team "
                 "and no --owner-id were given. A real run reads it once from "
                 "the project's own record (its accountId); pass --owner-id to "
                 "skip that call.",
@@ -1877,6 +2070,10 @@ def _run(
             print(f"verbose: {reason}", file=err)
 
     payloads: list[dict[str, Any]] = []
+    # Declared here, before the session, so this one name has a single type all
+    # the way through: the emitter below branches on it having been collected
+    # rather than on the surface, which needs neither an assert nor a cast.
+    report: LogReport | None = None
     session = requests.Session()
     try:
         if needs_lookup:
@@ -1896,44 +2093,54 @@ def _run(
             if not settings.owner_id:
                 raise ConfigError(
                     f"project {settings.project!r} carried no owning account, "
-                    "so a Speed Insights scope could not be built; pass "
-                    "--owner-id explicitly, or set VERCEL_OWNER_ID"
+                    f"so a {SURFACE_LABELS[settings.surface]} query could not "
+                    "be scoped; pass --owner-id explicitly, or set "
+                    "VERCEL_OWNER_ID"
                 )
 
-        requests_to_send = _plan_requests(settings)
+        if settings.is_logs:
+            # This surface pages, so its requests are issued as they are needed
+            # rather than all planned up front, and it answers with rows rather
+            # than with the grouped payload the loop below collects.
+            report = _collect_logs(settings, args, session, on_retry, err)
+        else:
+            requests_to_send = _plan_requests(settings)
 
-        if args.verbose:
+            if args.verbose:
+                for prepared in requests_to_send:
+                    print(f"verbose: {prepared.method} {prepared.url}", file=err)
+                    print(f"verbose: params {prepared.params}", file=err)
+                    print(
+                        f"verbose: headers {redact_headers(prepared.headers)}",
+                        file=err,
+                    )
+
             for prepared in requests_to_send:
-                print(f"verbose: {prepared.method} {prepared.url}", file=err)
-                print(f"verbose: params {prepared.params}", file=err)
-                print(f"verbose: headers {redact_headers(prepared.headers)}", file=err)
-
-        for prepared in requests_to_send:
-            try:
-                answer = execute(
-                    prepared,
-                    session,
-                    max_retries=args.max_retries,
-                    timeout=settings.timeout,
-                    on_retry=on_retry,
-                )
-            except ApiError as exc:
-                if prepared.operation == OBSERVABILITY_QUERY:
-                    raise _explain_observability_404(exc) from None
-                raise _explain_missing_team(exc, settings) from None
-            if not isinstance(answer, Mapping):
-                # Only the schema endpoint answers with a top level array; a
-                # query that does is a response this client cannot interpret.
-                raise ApiError(
-                    200,
-                    "invalid_response",
-                    "the query returned a JSON array, but a query response is "
-                    "an object carrying 'data'; run with --json to see it",
-                )
-            payloads.append(dict(answer))
+                try:
+                    answer = execute(
+                        prepared,
+                        session,
+                        max_retries=args.max_retries,
+                        timeout=settings.timeout,
+                        on_retry=on_retry,
+                    )
+                except ApiError as exc:
+                    raise _explain_failure(exc, prepared.operation, settings) from None
+                if not isinstance(answer, Mapping):
+                    # Only the schema endpoint answers with a top level array; a
+                    # query that does is a response this client cannot interpret.
+                    raise ApiError(
+                        200,
+                        "invalid_response",
+                        "the query returned a JSON array, but a query response "
+                        "is an object carrying 'data'; run with --json to see it",
+                    )
+                payloads.append(dict(answer))
     finally:
         session.close()
 
+    if report is not None:
+        return _emit_logs(settings, args, report, style, out)
     if settings.is_speed:
         return _emit_speed(settings, args, payloads, style, out, err)
     if settings.preset.name == "overview":
@@ -2173,6 +2380,44 @@ def _emit_overview(
         ),
         file=out,
     )
+    return 0
+
+
+def _emit_logs(
+    settings: Settings,
+    args: argparse.Namespace,
+    report: LogReport,
+    style: Style,
+    out: TextIO,
+) -> int:
+    """Print a logs report in whichever format was asked for.
+
+    Args:
+        settings: The resolved settings, for the preset that decides the layout.
+        args: The parsed command line, for the output format and ``--expand``.
+        report: The collected report.
+        style: Colour and glyph settings.
+        out: Stream for the report.
+
+    Returns:
+        0, always. An empty window is a complete answer to "what broke", and
+        exiting non-zero for it would fail a caller's pipeline over good news.
+    """
+    if args.json:
+        print(format_logs_json(report), file=out)
+        return 0
+    if args.csv:
+        print(format_logs_csv(report), end="", file=out)
+        return 0
+    if settings.preset.name == "error-summary":
+        # Tallied from the merged entries, and by this one caller, so the tables
+        # can only ever count the rows the report itself carries.
+        print(
+            render_error_summary(report, summarize(report.entries), style=style),
+            file=out,
+        )
+        return 0
+    print(render_logs(report, style=style, expand=args.expand), file=out)
     return 0
 
 
