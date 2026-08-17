@@ -55,6 +55,14 @@ SOURCES: tuple[str, ...] = (
     "static",
 )
 
+#: Row display values that are not filter values, mapped to the filter spelling
+#: that matches them. Verified live on 2026-08-17: the source column of a real
+#: row reads ``serverless-middleware``, while the filter that matches those rows
+#: is ``edge-middleware`` (every row it returned carried a serverless-middleware
+#: event, and ``source=serverless-middleware`` returned nothing). Accepting the
+#: displayed spelling means a user can filter by what this tool showed them.
+SOURCE_ALIASES: dict[str, str] = {"serverless-middleware": "edge-middleware"}
+
 #: Rows per page. Fixed by the API: the ``limit`` parameter is accepted and
 #: ignored, which is why a row limit is enforced in this client instead.
 PAGE_SIZE = 50
@@ -136,21 +144,60 @@ def validate_levels(value: str) -> str:
     return _validate_vocabulary("level", "log level", value, LEVELS)
 
 
+def _resolve_source_aliases(value: str) -> str:
+    """Rewrite display-only source spellings to their filter spelling.
+
+    The source column can print a value, such as ``serverless-middleware``,
+    that the API does not accept back as a filter; :data:`SOURCE_ALIASES`
+    records the filter spelling that matches each one. Resolving this before
+    :func:`_validate_vocabulary` runs keeps that helper's vocabulary check
+    unaware of aliasing, since :func:`validate_levels` has none.
+
+    Args:
+        value: The raw, comma separated ``--source`` value, any case.
+
+    Returns:
+        The same items, comma separated, with any alias (matched
+        case-insensitively) rewritten to its filter spelling. An item with no
+        alias passes through unchanged, for :func:`_validate_vocabulary` to
+        accept or refuse.
+    """
+    items = [SOURCE_ALIASES.get(item.lower(), item) for item in _split(value)]
+    return ",".join(items)
+
+
 def validate_sources(value: str) -> str:
     """Validate a ``--source`` list and return it as the API spells it.
 
+    A display-only spelling such as ``serverless-middleware`` (see
+    :data:`SOURCE_ALIASES`) is resolved to its filter spelling first, so a
+    value copied out of this tool's own source column is accepted rather than
+    refused.
+
     Args:
-        value: One or more comma separated source names, any case.
+        value: One or more comma separated source names, any case; may
+            include a display alias from :data:`SOURCE_ALIASES`.
 
     Returns:
-        The lower-cased comma separated list to send.
+        The lower-cased comma separated list to send, aliases resolved.
 
     Raises:
-        ConfigError: When the list is empty or names an unknown source. Same
+        ConfigError: When the list is empty or names a source that is neither
+            in :data:`SOURCES` nor a key of :data:`SOURCE_ALIASES`. Same
             reasoning as :func:`validate_levels`: an unknown value is answered
-            with zero rows.
+            with zero rows. The message additionally names the alias, since
+            the source column can display a spelling this filter does not
+            accept.
     """
-    return _validate_vocabulary("source", "source", value, SOURCES)
+    try:
+        return _validate_vocabulary(
+            "source", "source", _resolve_source_aliases(value), SOURCES
+        )
+    except ConfigError as error:
+        raise ConfigError(
+            f"{error}. The source column may display 'serverless-middleware', "
+            "which is filtered as 'edge-middleware'."
+        ) from error
 
 
 def validate_status_code(value: str) -> str:

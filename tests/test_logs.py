@@ -76,6 +76,48 @@ def test_validate_sources_refuses_an_unknown_source(value: str) -> None:
     for source in vi_logs.SOURCES:
         assert source in message
     assert "zero rows" in message
+    # The row table can print a value that is not itself a filter spelling, so
+    # the refusal message has to point at the mapping, not just the raw list.
+    assert "serverless-middleware" in message
+    assert "edge-middleware" in message
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("serverless-middleware", "edge-middleware"),
+        ("SERVERLESS-MIDDLEWARE", "edge-middleware"),
+        ("serverless,serverless-middleware", "serverless,edge-middleware"),
+        (" Serverless-Middleware , static ", "edge-middleware,static"),
+    ],
+)
+def test_validate_sources_resolves_the_display_alias_to_its_filter_spelling(
+    value: str, expected: str
+) -> None:
+    # The row table's source column can print serverless-middleware, which is
+    # not itself an accepted filter value; edge-middleware is what matches
+    # those rows on the live API (verified 2026-08-17), so the displayed
+    # spelling has to resolve to it rather than being refused.
+    assert vi_logs.validate_sources(value) == expected
+
+
+def test_validate_sources_still_refuses_an_unrelated_unknown_value_beside_the_alias() -> (
+    None
+):
+    with pytest.raises(ConfigError) as excinfo:
+        vi_logs.validate_sources("serverless-middleware,lambda")
+    message = str(excinfo.value)
+    assert "'lambda'" in message
+    for source in vi_logs.SOURCES:
+        assert source in message
+
+
+def test_source_aliases_only_resolve_to_values_the_api_accepts() -> None:
+    # An alias that pointed outside SOURCES would mean this client refuses,
+    # or worse silently mis-filters, on its own alias table rather than on
+    # anything the API actually rejected.
+    for resolved in vi_logs.SOURCE_ALIASES.values():
+        assert resolved in vi_logs.SOURCES
 
 
 @pytest.mark.parametrize(

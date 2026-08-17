@@ -469,7 +469,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--source",
         metavar="SOURCE",
         default=None,
-        help="only requests served by: " + ", ".join(LOG_SOURCES) + ", comma separated",
+        help=(
+            "only requests served by: "
+            + ", ".join(LOG_SOURCES)
+            + ", comma separated. The source column may display "
+            "'serverless-middleware', which is filtered as 'edge-middleware'"
+        ),
     )
     logs.add_argument(
         "--method",
