@@ -676,6 +676,16 @@ SPEED_CONFIG_ERRORS: list[tuple[str, list[str], dict[str, str], list[str]]] = [
         ["--data-points", "Speed Insights surface"],
     ),
     (
+        # A budget promises to fail a build when a threshold is exceeded. Only
+        # Speed Insights measures anything to compare against one, and this used
+        # to be accepted and then ignored on a traffic preset, which is a false
+        # safety guarantee in CI: the build passes because nothing was checked.
+        "rule22-budget-on-web-preset",
+        ["top-pages", "--budget", "lcp=2500"],
+        dict(BASE_ENV),
+        ["--budget", "Speed Insights surface", "vitals"],
+    ),
+    (
         "aggregation-and-percentile-together",
         ["vitals", "--aggregation", "max", "--percentile", "90"],
         dict(BASE_ENV),

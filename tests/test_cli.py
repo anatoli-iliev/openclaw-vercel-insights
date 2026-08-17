@@ -945,6 +945,19 @@ def test_the_parser_prog_is_the_renamed_command(cli: Cli) -> None:
     assert vi_cli.build_parser().prog == "vercel-insights"
 
 
+def test_the_help_names_every_surface_and_what_a_limit_means_on_each() -> None:
+    # The help doubles as the reference docs, so a surface the tool can query
+    # but does not mention is a surface nobody finds. --limit is the one flag
+    # whose meaning changes between them: groups on the analytics APIs, rows on
+    # request logs, with a different ceiling.
+    # Whitespace collapsed, because argparse wraps the help to the terminal and
+    # a phrase would otherwise be split by a line break rather than missing.
+    help_text = " ".join(vi_cli.build_parser().format_help().split())
+    for surface in ("Web Analytics", "Speed Insights", "request logs"):
+        assert surface in help_text, f"{surface} is queryable but unmentioned"
+    assert "counts rows rather than groups, up to 200" in help_text
+
+
 def test_dry_run_calls_helper_sees_one_entry_per_planned_request(cli: Cli) -> None:
     code, out, err = cli.run(["overview", "--dry-run"], env=dict(DRY_RUN_ENV))
     assert code == 0, err

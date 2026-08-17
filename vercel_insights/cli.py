@@ -48,6 +48,9 @@ from .http import (
     validate_timeout,
     validate_token,
 )
+from .logs import LEVELS as LOG_LEVELS
+from .logs import MAX_LIMIT as LOGS_MAX_LIMIT
+from .logs import SOURCES as LOG_SOURCES
 from .odata import build_clause, combine_filters, json_dimension
 from .presets import DEFAULT_METRIC, DEFAULT_PRESET, PRESETS, Preset, format_presets
 from .projects import (
@@ -106,7 +109,10 @@ from .speedinsights import validate_group_by as validate_speed_group_by
 from .speedinsights import validate_limit as validate_speed_limit
 from .timerange import (
     ACCEPTED_GRANULARITIES,
+    LOGS,
     SPEED_INSIGHTS,
+    SURFACE_LABELS,
+    SURFACES,
     TIME_GRANULARITIES,
     TIME_HELP,
     WEB_ANALYTICS,
@@ -181,10 +187,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROG,
         description=(
-            "Query the Vercel Web Analytics and Speed Insights APIs from the "
-            "command line. Read only: every request comes from a fixed operation "
-            "allowlist, and the access token is sent only in the Authorization "
-            "header."
+            "Query the Vercel Web Analytics, Speed Insights and request logs "
+            "APIs from the command line. Read only: every request comes from a "
+            "fixed operation allowlist, and the access token is sent only in "
+            "the Authorization header."
         ),
         epilog=EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -316,7 +322,8 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             f"maximum number of groups, {MIN_LIMIT} to {MAX_LIMIT} "
             f"(preset default, usually {DEFAULT_LIMIT}); the rest roll into "
-            f"one {OTHERS_LABEL!r} row"
+            f"one {OTHERS_LABEL!r} row. On a logs preset it counts rows rather "
+            f"than groups, up to {LOGS_MAX_LIMIT}, and nothing rolls up"
         ),
     )
     shape.add_argument(
@@ -405,10 +412,86 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    logs = parser.add_argument_group(
+        "request logs",
+        "Only meaningful with a logs preset (logs, errors, error-summary). This "
+        "API returns rows of text rather than aggregated numbers, and filters "
+        "with query parameters rather than OData.",
+    )
+    logs.add_argument(
+        "--level",
+        metavar="LEVEL",
+        default=None,
+        help=(
+            "only requests that logged a line at one of these levels: "
+            + ", ".join(LOG_LEVELS)
+            + ", comma separated. Note that this matches application log lines "
+            "only, so a 5xx that printed nothing does not match"
+        ),
+    )
+    logs.add_argument(
+        "--status-code",
+        dest="status_code",
+        metavar="CODE",
+        default=None,
+        help=(
+            "only responses with this status: an integer such as 500, a class "
+            "such as 5xx, None for requests with no status recorded, or a comma "
+            "separated mix"
+        ),
+    )
+    logs.add_argument(
+        "--source",
+        metavar="SOURCE",
+        default=None,
+        help="only requests served by: " + ", ".join(LOG_SOURCES) + ", comma separated",
+    )
+    logs.add_argument(
+        "--method",
+        metavar="METHOD",
+        default=None,
+        help="only this HTTP method, for example POST",
+    )
+    logs.add_argument(
+        "--search",
+        metavar="TEXT",
+        default=None,
+        help=(
+            "only requests whose path or log text contains this; free text, not "
+            "a query syntax, so 'status:500' is matched literally"
+        ),
+    )
+    logs.add_argument(
+        "--request-id",
+        dest="request_id",
+        metavar="ID",
+        default=None,
+        help="one request, by the id shown in the table",
+    )
+    logs.add_argument(
+        "--branch",
+        metavar="NAME",
+        default=None,
+        help="only deployments built from this git branch",
+    )
+    logs.add_argument(
+        "--deployment",
+        metavar="ID",
+        default=None,
+        help="only this deployment, by its dpl_ id",
+    )
+    logs.add_argument(
+        "--expand",
+        action="store_true",
+        help="print each full log message under its row instead of truncating it",
+    )
+
     filters = parser.add_argument_group(
         "filters",
         "Each flag adds one OData clause; all clauses are joined with 'and'. "
-        "A comma separated value becomes an 'in (...)' set.",
+        "A comma separated value becomes an 'in (...)' set. A logs preset has "
+        "only --path, --route and --environment, which become exact match query "
+        "parameters there; --search is the substring tool on that surface.",
     )
     filters.add_argument("--path", metavar="PATH", help="requestPath, exact URL path")
     filters.add_argument("--route", metavar="ROUTE", help="route, framework pattern")
@@ -545,23 +628,51 @@ def _env_value(env: Mapping[str, str], name: str) -> str | None:
     return value.strip() or None if value else None
 
 
-#: Every filter shorthand, in the order its clause is emitted, with the
-#: dimension it compiles to on each surface. The two APIs name the same thing
-#: differently, so the spelling follows the surface the query is going to, and
-#: ``None`` marks a shorthand that surface has no dimension for at all.
-FILTER_SHORTHANDS: tuple[tuple[str, str, str | None], ...] = (
-    ("--path", "requestPath", "request_path"),
-    ("--route", "route", "route"),
-    ("--country", "country", "country"),
-    ("--device", "deviceType", "device_type"),
-    ("--browser", "browserName", None),
-    ("--os", "osName", None),
-    ("--referrer", "referrerHostname", None),
-    ("--utm-source", "utmSource", None),
-    ("--utm-medium", "utmMedium", None),
-    ("--utm-campaign", "utmCampaign", None),
-    ("--environment", "environment", "environment"),
+#: Every filter shorthand, in the order its clause is emitted, with the name it
+#: compiles to on each surface: the flag, then Web Analytics, Speed Insights and
+#: request logs in that order. The three APIs name the same thing differently,
+#: so the spelling follows the surface the query is going to, and ``None`` marks
+#: a shorthand that surface has no dimension for at all. On the logs surface
+#: these names are query parameters rather than OData dimensions.
+FILTER_SHORTHANDS: tuple[tuple[str, str, str | None, str | None], ...] = (
+    ("--path", "requestPath", "request_path", "requestPath"),
+    ("--route", "route", "route", "route"),
+    ("--country", "country", "country", None),
+    ("--device", "deviceType", "device_type", None),
+    ("--browser", "browserName", None, None),
+    ("--os", "osName", None, None),
+    ("--referrer", "referrerHostname", None, None),
+    ("--utm-source", "utmSource", None, None),
+    ("--utm-medium", "utmMedium", None, None),
+    ("--utm-campaign", "utmCampaign", None, None),
+    ("--environment", "environment", "environment", "environment"),
 )
+
+#: What the request logs surface can filter on, named as the user writes it.
+#: The wire parameter names live in :data:`logs.FILTER_PARAMS`; these are the
+#: flags that reach them, which is what a refusal should tell the reader to use.
+LOGS_FILTER_FLAGS: tuple[str, ...] = (
+    "--path",
+    "--route",
+    "--environment",
+    "--level",
+    "--status-code",
+    "--source",
+    "--method",
+    "--branch",
+    "--deployment",
+    "--request-id",
+    "--search",
+)
+
+#: For each surface that lacks some shorthand's dimension: how that surface is
+#: named in the refusal, and what it does filter on instead. Web Analytics is
+#: absent because every shorthand compiles there, so the refusal cannot arise
+#: for it.
+_NO_DIMENSION_HELP: dict[str, tuple[str, tuple[str, ...]]] = {
+    SPEED_INSIGHTS: ("Speed Insights", SPEED_DIMENSIONS),
+    LOGS: ("the request logs API", LOGS_FILTER_FLAGS),
+}
 
 
 def _shorthand_values(args: argparse.Namespace) -> dict[str, str | None]:
@@ -590,20 +701,25 @@ def _resolve_filters(
     actually going to, and a shorthand the active surface has no dimension for
     is a configuration error naming why, never a clause the API would reject.
     """
-    speed = surface == SPEED_INSIGHTS
     values = _shorthand_values(args)
 
     clauses: list[str] = []
-    for flag, web_name, speed_name in FILTER_SHORTHANDS:
+    for flag, web_name, speed_name, logs_name in FILTER_SHORTHANDS:
         value = values[flag]
         if not value:
             continue
-        dimension = speed_name if speed else web_name
+        if surface == SPEED_INSIGHTS:
+            dimension = speed_name
+        elif surface == LOGS:
+            dimension = logs_name
+        else:
+            dimension = web_name
         if dimension is None:
+            subject, filterable = _NO_DIMENSION_HELP[surface]
             raise ConfigError(
-                f"{flag} {value!r} is a Web Analytics filter: Speed Insights "
+                f"{flag} {value!r} is a Web Analytics filter: {subject} "
                 f"collects no {web_name} dimension, so it cannot filter on one. "
-                f"That surface filters on {', '.join(SPEED_DIMENSIONS)}; drop "
+                f"That surface filters on {', '.join(filterable)}; drop "
                 f"the flag, or run a Web Analytics preset instead"
             )
         clauses.append(build_clause(dimension, value))
@@ -652,35 +768,108 @@ def _resolve_group_by(args: argparse.Namespace, preset: Preset) -> list[str]:
     return group_by
 
 
-#: The Speed Insights presets, named in the error that rejects a Speed
-#: Insights option on the other surface.
-SPEED_PRESET_NAMES = ", ".join(
-    name for name, preset in PRESETS.items() if preset.is_speed
+#: Every option that is not meaningful on every surface: the argparse attribute,
+#: the flag as the user writes it, the surfaces it does mean something on, and
+#: the reason it means nothing elsewhere. One table rather than one per surface,
+#: because with three surfaces the pairwise version stops being readable. The
+#: filter shorthands are absent: :data:`FILTER_SHORTHANDS` already knows which
+#: surface has which dimension, and refuses the rest there.
+SURFACE_OPTIONS: tuple[tuple[str, str, frozenset[str], str], ...] = (
+    # Speed Insights only.
+    ("metric", "--metric", frozenset({SPEED_INSIGHTS}),
+     "only Speed Insights reports a metric per request"),
+    ("percentile", "--percentile", frozenset({SPEED_INSIGHTS}),
+     "a percentile only means something over a distribution of measurements"),
+    ("aggregation", "--aggregation", frozenset({SPEED_INSIGHTS}),
+     "an aggregation combines a distribution of measurements, and only Speed "
+     "Insights collects one"),
+    ("order_by", "--order-by", frozenset({SPEED_INSIGHTS}),
+     "only Speed Insights returns the rollup columns this orders by"),
+    ("order", "--order", frozenset({SPEED_INSIGHTS}),
+     "only Speed Insights takes an order for its grouped rows"),
+    ("bucket_timezone", "--bucket-timezone", frozenset({SPEED_INSIGHTS}),
+     "only Speed Insights aligns its time buckets to a zone"),
+    ("all_projects", "--all", frozenset({SPEED_INSIGHTS}),
+     "only Speed Insights can answer for every project in one request"),
+    ("data_points", "--data-points", frozenset({SPEED_INSIGHTS}),
+     "only Speed Insights counts the measurements behind a value"),
+    ("budget", "--budget", frozenset({SPEED_INSIGHTS}),
+     "a budget compares a measured value against a threshold, and only Speed "
+     "Insights reports one"),
+    # Web Analytics only. Each reason has to hold on both of the other two
+    # surfaces, since either can be the one refusing.
+    ("dataset", "--dataset", frozenset({WEB_ANALYTICS}),
+     "Speed Insights has no datasets: it queries one metric at a time, chosen "
+     "with --metric, and request logs are rows rather than a dataset"),
+    ("event_name", "--event-name", frozenset({WEB_ANALYTICS}),
+     "neither Speed Insights nor request logs collect custom events"),
+    ("event_property", "--event-property", frozenset({WEB_ANALYTICS}),
+     "neither Speed Insights nor request logs collect custom events, so "
+     "neither has event properties to break out"),
+    ("flag", "--flag", frozenset({WEB_ANALYTICS}),
+     "neither Speed Insights nor request logs collect feature flag values"),
+    # Request logs only.
+    ("level", "--level", frozenset({LOGS}),
+     "only the request logs API records a log level"),
+    ("status_code", "--status-code", frozenset({LOGS}),
+     "only the request logs API reports a response status per request"),
+    ("source", "--source", frozenset({LOGS}),
+     "only the request logs API says what served a request"),
+    ("method", "--method", frozenset({LOGS}),
+     "neither analytics API filters by HTTP method"),
+    ("search", "--search", frozenset({LOGS}),
+     "there is no log text to search on an analytics surface"),
+    ("request_id", "--request-id", frozenset({LOGS}),
+     "an analytics row is an aggregate, not one request"),
+    ("branch", "--branch", frozenset({LOGS}),
+     "neither analytics API records the git branch"),
+    ("deployment", "--deployment", frozenset({LOGS}),
+     "neither analytics API filters by deployment"),
+    ("expand", "--expand", frozenset({LOGS}),
+     "there is no log message to expand"),
+    # Both analytics surfaces, but not request logs.
+    ("group_by", "--group-by", frozenset({WEB_ANALYTICS, SPEED_INSIGHTS}),
+     "request logs are rows rather than buckets, so there is nothing to group; "
+     "use the error-summary preset, which groups by status, route and message"),
+    ("granularity", "--granularity", frozenset({WEB_ANALYTICS, SPEED_INSIGHTS}),
+     "request logs are rows rather than time buckets"),
+    ("raw_filters", "--filter", frozenset({WEB_ANALYTICS, SPEED_INSIGHTS}),
+     "the request logs API takes no OData; filter with --search, --path, "
+     "--route, --status-code, --level, --source, --method or --branch"),
 )
 
-#: Options that only mean something on the Speed Insights surface, paired with
-#: how to read whether the user actually passed one.
-SPEED_ONLY_OPTIONS: tuple[tuple[str, str], ...] = (
-    ("--metric", "metric"),
-    ("--percentile", "percentile"),
-    ("--aggregation", "aggregation"),
-    ("--order-by", "order_by"),
-    ("--order", "order"),
-    ("--bucket-timezone", "bucket_timezone"),
-    ("--all", "all_projects"),
-    ("--data-points", "data_points"),
-)
 
-#: Options that only mean something on the Web Analytics surface. The filter
-#: shorthands are handled by :data:`FILTER_SHORTHANDS`; these are the rest.
-WEB_ONLY_OPTIONS: tuple[tuple[str, str, str], ...] = (
-    ("--dataset", "dataset", "Speed Insights has no datasets: it queries one "
-     "metric at a time, chosen with --metric"),
-    ("--event-name", "event_name", "Speed Insights does not collect custom events"),
-    ("--event-property", "event_property", "Speed Insights does not collect "
-     "custom events, so it has no event properties to break out"),
-    ("--flag", "flag", "Speed Insights does not collect feature flag values"),
-)
+def _surface_phrase(surfaces: frozenset[str]) -> str:
+    """Name the surfaces in prose, for example ``Speed Insights surface``.
+
+    Args:
+        surfaces: The surfaces an option means something on.
+
+    Returns:
+        The labels in a fixed order, singular or plural as the count needs.
+    """
+    labels = [SURFACE_LABELS[name] for name in SURFACES if name in surfaces]
+    if len(labels) == 1:
+        return f"{labels[0]} surface"
+    return f"{' and '.join(labels)} surfaces"
+
+
+def _preset_names(surfaces: frozenset[str]) -> str:
+    """The presets that query any of ``surfaces``, comma separated.
+
+    Every refusal names where the flag does work, because a message that only
+    says "not here" leaves the reader with nothing to try next.
+
+    Args:
+        surfaces: The surfaces an option means something on.
+
+    Returns:
+        The preset names in the order the preset table lists them.
+    """
+    return ", ".join(
+        name for name, preset in PRESETS.items() if preset.surface in surfaces
+    )
+
 
 #: A bucket timezone is an IANA zone name such as ``Europe/Paris`` or ``UTC``.
 _TIMEZONE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+_-]*(/[A-Za-z0-9+_.-]+){0,2}$")
@@ -689,9 +878,23 @@ _TIMEZONE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+_-]*(/[A-Za-z0-9+_.-]+){0,2}$")
 def _reject_cross_surface_options(args: argparse.Namespace, preset: Preset) -> None:
     """Rules 14, 15 and 22: an option used on the surface it does not belong to.
 
-    Rule 14 first, because ``--dataset`` with ``--metric`` names a conflict
+    Walks :data:`SURFACE_OPTIONS` once, in all three directions: the preset
+    decides the surface, and an option not meaningful there is refused with the
+    reason and the presets it does work on. An option that is silently ignored
+    instead is the failure this exists to prevent, because a flag that promises
+    something and does nothing is worse than a flag that is refused.
+
+    Rule 14 goes first, because ``--dataset`` with ``--metric`` names a conflict
     between two options rather than between an option and a preset, and that
     is the more specific complaint.
+
+    Args:
+        args: The parsed arguments.
+        preset: The preset this run uses, which names the active surface.
+
+    Raises:
+        ConfigError: Naming the flag, the surface the preset queries, why the
+            flag means nothing there, and the presets it does work on.
     """
     if args.dataset and args.metric:
         raise ConfigError(
@@ -701,27 +904,20 @@ def _reject_cross_surface_options(args: argparse.Namespace, preset: Preset) -> N
             "Insights web vital. Keep one, and pick a preset for that surface"
         )
 
-    if preset.is_speed:
-        for flag, attribute, reason in WEB_ONLY_OPTIONS:
-            value = getattr(args, attribute)
-            if not value:
-                continue
-            raise ConfigError(
-                f"{flag} has no meaning on the {preset.name} preset, which "
-                f"queries Speed Insights: {reason}. Drop the flag, or run a Web "
-                "Analytics preset such as top-pages"
-            )
-        return
-
-    for flag, attribute in SPEED_ONLY_OPTIONS:
+    for attribute, flag, surfaces, reason in SURFACE_OPTIONS:
         value = getattr(args, attribute)
-        if value is None or value is False:
+        # An appending option defaults to [] or None, and a store_true to
+        # False, so "was it passed" is not the same question as "is it truthy".
+        if value is None or value is False or value == []:
             continue
-        shown = f" {value!r}" if not isinstance(value, bool) else ""
+        if preset.surface in surfaces:
+            continue
+        shown = "" if isinstance(value, bool) else f" {value!r}"
         raise ConfigError(
-            f"{flag}{shown} only applies to the Speed Insights surface, but the "
-            f"{preset.name} preset queries Web Analytics. Run one of "
-            f"{SPEED_PRESET_NAMES}, or drop the flag"
+            f"{flag}{shown} only applies to the {_surface_phrase(surfaces)}, "
+            f"but the {preset.name} preset queries "
+            f"{SURFACE_LABELS[preset.surface]}: {reason}. Run one of "
+            f"{_preset_names(surfaces)}, or drop the flag"
         )
 
 
@@ -920,6 +1116,13 @@ def _resolve_settings(args: argparse.Namespace, env: Mapping[str, str]) -> Setti
         raise ConfigError(
             "--csv needs a single table, but the overview preset issues three "
             "queries; use trend, top-pages or referrers with --csv instead"
+        )
+
+    if preset.name == "error-summary" and args.csv:
+        raise ConfigError(
+            "--csv needs a single table, but the error-summary preset tallies "
+            "the same errors three ways; use the errors preset with --csv "
+            "instead, which is one row per request"
         )
 
     if preset.metric == "*" and args.group_by:
