@@ -340,6 +340,44 @@ class LogEntry:
 
 
 @dataclass(frozen=True)
+class RouteTally:
+    """How many requests hit one route, at what worst status, and when."""
+
+    route: str
+    count: int
+    worst_status: int | None
+    first_seen: datetime | None
+    last_seen: datetime | None
+
+
+@dataclass(frozen=True)
+class MessageTally:
+    """How many requests logged one exact message, and when."""
+
+    message: str
+    count: int
+    first_seen: datetime | None
+    last_seen: datetime | None
+
+
+@dataclass(frozen=True)
+class LogSummary:
+    """A merged list of entries, tallied by status, by route and by message."""
+
+    total: int
+    by_status: tuple[tuple[str, int], ...]
+    by_route: tuple[RouteTally, ...]
+    by_message: tuple[MessageTally, ...]
+    #: Entries that are errors only because they logged an error or fatal
+    #: line, not because their status was already a 5xx or the function
+    #: crashed. This number is only meaningful for a set of entries that has
+    #: already been filtered to errors: on an unfiltered set, such as the
+    #: plain logs preset, it would count every ordinary sub-500 request in
+    #: the window instead.
+    logged_only: int
+
+
+@dataclass(frozen=True)
 class Style:
     """How output is decorated: colour, and whether non-ASCII glyphs are safe."""
 

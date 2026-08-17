@@ -29,7 +29,7 @@ from typing import Any
 
 from . import ApiError, ConfigError, sanitize_label, sanitize_message
 from .http import PreparedRequest, default_headers, operation_url
-from .render import ERROR_LEVELS, LogEntry, LogLine
+from .render import ERROR_LEVELS, LogEntry, LogLine, LogSummary, MessageTally, RouteTally
 from .timerange import to_unix_ms
 
 #: The operation key this surface uses. A key into ``http.OPERATIONS``, never a
@@ -583,3 +583,91 @@ def error_filter_sets(filters: Mapping[str, str]) -> list[dict[str, str]]:
         {**filters, "statusCode": "5xx"},
         {**filters, "level": ",".join(ERROR_LEVELS)},
     ]
+
+
+# ---------------------------------------------------------------------------
+# Local aggregation
+# ---------------------------------------------------------------------------
+
+#: The message group for a request that failed without logging anything.
+NO_LOG_LINE = "(no log line)"
+
+
+def summarize(entries: Sequence[LogEntry]) -> LogSummary:
+    """Tally a merged list of entries three ways, for the error-summary preset.
+
+    Grouping is deliberately literal: statuses by their own number, routes by
+    their pattern, messages by their exact text. Clustering messages by a
+    guessed pattern would merge two different bugs into one row, which is a
+    worse answer than three rows.
+
+    Args:
+        entries: The merged entries, in any order.
+
+    Returns:
+        The tallies, each ordered by count and then by name so the output is
+        stable across runs. ``logged_only`` counts entries that are errors
+        only because they logged an error or fatal line, and is meaningful
+        only when ``entries`` has already been filtered down to errors.
+    """
+    status_counts: dict[str, int] = {}
+    routes: dict[str, list[LogEntry]] = {}
+    messages: dict[str, list[LogEntry]] = {}
+    logged_only = 0
+
+    for entry in entries:
+        status = str(entry.status) if entry.status is not None else "(none)"
+        status_counts[status] = status_counts.get(status, 0) + 1
+        routes.setdefault(entry.label, []).append(entry)
+        messages.setdefault(entry.headline or NO_LOG_LINE, []).append(entry)
+        if (entry.status is None or entry.status < 500) and not entry.crashed:
+            logged_only += 1
+
+    def seen(group: Sequence[LogEntry]) -> tuple[datetime | None, datetime | None]:
+        stamps = sorted(item.timestamp for item in group if item.timestamp is not None)
+        return (stamps[0], stamps[-1]) if stamps else (None, None)
+
+    def worst(group: Sequence[LogEntry]) -> int | None:
+        found = [item.status for item in group if item.status is not None]
+        return max(found) if found else None
+
+    route_tallies: list[RouteTally] = []
+    for route, group in sorted(
+        routes.items(), key=lambda item: (-len(item[1]), item[0])
+    ):
+        first_seen, last_seen = seen(group)
+        route_tallies.append(
+            RouteTally(
+                route=route,
+                count=len(group),
+                worst_status=worst(group),
+                first_seen=first_seen,
+                last_seen=last_seen,
+            )
+        )
+    by_route = tuple(route_tallies)
+
+    message_tallies: list[MessageTally] = []
+    for message, group in sorted(
+        messages.items(), key=lambda item: (-len(item[1]), item[0])
+    ):
+        first_seen, last_seen = seen(group)
+        message_tallies.append(
+            MessageTally(
+                message=message,
+                count=len(group),
+                first_seen=first_seen,
+                last_seen=last_seen,
+            )
+        )
+    by_message = tuple(message_tallies)
+    by_status = tuple(
+        sorted(status_counts.items(), key=lambda item: (-item[1], item[0]))
+    )
+    return LogSummary(
+        total=len(entries),
+        by_status=by_status,
+        by_route=by_route,
+        by_message=by_message,
+        logged_only=logged_only,
+    )

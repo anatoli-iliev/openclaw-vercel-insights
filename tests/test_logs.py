@@ -453,3 +453,95 @@ def test_an_explicit_filter_collapses_the_errors_preset_to_one_call(
     override: dict[str, str],
 ) -> None:
     assert vi_logs.error_filter_sets(override) == [override]
+
+
+def test_summarize_counts_by_status_worst_first() -> None:
+    entries = vi_logs.normalize(
+        {
+            "rows": [
+                logs_row(requestId="a", statusCode=500),
+                logs_row(requestId="b", statusCode=500),
+                logs_row(requestId="c", statusCode=502),
+            ]
+        }
+    )[0]
+    summary = vi_logs.summarize(entries)
+    assert summary.total == 3
+    assert summary.by_status == (("500", 2), ("502", 1))
+
+
+def test_summarize_groups_routes_with_their_worst_status_and_window() -> None:
+    entries = vi_logs.normalize(
+        {
+            "rows": [
+                logs_row(
+                    requestId="a",
+                    route="/api/checkout",
+                    statusCode=500,
+                    timestamp="2026-08-17T10:00:00.000Z",
+                ),
+                logs_row(
+                    requestId="b",
+                    route="/api/checkout",
+                    statusCode=502,
+                    timestamp="2026-08-17T11:00:00.000Z",
+                ),
+            ]
+        }
+    )[0]
+    tally = vi_logs.summarize(entries).by_route[0]
+    assert tally.route == "/api/checkout"
+    assert tally.count == 2
+    assert tally.worst_status == 502
+    assert tally.first_seen is not None and tally.first_seen.hour == 10
+    assert tally.last_seen is not None and tally.last_seen.hour == 11
+
+
+def test_summarize_groups_messages_by_exact_text() -> None:
+    # Grouping by a guessed pattern would merge two different bugs into one row.
+    entries = vi_logs.normalize(
+        {
+            "rows": [
+                logs_row(requestId="a", logs=[{"level": "error", "message": "boom 1"}]),
+                logs_row(requestId="b", logs=[{"level": "error", "message": "boom 1"}]),
+                logs_row(requestId="c", logs=[{"level": "error", "message": "boom 2"}]),
+            ]
+        }
+    )[0]
+    summary = vi_logs.summarize(entries)
+    assert [(item.message, item.count) for item in summary.by_message] == [
+        ("boom 1", 2),
+        ("boom 2", 1),
+    ]
+
+
+def test_summarize_gives_requests_that_logged_nothing_their_own_group() -> None:
+    entries = vi_logs.normalize(LOGS_ERROR_PAGE)[0]
+    summary = vi_logs.summarize(entries)
+    assert (vi_logs.NO_LOG_LINE, 1) in [
+        (item.message, item.count) for item in summary.by_message
+    ]
+
+
+def test_summarize_counts_the_errors_that_are_only_errors_because_they_logged() -> None:
+    entries = vi_logs.normalize(
+        {
+            "rows": [
+                logs_row(requestId="a", statusCode=500),
+                logs_row(
+                    requestId="b",
+                    statusCode=200,
+                    logs=[{"level": "fatal", "message": "pool exhausted"}],
+                ),
+            ]
+        }
+    )[0]
+    # The status table groups by status alone, so this count is what keeps a 200
+    # in that table from reading as a rendering bug.
+    assert vi_logs.summarize(entries).logged_only == 1
+
+
+def test_summarize_of_nothing_is_empty_rather_than_an_error() -> None:
+    summary = vi_logs.summarize([])
+    assert summary.total == 0
+    assert summary.by_status == () and summary.by_route == ()
