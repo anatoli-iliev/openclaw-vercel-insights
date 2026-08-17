@@ -357,6 +357,37 @@ def test_collect_stops_on_a_short_page_even_when_the_api_claims_more() -> None:
     assert pages == 1 and len(entries) == 2
 
 
+def test_collect_does_not_trust_has_more_rows_off_a_short_page_that_meets_the_budget() -> None:
+    # Regression: a short page means nothing else exists for this query,
+    # whatever hasMoreRows claims, even when that same short page happens to
+    # exactly fill the requested limit. A version that checks the budget
+    # before the short-page rule (and lets hasMoreRows leak into that branch)
+    # would report a truncated answer here even though there is truly nothing
+    # left to fetch.
+    def call(page: int) -> Mapping[str, Any]:
+        return _page(2, True)
+
+    entries, truncated, pages = vi_logs.collect(call, limit=2)
+    assert pages == 1
+    assert len(entries) == 2
+    assert truncated is False
+
+
+def test_collect_stops_at_an_explicit_max_pages_ceiling_and_reports_truncation() -> None:
+    # The ceiling is its own stop condition, not merely a side effect of
+    # MAX_LIMIT and MAX_PAGES lining up by construction: this pins it with an
+    # explicit override, well short of the row budget, so the only reason
+    # paging stops is the ceiling. Every remaining request past it would be
+    # spent on data this call never even asks for.
+    def call(page: int) -> Mapping[str, Any]:
+        return _page(vi_logs.PAGE_SIZE, True, first_id=page * vi_logs.PAGE_SIZE)
+
+    entries, truncated, pages = vi_logs.collect(call, limit=1000, max_pages=2)
+    assert pages == 2
+    assert len(entries) == 2 * vi_logs.PAGE_SIZE
+    assert truncated is True
+
+
 def test_merge_deduplicates_by_request_id() -> None:
     # A 500 that also logged an error comes back from both calls of the errors
     # preset. It is one request and must be reported once.
