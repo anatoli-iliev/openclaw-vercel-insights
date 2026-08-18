@@ -674,6 +674,19 @@ that may be meaningless for a count.
 > Without it these queries return an error, which is a plan limit rather than
 > anything this tool can work around.
 
+> **Scope note, and it is the more important of the two.** These two flags are
+> the widest thing here. `--list-metrics` asks the account what it can query and
+> `--metric` queries any of it, which was 96 metrics on the account this was
+> probed against: functions, edge requests, caching, firewall actions, AI gateway
+> usage. It is read-only and it is the same fixed endpoint as `vitals`, but an
+> account-scoped token does mean this tool can read **every metric that account
+> can see**, not only the web vitals in the section above. If that is wider than
+> you want, scope the token narrower and know what it costs: Speed Insights and
+> request logs both need account or team scope, so a project-scoped token buys a
+> smaller surface at the price of two of the three features. The scope table in
+> [The token, and why its scope matters](#the-token-and-why-its-scope-matters)
+> lays out which is which.
+
 ## Guarding performance in CI
 
 `--budget` turns a measurement into a pass or a fail, so a regression can stop a

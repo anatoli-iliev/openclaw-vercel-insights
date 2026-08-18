@@ -888,6 +888,17 @@ invocations, edge requests, cache behaviour, firewall actions or AI gateway
 usage, run `--list-metrics` to see what their account can reach, then query by
 id with `--metric`. Naming a metric is enough; no preset is needed.
 
+**Be straight about how wide that is.** `--list-metrics` and `--metric` are not
+confined to the errors, traffic and speed story this skill leads with: they reach
+whatever the account's observability schema exposes, which was 96 metrics on the
+account this was probed against. Read-only, one fixed endpoint, and still true
+that an account-scoped token therefore gives this skill read access to **every
+metric that account can see**, not only the web vitals. Say so if a user is
+deciding how to scope a token, and point them at the narrowest scope that still
+answers their question. Do not go exploring the schema unasked: run
+`--list-metrics` when the user's question needs a metric this skill has no preset
+for, not as a way to see what is there.
+
 Two things to tell the user honestly. Every metric on this surface outside Web
 Analytics and Speed Insights requires the Observability Plus add-on, so a plan
 without it gets an error that no flag can fix. Request logs are not on this
