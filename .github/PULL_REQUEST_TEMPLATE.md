@@ -42,10 +42,12 @@ $ python3 -m vercel_insights --version
 - [ ] No em dash (U+2014) anywhere in the diff: not in prose, code, comments,
       docs, or strings. Use a colon, a semicolon, parentheses, or a full stop.
 - [ ] The change stays read-only and reaches no endpoint outside the
-      three-entry allowlist in `http.py`: the Web Analytics query (GET), the
-      observability query (POST), and the observability schema (GET). No entry
-      was added, widened or made selectable by user input, and no toggle or
-      other write endpoint is reachable.
+      six-entry allowlist in `http.py`: the Web Analytics query (GET), the
+      observability query (POST), the observability schema (GET), one project
+      and one projects read (GET), and the request logs read (GET, and the one
+      entry on `vercel.com` rather than `api.vercel.com`). No entry was added,
+      widened or made selectable by user input, and no toggle or other write
+      endpoint is reachable.
 - [ ] The only HTTP call sites are still one `session.get` and one
       `session.post`, both inside the allowlist dispatcher, and no code path
       takes a method or a host from user input.

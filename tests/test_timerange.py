@@ -110,3 +110,20 @@ def test_an_out_of_range_unix_millisecond_value_is_a_config_error(value: str) ->
 def test_the_largest_representable_unix_millisecond_value_still_parses() -> None:
     parsed = tr.parse_time_value(str(tr.MAX_UNIX_MS), NOW)
     assert parsed.year == 9999
+
+
+def test_to_unix_ms_renders_milliseconds_as_a_string() -> None:
+    # The request-logs API takes startDate and endDate in Unix milliseconds,
+    # and every query parameter this client sends is a string.
+    assert tr.to_unix_ms(datetime(1970, 1, 1, tzinfo=timezone.utc)) == "0"
+    assert tr.to_unix_ms(utc(2026, 8, 17, 11, 6, 8)) == "1786964768000"
+
+
+def test_to_unix_ms_assumes_utc_for_a_naive_datetime() -> None:
+    naive = datetime(2026, 8, 17, 11, 6, 8)
+    assert tr.to_unix_ms(naive) == tr.to_unix_ms(utc(2026, 8, 17, 11, 6, 8))
+
+
+def test_the_logs_surface_has_a_name_and_a_label() -> None:
+    assert tr.LOGS in tr.SURFACES
+    assert tr.SURFACE_LABELS[tr.LOGS] == "request logs"

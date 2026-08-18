@@ -19,6 +19,7 @@ import pytest
 from vercel_insights import cli as vi_cli
 from vercel_insights import http as vi_http
 from vercel_insights.http import PreparedRequest
+from vercel_insights.logs import build_request as build_logs_request
 from vercel_insights.speedinsights import build_request as build_speed_request
 from vercel_insights.speedinsights import validate_metric
 from vercel_insights.webanalytics import build_request
@@ -35,6 +36,10 @@ WEB_ANALYTICS_BASE = "https://api.vercel.com/v1/query/web-analytics"
 #: The observability query endpoint, likewise written out by hand from
 #: docs/api-notes.md rather than read back from ``OPERATIONS``.
 SPEED_QUERY_URL = "https://api.vercel.com/v2/observability/query"
+
+#: The request-logs endpoint, written out by hand from docs/api-notes.md rather
+#: than read back from OPERATIONS.
+LOGS_URL = "https://vercel.com/api/logs/request-logs"
 
 TOKEN = "vercel-token-that-must-never-be-printed"
 PROJECT = "prj_demo"
@@ -225,11 +230,27 @@ def speed_request(**overrides: Any) -> PreparedRequest:
     return build_speed_request(**kwargs)
 
 
+def logs_request(**overrides: Any) -> PreparedRequest:
+    """A prepared request-logs request, for the HTTP and security tests."""
+    kwargs: dict[str, Any] = {
+        "project": PROJECT,
+        "owner_id": OWNER,
+        "since": utc(2026, 8, 17, 10, 6, 8),
+        "until": utc(2026, 8, 17, 11, 6, 8),
+        "token": TOKEN,
+    }
+    kwargs.update(overrides)
+    return build_logs_request(**kwargs)
+
+
 def dry_run_calls(out: str) -> list[tuple[str, list[tuple[str, str]]]]:
     """Parse a ``--dry-run`` dump into ``(endpoint, query parameter pairs)``.
 
-    One entry per request, so the three request overview parses too. The
-    endpoint is the tail of the path, for example ``visits/aggregate``.
+    One entry per request, so the three request overview parses too, as do the
+    two calls an errors preset makes. On Web Analytics the endpoint is the tail
+    of the path after that surface's own prefix, for example
+    ``visits/aggregate``; any other surface is named by its last path segment,
+    so a request-logs call yields ``request-logs``.
     """
     calls: list[tuple[str, list[tuple[str, str]]]] = []
     lines = out.splitlines()
@@ -237,7 +258,11 @@ def dry_run_calls(out: str) -> list[tuple[str, list[tuple[str, str]]]]:
         if not line.startswith("Encoded URL"):
             continue
         split = urlsplit(lines[index + 1].strip())
-        endpoint = split.path.split("/web-analytics/", 1)[1]
+        marker = "/web-analytics/"
+        if marker in split.path:
+            endpoint = split.path.split(marker, 1)[1]
+        else:
+            endpoint = split.path.rsplit("/", 1)[-1]
         calls.append((endpoint, parse_qsl(split.query, keep_blank_values=True)))
     return calls
 
@@ -575,5 +600,78 @@ SPEED_MALFORMED_PAYLOADS: list[tuple[str, dict[str, Any]]] = [
     ("data-is-null", {"version": 1, "query": {}, "data": None}),
     ("rows-carry-no-number", {"version": 1, "data": [{"route": "/", "value": "fast"}]}),
 ]
+
+# Request logs payload fixtures.
+#
+# These rows are copied from docs/api-notes.md, which in turn holds the real
+# probed rows.
+
+
+def logs_row(**overrides: Any) -> dict[str, Any]:
+    """One request-logs row, shaped exactly as the live API returns them."""
+    row: dict[str, Any] = {
+        "requestId": "zgzc9-1786964768933-ce3a0a3fb303",
+        "timestamp": "2026-08-17T11:06:08.933Z",
+        "deploymentId": "dpl_8fQLGTTwTZXixzmKhKm9DaXeadTJ",
+        "environment": "production",
+        "deploymentDomain": "demo.vercel.app",
+        "branch": "main",
+        "domain": "demo.vercel.app",
+        "requestMethod": "GET",
+        "requestPath": "/api/me",
+        "statusCode": 401,
+        "errorCode": "",
+        "route": "/api/me",
+        "cache": "MISS",
+        "wafAction": "",
+        "traceId": "",
+        "logs": [],
+        "requestDurationMs": 54,
+        "clientRegion": "fra1",
+        "hasFunctionCrashed": False,
+        "events": [{"source": "serverless", "httpStatus": 401, "region": "fra1"}],
+        "requestTags": ["ssr", "rsc"],
+    }
+    row.update(overrides)
+    return row
+
+
+#: A page of ordinary traffic: no 5xx, no log lines. This is what a healthy
+#: project really returns, and it is the shape that makes --level answer with
+#: zero rows.
+LOGS_PAGE: dict[str, Any] = {"rows": [logs_row()], "hasMoreRows": False}
+
+#: A page carrying the two kinds of error: a 500 that logged a stack trace, and
+#: a 502 that logged nothing at all.
+LOGS_ERROR_PAGE: dict[str, Any] = {
+    "rows": [
+        logs_row(
+            requestId="err-1",
+            timestamp="2026-08-17T11:04:52.100Z",
+            requestMethod="POST",
+            requestPath="/api/checkout",
+            route="/api/checkout",
+            statusCode=500,
+            logs=[
+                {
+                    "level": "error",
+                    "message": "TypeError: Cannot read properties of undefined",
+                    "messageTruncated": False,
+                }
+            ],
+        ),
+        logs_row(
+            requestId="err-2",
+            timestamp="2026-08-17T10:58:03.000Z",
+            requestPath="/api/offerings/summer",
+            route="/api/offerings/[slug]",
+            statusCode=502,
+            logs=[],
+        ),
+    ],
+    "hasMoreRows": False,
+}
+
+LOGS_EMPTY_PAGE: dict[str, Any] = {"rows": [], "hasMoreRows": False}
 
 SECRET = "sk_SUPERSECRETVALUE"

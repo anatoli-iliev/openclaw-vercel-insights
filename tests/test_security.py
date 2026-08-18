@@ -21,8 +21,10 @@ from helpers import (
     DAILY_PAYLOAD,
     DRY_RUN_ENV,
     ESCAPED_ANSI_CAMPAIGN,
+    LOGS_PAGE,
     PROJECT,
     SECRET,
+    SPEED_ROUTE_PAYLOAD,
     TESTS_DIR,
     TOKEN,
     TOP_PAGES_PAYLOAD,
@@ -33,6 +35,8 @@ from helpers import (
     Recorder,
     dry_run_values,
     error_payload,
+    logs_request,
+    logs_row,
     no_jitter,
     package_source_text,
     package_sources,
@@ -78,12 +82,16 @@ DOCUMENTED_OPERATIONS: dict[str, tuple[str, str]] = {
     # Read-only. One account holds many projects, and naming the right one is
     # the first thing any query needs.
     "projects": ("GET", "https://api.vercel.com/v10/projects"),
+    # Read-only. Runtime request logs, and the only entry not on api.vercel.com:
+    # Vercel serves this one from the dashboard host, and it is the endpoint the
+    # official `vercel logs` command calls. See docs/api-notes.md.
+    "request_logs": ("GET", "https://vercel.com/api/logs/request-logs"),
 }
 
 
-def test_operations_holds_exactly_the_five_documented_entries() -> None:
+def test_operations_holds_exactly_the_six_documented_entries() -> None:
     assert set(OPERATIONS) == set(DOCUMENTED_OPERATIONS)
-    assert len(OPERATIONS) == 5
+    assert len(OPERATIONS) == 6
 
 
 @pytest.mark.parametrize("operation", sorted(DOCUMENTED_OPERATIONS))
@@ -95,13 +103,21 @@ def test_each_operation_has_exactly_its_documented_method_and_url(
 
 def test_only_one_operation_is_a_post_and_every_other_is_a_get() -> None:
     methods = sorted(method for method, _ in OPERATIONS.values())
-    assert methods == ["GET", "GET", "GET", "GET", "POST"]
+    assert methods == ["GET", "GET", "GET", "GET", "GET", "POST"]
+
+
+#: The only hosts this client may address. Written out by hand rather than read
+#: back from OPERATIONS: a test that derives the answer from the table it is
+#: checking cannot notice the table naming a host nobody approved.
+DOCUMENTED_HOSTS: frozenset[str] = frozenset(
+    {"https://api.vercel.com/", "https://vercel.com/api/"}
+)
 
 
 @pytest.mark.parametrize("operation", sorted(DOCUMENTED_OPERATIONS))
-def test_every_allowlisted_url_is_on_the_vercel_api_host(operation: str) -> None:
+def test_every_allowlisted_url_is_on_a_documented_host(operation: str) -> None:
     _method, url = OPERATIONS[operation]
-    assert url.startswith("https://api.vercel.com/")
+    assert any(url.startswith(host) for host in DOCUMENTED_HOSTS), url
 
 
 def test_the_write_toggle_endpoints_are_absent_from_the_package() -> None:
@@ -189,6 +205,21 @@ def test_a_static_operation_url_has_to_match_the_template_exactly() -> None:
             params=[],
             headers={},
         )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://vercel.com/api/logs/request-logs/extra",
+        "https://vercel.com/api/logs",
+        "http://vercel.com/api/logs/request-logs",
+        "https://vercel.com.evil.example/api/logs/request-logs",
+        "https://api.vercel.com/api/logs/request-logs",
+    ],
+)
+def test_request_logs_cannot_address_anything_else(url: str) -> None:
+    with pytest.raises(ConfigError):
+        PreparedRequest(operation="request_logs", url=url, params=[], headers={})
 
 
 def test_the_method_is_read_from_the_allowlist_and_cannot_be_set() -> None:
@@ -389,13 +420,28 @@ def test_dry_run_without_a_token_exits_zero_and_never_touches_a_session(
     assert "Bearer <redacted>" in out
 
 
-def test_a_verbose_run_prints_redacted_headers_only(cli: Cli) -> None:
-    session = FakeSession(FakeResponse(200, TOP_PAGES_PAYLOAD))
-    code, out, err = cli.run(
-        ["top-pages", "--verbose"], env=dict(BASE_ENV), session=session
-    )
-    assert code == 0
-    assert "verbose: GET" in err
+#: One verbose run per surface, with the payload its endpoint answers with. All
+#: three are here because this is the demonstration that the token stays in the
+#: Authorization header wherever this tool prints a request, and a surface left
+#: out of it is a surface where that is only a promise.
+VERBOSE_RUNS: list[tuple[str, dict[str, Any]]] = [
+    ("top-pages", TOP_PAGES_PAYLOAD),
+    ("slowest-pages", SPEED_ROUTE_PAYLOAD),
+    ("logs", LOGS_PAGE),
+]
+
+
+@pytest.mark.parametrize(
+    ("preset", "payload"), VERBOSE_RUNS, ids=[preset for preset, _ in VERBOSE_RUNS]
+)
+def test_a_verbose_run_prints_redacted_headers_only(
+    cli: Cli, preset: str, payload: dict[str, Any]
+) -> None:
+    session = FakeSession(FakeResponse(200, payload))
+    code, out, err = cli.run([preset, "--verbose"], env=dict(BASE_ENV), session=session)
+    assert code == 0, err
+    # Speed Insights posts its query; the other two get.
+    assert "verbose: GET" in err or "verbose: POST" in err
     assert "Bearer <redacted>" in err
     assert TOKEN not in err
     assert TOKEN not in out
@@ -515,6 +561,118 @@ def test_the_user_agent_carries_no_credential() -> None:
     assert vi_http.USER_AGENT.startswith("vercel-insights-skill/")
 
 
+def test_a_logs_request_carries_no_credential_in_its_url_or_params() -> None:
+    request = logs_request(token=TOKEN)
+    assert TOKEN not in request.url
+    assert all(TOKEN not in value for _name, value in request.params)
+    assert request.headers["Authorization"] == f"Bearer {TOKEN}"
+
+
+def test_the_repr_of_a_logs_request_hides_the_token() -> None:
+    text = repr(logs_request(token=TOKEN))
+    assert TOKEN not in text
+    assert "Bearer <redacted>" in text
+    assert "request-logs" in text
+
+
+def test_a_logs_dry_run_prints_no_credential() -> None:
+    text = format_dry_run(logs_request(token=TOKEN))
+    assert TOKEN not in text
+    assert "Bearer <redacted>" in text
+    assert "GET https://vercel.com/api/logs/request-logs" in text
+    assert "Nothing was sent" in text
+
+
+def logs_page_echoing_the_token() -> dict[str, Any]:
+    """One row quoting the token in both places a response can put it.
+
+    Vercel receives this token on every call, so a response carrying it back is
+    not hypothetical, and request log rows are the only output this tool prints
+    that some other program wrote: a log message is free text, and a request path
+    is whatever a caller sent. Neither goes anywhere near the error paths that
+    the rest of section 3 covers, so they need their own tests.
+
+    The credential opens the message rather than closing it, so that an
+    unscrubbed run shows part of it even in the table, whose message column
+    truncates. A prefix of a credential is still a disclosure, which is why
+    :data:`LEAKED_TOKEN_PREFIX` is asserted against as well as the whole value.
+    """
+    return {
+        "rows": [
+            logs_row(
+                requestId="leak-1",
+                statusCode=500,
+                requestPath=f"/api/callback?key={TOKEN}",
+                logs=[
+                    {
+                        "level": "error",
+                        "message": f"Bearer {TOKEN} was rejected by upstream",
+                        "messageTruncated": False,
+                    }
+                ],
+            )
+        ],
+        "hasMoreRows": False,
+    }
+
+
+#: Enough of the token to be worth protecting on its own. A truncated column
+#: cannot print the whole value, so only a prefix check can tell a scrubbed
+#: table from one that merely ran out of room.
+LEAKED_TOKEN_PREFIX = TOKEN[:16]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["errors"],
+        ["errors", "--expand"],
+        ["errors", "--json"],
+        ["errors", "--csv"],
+        ["error-summary"],
+    ],
+    ids=["table", "expand", "json", "csv", "summary"],
+)
+def test_a_response_echoing_the_token_never_reaches_any_logs_output(
+    cli: Cli, argv: list[str]
+) -> None:
+    # The tool holds exactly one secret and must never be the thing that
+    # discloses it, whatever a response carries. Every output format is covered
+    # because each renders the row differently: the table truncates a message,
+    # --expand prints it whole, --csv writes its own columns, --json carries the
+    # row verbatim, and error-summary groups by the message text.
+    session = FakeSession(
+        FakeResponse(200, logs_page_echoing_the_token()),
+        FakeResponse(200, {"rows": [], "hasMoreRows": False}),
+    )
+    code, out, err = cli.run(argv, env=dict(BASE_ENV), session=session)
+    assert code == 0, err
+    for text in (out, err):
+        assert TOKEN not in text
+        assert LEAKED_TOKEN_PREFIX not in text
+
+
+def test_the_token_is_rewritten_in_a_logs_row_rather_than_dropped(cli: Cli) -> None:
+    # --json is where this has to be checked: every other format renders chosen
+    # fields, while "raw" is the whole row as it arrived, so it is the copy that
+    # would leak if the scrub were applied at rendering time instead of at
+    # normalization. The placeholder proves the string was rewritten and the
+    # surrounding text kept, rather than the field being blanked.
+    session = FakeSession(
+        FakeResponse(200, logs_page_echoing_the_token()),
+        FakeResponse(200, {"rows": [], "hasMoreRows": False}),
+    )
+    code, out, err = cli.run(["errors", "--json"], env=dict(BASE_ENV), session=session)
+    assert code == 0, err
+    entry = json.loads(out)["entries"][0]
+    # "Bearer <token>" goes as one unit, because the whole header value is a
+    # credential in its own right and is replaced ahead of the bare token.
+    assert entry["message"] == "<redacted> was rejected by upstream"
+    assert entry["path"] == "/api/callback?key=<redacted>"
+    assert entry["raw"]["logs"][0]["message"] == "<redacted> was rejected by upstream"
+    assert entry["raw"]["requestPath"] == "/api/callback?key=<redacted>"
+
+
 # ---------------------------------------------------------------------------
 # 4. OData injection
 # ---------------------------------------------------------------------------
@@ -604,6 +762,7 @@ def test_the_read_endpoints_that_stay_gets_are_the_documented_ones() -> None:
         "observability_schema",
         "project",
         "projects",
+        "request_logs",
         "web_analytics",
     ]
 

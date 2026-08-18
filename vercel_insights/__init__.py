@@ -23,10 +23,18 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-VERSION = "1.0.3"
+VERSION = "1.1.0"
 
 #: The REST API root. Every allowlisted operation is built from this prefix.
 BASE_URL = "https://api.vercel.com"
+
+#: The dashboard host. Exactly one operation lives here rather than on
+#: :data:`BASE_URL`: Vercel serves historical request logs from
+#: ``vercel.com/api/logs/request-logs``, which is what the official CLI calls
+#: and the only endpoint that answers a "what broke in the last hour" question.
+#: The documented alternative on api.vercel.com is an endless stream, and the
+#: metrics route needs Observability Plus. See docs/api-notes.md.
+LOGS_BASE_URL = "https://vercel.com"
 
 DOCS_TOKEN_URL = "https://vercel.com/docs/rest-api#creating-an-access-token"
 
@@ -36,6 +44,7 @@ OTHERS_LABEL = "Others"
 __all__ = [
     "BASE_URL",
     "DOCS_TOKEN_URL",
+    "LOGS_BASE_URL",
     "OTHERS_LABEL",
     "VERSION",
     "ApiError",

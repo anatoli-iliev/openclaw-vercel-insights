@@ -256,7 +256,7 @@ Every row here is a failure hit during real setup, not a hypothetical.
 
 ## What this skill can reach
 
-Five endpoints, all read-only, fixed in a table in `vercel_insights/http.py`
+Exactly 6 endpoints, all read-only, fixed in a table in `vercel_insights/http.py`
 that no input can extend:
 
 | Method | Endpoint | For |
@@ -266,10 +266,13 @@ that no input can extend:
 | GET | `/v2/observability/schema` | `--list-metrics` |
 | GET | `/v9/projects/{project}` | resolving a project name and its owner |
 | GET | `/v10/projects` | `--list-projects` |
+| GET | `https://vercel.com/api/logs/request-logs` | request logs |
 
-The observability query is a POST because Vercel exposes no GET equivalent; the
-body carries the question and nothing is created or changed. The endpoints that
-would enable or disable these features are absent from the table entirely.
+Five of those six live on `api.vercel.com`; `request_logs` is the one
+exception, served from `vercel.com` instead. The observability query is a
+POST because Vercel exposes no GET equivalent; the body carries the question
+and nothing is created or changed. The endpoints that would enable or disable
+these features are absent from the table entirely.
 
 ## Removing it
 

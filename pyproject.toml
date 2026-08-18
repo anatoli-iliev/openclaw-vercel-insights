@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openclaw-vercel-insights"
-version = "1.0.3"
-description = "Read-only OpenClaw skill for querying Vercel Web Analytics and Speed Insights."
+version = "1.1.0"
+description = "Read-only OpenClaw skill for querying Vercel request logs, Web Analytics and Speed Insights."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT-0"
@@ -16,6 +16,8 @@ keywords = [
   "web-analytics",
   "speed-insights",
   "web-vitals",
+  "logs",
+  "runtime-logs",
   "openclaw",
   "skill",
   "cli",

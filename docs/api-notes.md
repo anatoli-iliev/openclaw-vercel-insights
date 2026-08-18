@@ -610,6 +610,12 @@ same account with an account-scoped credential returns 96 metrics from
 `/v2/observability/schema`, Speed Insights among them, which is what isolates
 this to credential scope rather than entitlement or missing data.
 
+The request logs surface, added later, scopes by an account too, through an
+`ownerId` query parameter. It is expected to refuse a project scoped token for
+the same reason, with a `403` rather than a `404`, but that has never been tested:
+the request logs chapter below records it as an assumption rather than adding a
+row to the table above, which is verified.
+
 Three things this rules out, each of which looked plausible on the way:
 
 - **Not Observability Plus.** The docs' exemption for Speed Insights holds.
@@ -634,3 +640,372 @@ may fail on plan grounds.
 Speed Insights collects data on all deployed environments, preview included, so
 unlike the Web Analytics count endpoints there is no production-only
 restriction to work around. Filter by `environment` to narrow it.
+
+# Vercel request logs: verified ground truth
+
+Probed against the live API on **2026-08-17** with a team scoped token, or read
+from the live docs the same day. This is the surface behind the `logs`, `errors`
+and `error-summary` presets. Where this chapter disagrees with memory, folklore
+or a blog post, this chapter wins.
+
+Read this before anything else here: **this endpoint is not in Vercel's published
+OpenAPI document.** <https://openapi.vercel.sh/> does not list it, so there is no
+schema to check a claim against and no versioning promise to rely on. Its ground
+truth is the Vercel CLI's own source, `packages/cli/src/util/logs-v2.ts`,
+function `fetchRequestLogs`, which is what `vercel logs` calls in its
+non-streaming mode, plus the live probes recorded below. It can change without
+notice, which is exactly why every claim in this chapter says how it was learned.
+
+Sources:
+
+- Vercel CLI source, `packages/cli/src/util/logs-v2.ts`, function `fetchRequestLogs` (the endpoint, its parameters, and the `logs[]` item shape)
+- <https://vercel.com/docs/runtime-logs> (retention, volume limits)
+- <https://openapi.vercel.sh/> (which does not carry this endpoint, and does carry the two alternatives that turn out not to work)
+- Live probes against a real production project, on a team scoped token, 2026-08-17
+
+## Endpoint
+
+```
+GET https://vercel.com/api/logs/request-logs
+Authorization: Bearer <the same Vercel access token>
+```
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `https://vercel.com/api/logs/request-logs` | One page of runtime request logs, newest first. |
+
+Note the host: **`vercel.com`, not `api.vercel.com`**. It is the only operation in
+the allowlist that is not on the API host, which is why `__init__.py` carries a
+second base URL (`LOGS_BASE_URL`) and why `tests/test_security.py` asserts an
+explicit two-host set rather than one host: a third host is still a test failure.
+
+Latency observed: 1.4s to 6.0s per call. The 30 second default timeout is per
+request, so it is comfortable for one page, and it should not be lowered for this
+surface. Latency is also why `logs.collect` stops after four pages: at the top of
+that range four pages is 24 seconds of waiting, and since the timeout is per
+request rather than per run, nothing else would cut a longer walk short.
+
+## Authentication and scope
+
+`Authorization: Bearer <token>`, the same kind of Vercel access token the other
+two surfaces use. Scope travels in the query string as `projectId` and `ownerId`,
+and both are required.
+
+`teamId` is **not** accepted as a substitute for `ownerId`: verified, and the
+reason this client never sends one. So the Web Analytics "name your team" hint
+would point a reader at a parameter that does not help here. A team is its own
+owner, so a team id is the right value for `ownerId`.
+
+**When the owner has to be looked up.** Only when nothing supplies it:
+`--owner-id`, `VERCEL_OWNER_ID`, `VERCEL_ORG_ID` or the team id. For a personal
+account none of those may be set, and then the owner is read once per run from
+`GET /v9/projects/{idOrName}` as `accountId`, the same lookup Speed Insights
+already needed. A project **name** does not force that lookup on this surface:
+this endpoint accepts a name as happily as an id (see the parameter table), so
+resolving one would buy nothing, and the header line showing the name the user
+actually typed is more honest than showing an id they never did. Speed Insights
+differs, because its scope matches on `projectIds`, where a name comes back empty
+rather than as an error.
+
+ASSUMPTION, marked as one in `cli.py::_explain_request_logs_403`: a
+**project scoped** token probably cannot read this endpoint, by analogy with
+Speed Insights, since this call also carries an `ownerId` and a project scoped
+token has no account to act for. Only a team scoped token was available to test
+with. Omitting `ownerId` is a 400 and a value the token cannot reach is a 403,
+which is why a 403 here gets the token-scope explanation rather than a team one.
+
+## Query parameters
+
+Required. Omitting either of the first two is a `400`:
+
+| Name | Notes |
+| --- | --- |
+| `projectId` | Project id or project **name**; both verified working. |
+| `ownerId` | Account id owning the project. Missing: `400 Validation error: Required at "ownerId"`. Wrong value: `403 You don't have permission to access this resource.` |
+| `page` | Zero based page index. |
+| `startDate`, `endDate` | Unix **milliseconds**, not seconds and not ISO-8601. |
+
+Optional, all verified to filter:
+
+| Name | Accepted values | Notes |
+| --- | --- | --- |
+| `level` | `error`, `warning`, `info`, `fatal`, comma separated | Matches **application log lines only**; see below. |
+| `statusCode` | integers, `Nxx` classes, or the literal `None`, comma separated | Server-side rule quoted below. |
+| `source` | `serverless`, `edge-function`, `edge-middleware`, `static`, comma separated | The display vocabulary differs; see below. |
+| `environment` | `production`, `preview` | |
+| `requestPath` | exact path | **Exact match**: `/api` returned nothing, `/api/me` returned only that path. |
+| `route` | exact route pattern | `/api/offerings/[slug]` returned 23 rows across 14 distinct paths. |
+| `requestMethod` | `GET`, `POST`, ... | Recorded in upper case on every row seen. Whether the filter is case sensitive was never probed; this client upper-cases the value, which cannot be wrong either way. |
+| `branch` | git branch name | |
+| `deploymentId` | `dpl_...` | |
+| `requestId` | one request | |
+| `search` | free text | Not a query syntax; see below. |
+
+Silently ignored, verified to have no effect: `limit`, `path`, `method`,
+`domain`, `host`. **`limit` being ignored is the reason a row limit is enforced
+in this client** rather than asked of the server: `logs.collect` counts rows as
+they arrive and stops.
+
+## Response shape
+
+```json
+{"rows": [ ... ], "hasMoreRows": true}
+```
+
+A page is **50 rows**, fixed. `hasMoreRows` is the only pagination signal. Rows
+arrive newest first, which was observed rather than documented, so
+`logs.merge` sorts anyway: ordering is then a property of this client rather than
+an assumption about a server.
+
+One real row, trimmed, from a live production project:
+
+```json
+{
+  "requestId": "zgzc9-1786964768933-ce3a0a3fb303",
+  "timestamp": "2026-08-17T11:06:08.933Z",
+  "deploymentId": "dpl_8fQLGTTwTZXixzmKhKm9DaXeadTJ",
+  "environment": "production",
+  "deploymentDomain": "dobri-4zfpwg8vq-...vercel.app",
+  "branch": "main",
+  "domain": "dobri-4zfpwg8vq-...vercel.app",
+  "requestMethod": "GET",
+  "requestPath": "/api/me",
+  "statusCode": 401,
+  "errorCode": "",
+  "route": "/api/me",
+  "cache": "MISS",
+  "wafAction": "",
+  "traceId": "",
+  "logs": [],
+  "requestDurationMs": 54,
+  "clientRegion": "fra1",
+  "hasFunctionCrashed": false,
+  "events": [
+    {
+      "source": "serverless",
+      "route": "/api/me",
+      "httpStatus": 401,
+      "region": "fra1",
+      "durationMs": 9,
+      "functionRuntime": "nodejs24.x",
+      "functionStartType": "hot",
+      "functionMaxMemoryUsed": 329,
+      "invocationId": "01M07PCY66AS0DTZJ2M4GFQS9F"
+    }
+  ],
+  "requestTags": ["ssr", "rsc"]
+}
+```
+
+`source` is read off the first event that carries one, because the row itself has
+no such field, so a row with no event has no source and the table prints `-`.
+`region` is read the same way and falls back to the row's own `clientRegion`.
+
+Other fields present on real rows and not used by this client, listed so nobody
+has to re-probe: `service`, `callingService`, `resolvedDynamicPath`,
+`cacheReason`, `pprState`, `workflowRunId`, `workflowStepId`, `sessionId`,
+`proxyEvents`, `functionEvents`, `clientUserAgent`, `requestSearchParams`,
+`requestReferer`, `microfrontendsResponseReason`, `microfrontendsMatchedPath`,
+`microfrontendsDefaultAppDeploymentId`, `isPrefetchRequest`, `isVercelTrace`.
+None of them is thrown away: `--json` prints the whole row under each entry's
+`raw` key.
+
+**`logs[]` item shape is `{level, message, messageTruncated}`. ASSUMPTION.**
+Taken from the CLI's own mapping code, and **never observed populated**: neither
+live project had produced an error or fatal log line in any window probed, so
+every row seen carried `logs: []`. Parse it defensively and treat a missing field
+as absent, exactly as this file already prescribes for Web Analytics rows. This
+is the one shape in the surface resting on the CLI source rather than on
+observation, and it is marked ASSUMPTION in `logs.py::_lines`.
+
+INFERRED, not probed: that a request with no status recorded carries
+`statusCode: 0` rather than omitting the field. `logs.py::_status` reads both a
+missing field and a value of 0 or less as "no status", which is safe either way,
+but the 0 spelling itself was reasoned from `statusCode=None` returning rows at
+all rather than seen in a payload.
+
+## `level` matches log lines, not responses
+
+The single most important semantic on this surface.
+
+`level=info` returned **zero** rows on a project that returns 50 rows
+unfiltered, because every one of those rows carried `logs: []`. The filter
+matches rows whose `logs[]` contains an entry of that level, not rows whose
+response looked a certain way. So a request that returned `500` without printing
+anything is invisible to `level=error`, and a request that returned `200` while
+its handler logged a stack trace is invisible to `statusCode=5xx`.
+
+Neither filter alone answers "what is broken". That is why the `errors` and
+`error-summary` presets issue two calls, one for `statusCode=5xx` and one for
+`level=error,fatal`, and merge them by request id.
+
+## `statusCode` validation
+
+Verbatim from the API:
+
+```
+400 Validation error: statusCode must contain only comma-separated integers,
+status code classes like 4xx or 5xx, or "None" at "statusCode"
+```
+
+Accepted, verified: `500`, `401`, `500,502`, `5xx`, `4xx,5xx`, `40x`,
+`401,4xx`, `None`. Rejected, verified: `>=500`, `xxx`. There are no comparison
+operators here any more than in Web Analytics OData. `None` returns rows with no
+status recorded: 28 of them in a 6 hour window on the test project.
+
+`logs.validate_status_code` mirrors that rule client-side and quotes the API's
+own sentence in its error, since that sentence is the authority. It is marginally
+stricter: an item must be three characters, the first a digit 1 to 9 and the rest
+digits or `x`, so a hypothetical two-digit status is refused locally. Every real
+HTTP status is three digits, and every value the probes accepted still passes.
+
+## Neither `level` nor `source` is validated server-side
+
+`level=bogus` and `source=bogus` both return **`200` with zero rows**. A typo
+therefore reads as "your site is fine", which is the most damaging failure
+available to this tool. **Both vocabularies are validated client-side**, before
+the request is built, the way `--granularity` and `--metric` already are.
+
+### The display vocabulary and the filter vocabulary differ for `source`
+
+Probed live on 2026-08-17. A row's `source` column can read
+`serverless-middleware`, and that spelling matches nothing as a filter:
+
+| Sent | Result |
+| --- | --- |
+| `source=edge-middleware` | 50 rows, **every one** carrying a `serverless-middleware` event |
+| `source=serverless-middleware` | zero rows, HTTP 200 |
+
+So the filter spelling for a middleware row is `edge-middleware`, and the
+displayed spelling is `serverless-middleware`. This client records the mapping in
+`logs.SOURCE_ALIASES` and accepts the displayed spelling, rewriting it before the
+request is built, so a value copied out of this tool's own table works. A refused
+`--source` value names the mapping too.
+
+Do not assume the two vocabularies line up in general. Only this one pair has
+been probed.
+
+### Unverified: whether `source=serverless` narrows anything
+
+In the same run, `source=serverless` returned a row set indistinguishable from
+the unfiltered one, including rows whose only event source was `static`, while
+`source=edge-middleware` filtered as expected. It has not been probed a second
+time, so **neither conclusion is available**: do not present a
+`source=serverless` result as a strict subset, and do not claim the filter is
+broken. Read the `source` column of the rows that came back. This sits alongside
+the other open questions in this file: it is recorded so nobody re-derives it,
+not because it is settled.
+
+### `search` is free text
+
+`search=/api/me` filtered to that path, and `search=error` returned zero rows on
+a project whose rows carried no log lines. The `field:value` syntax the CLI help
+advertises does **not** work here in general: `search=path:/api/me` returned
+mixed paths (no filtering at all), and `search=level:error` and
+`search=method:POST` both returned zero. Document it as free text and nothing
+more. That it also searches log text is Vercel's documented behaviour and is
+unprobed here, because no test project had logged a line.
+
+## Retention
+
+From <https://vercel.com/docs/runtime-logs>, read 2026-08-17:
+
+| Plan | Retention |
+| --- | --- |
+| Hobby | 1 hour |
+| Pro | 1 day |
+| Pro with Observability Plus | 30 days |
+| Enterprise | 3 days |
+| Enterprise with Observability Plus | 30 days |
+
+With Observability Plus, up to 14 consecutive days may be viewed within a 30 day
+window. Volume limits from the same page: each log output up to 256KB, up to 1MB
+per request, and at most **256 log lines per request**.
+
+Retention is far shorter than either analytics reporting window, and it drives
+two behaviours. The logs presets default to a 1 hour window (`error-summary` to
+6 hours) rather than the global 7 days, and an empty result over a window wider
+than an hour prints the retention figures instead of implying health. Plan tier
+is not discoverable from this API, so the note is printed rather than the query
+being blocked.
+
+## This client scrubs its own token out of log rows
+
+This is the first surface in the tool that prints arbitrary remote text, so it is
+the first that could break the promise that the access token never appears in any
+output. A log line is whatever an application wrote, and applications do print
+their own environment; if one logged the token this tool is holding, the API would
+hand it straight back on a successful response.
+
+An earlier draft of the design claimed the existing `scrub_credentials` already
+covered that. **It did not**, and it was proved false during implementation by
+driving the CLI with a response whose log message contained the token:
+`scrub_credentials` ran only on strings heading into an `ApiError`, so a token
+echoed back on a 200 printed verbatim.
+
+What happens now: `logs.normalize` takes a `scrub` callable and applies it to
+**every string in every row**, keys as well as values, before the row becomes a
+`LogEntry`. `cli.py::_collect_logs` supplies it, bound to the prepared request's
+own headers, because those headers are the authority on what the credential
+actually is. That is the single boundary at which a payload becomes typed rows,
+so it covers the otherwise unaltered copy kept in `LogEntry.raw` that `--json`
+prints, and no rendering path can bypass it. The replacement is the same `<redacted>` used
+everywhere else, and the bare credential is substring-matched only when it is at
+least 8 characters, so a pathologically short value cannot turn every message
+into confetti (the whole header value is always replaced regardless of length).
+
+**The limit, stated precisely.** The tool can recognise exactly one secret: the
+one it holds. Nothing can distinguish a user's own API key, connection string or
+customer record from ordinary log text, so **no general redaction is possible or
+claimed**. What the application logged is what a reader will see. That is why the
+guidance in `SKILL.md` is to quote only the lines needed to answer the question
+and never to forward log output to another service.
+
+## The two alternatives that do not work
+
+Recorded so this is never re-litigated.
+
+**The documented runtime-logs endpoint is a stream that never answers.**
+`GET /v1/projects/{projectId}/deployments/{deploymentId}/runtime-logs` is in the
+OpenAPI document, tagged `logs`, declared `application/stream+json`. Live probes
+against a READY production deployment never received **response headers** at all:
+three attempts (plain, `format=lines`, `follow=0`) each timed out at 10 seconds,
+and an earlier attempt at 20 seconds. It is a live tail, not a query, and a
+request-and-response client cannot use it. There is therefore no follow mode
+here, by construction rather than by omission.
+
+**The metrics route is blocked by entitlement, not by shape.**
+`POST /v2/observability/query` with `vercel.request.count` grouped by
+`http_status` answers:
+
+```
+402 payment_required: Observability Plus is required to run this query for team
+<team> and is available on Pro and Enterprise plans.
+```
+
+`GET /v2/observability/schema` returns 96 metrics for the same token, and
+`vercel.request.count` does carry `http_status`, `error_code`, `route` and
+`environment` dimensions, so the query is well formed and simply not paid for.
+Request logs work on the same account **without** Observability Plus, which is
+what makes them the right surface for an error question. Reaching for
+`--metric vercel.request.count` instead answers 402 and no flag fixes it.
+
+**Build logs do work, and are out of scope.**
+`GET /v3/deployments/{idOrUrl}/events` returns a JSON array promptly
+(`direction=backward`, `limit`, `since`, `until`, `statusCode`), carrying
+`type: stdout|stderr|fatal|...` build events. Noted for a possible future change;
+this surface is runtime request logs only.
+
+## Still not pinned down
+
+Three things are inferred rather than observed here, and one observation is
+unresolved. The first two are marked ASSUMPTION in the code:
+
+- **The `logs[]` item shape.** `{level, message, messageTruncated}` from the CLI
+  source, never observed populated, so normalization skips anything unexpected
+  rather than trusting it.
+- **Project scoped tokens.** Reasoned from the `ownerId` requirement rather than
+  observed, because only a team scoped token was available.
+- **How "no status recorded" is spelled.** Read as `statusCode: 0` or an absent
+  field, either of which this client treats as no status.
+- **`source=serverless`.** One probe, two readings, no second probe. See above.

@@ -45,9 +45,30 @@ from .http import (
     execute,
     format_dry_run,
     redact_headers,
+    scrub_credentials,
     validate_timeout,
     validate_token,
 )
+from .logs import DEFAULT_LIMIT as LOGS_DEFAULT_LIMIT
+from .logs import LEVELS as LOG_LEVELS
+from .logs import MAX_LIMIT as LOGS_MAX_LIMIT
+from .logs import OPERATION as REQUEST_LOGS_QUERY
+from .logs import (
+    SOURCE_ALIAS_NOTE,
+    error_filter_sets,
+    method_warning,
+    normalize_method,
+    summarize,
+    validate_levels,
+    validate_sources,
+    validate_status_code,
+)
+from .logs import SOURCES as LOG_SOURCES
+from .logs import build_report as build_log_report
+from .logs import build_request as build_logs_request
+from .logs import collect as collect_logs
+from .logs import merge as merge_logs
+from .logs import validate_limit as validate_logs_limit
 from .odata import build_clause, combine_filters, json_dimension
 from .presets import DEFAULT_METRIC, DEFAULT_PRESET, PRESETS, Preset, format_presets
 from .projects import (
@@ -66,13 +87,19 @@ from .projects import (
 from .render import (
     DATA_POINTS_METRIC,
     OVERVIEW_TABLE_LIMIT,
+    LogEntry,
+    LogReport,
     Result,
     Style,
     _result_document,
     format_csv,
     format_json,
+    format_logs_csv,
+    format_logs_json,
     format_table,
     format_value,
+    render_error_summary,
+    render_logs,
     render_overview,
     render_vitals,
 )
@@ -106,7 +133,10 @@ from .speedinsights import validate_group_by as validate_speed_group_by
 from .speedinsights import validate_limit as validate_speed_limit
 from .timerange import (
     ACCEPTED_GRANULARITIES,
+    LOGS,
     SPEED_INSIGHTS,
+    SURFACE_LABELS,
+    SURFACES,
     TIME_GRANULARITIES,
     TIME_HELP,
     WEB_ANALYTICS,
@@ -176,15 +206,41 @@ exit codes:
 """
 
 
+def _preset_window_phrase() -> str:
+    """Name every preset that owns a window default, as ``--since``'s help says it.
+
+    Composed from :data:`PRESETS` rather than written out, because the two used
+    to be separate strings with nothing keeping them in step: the help said "1h
+    on the logs and errors presets and 6h on error-summary" while the preset
+    table was free to move underneath it.
+
+    Returns:
+        A phrase such as ``1h on logs and errors, 6h on error-summary``, in the
+        order the preset table lists them, or ``""`` when no preset owns one.
+    """
+    grouped: dict[str, list[str]] = {}
+    for name, preset in PRESETS.items():
+        if preset.default_since:
+            grouped.setdefault(preset.default_since, []).append(name)
+    parts: list[str] = []
+    for since, names in grouped.items():
+        if len(names) > 1:
+            listed = f"{', '.join(names[:-1])} and {names[-1]}"
+        else:
+            listed = names[0]
+        parts.append(f"{since} on {listed}")
+    return ", ".join(parts)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser. The help text doubles as the reference docs."""
     parser = argparse.ArgumentParser(
         prog=PROG,
         description=(
-            "Query the Vercel Web Analytics and Speed Insights APIs from the "
-            "command line. Read only: every request comes from a fixed operation "
-            "allowlist, and the access token is sent only in the Authorization "
-            "header."
+            "Query the Vercel Web Analytics, Speed Insights and request logs "
+            "APIs from the command line. Read only: every request comes from a "
+            "fixed operation allowlist, and the access token is sent only in "
+            "the Authorization header."
         ),
         epilog=EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -299,8 +355,13 @@ def build_parser() -> argparse.ArgumentParser:
     shape.add_argument(
         "--since",
         metavar="WHEN",
-        default=DEFAULT_SINCE,
-        help=f"start of the window (default: {DEFAULT_SINCE}); {TIME_HELP}",
+        # No default here: a preset may own one, and only an unset value can
+        # tell "the user asked for 7d" apart from "nobody asked for anything".
+        default=None,
+        help=(
+            f"start of the window (default: {DEFAULT_SINCE}, or "
+            f"{_preset_window_phrase()}); {TIME_HELP}"
+        ),
     )
     shape.add_argument(
         "--until",
@@ -316,7 +377,8 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             f"maximum number of groups, {MIN_LIMIT} to {MAX_LIMIT} "
             f"(preset default, usually {DEFAULT_LIMIT}); the rest roll into "
-            f"one {OTHERS_LABEL!r} row"
+            f"one {OTHERS_LABEL!r} row. On a logs preset it counts rows rather "
+            f"than groups, up to {LOGS_MAX_LIMIT}, and nothing rolls up"
         ),
     )
     shape.add_argument(
@@ -405,10 +467,93 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    logs = parser.add_argument_group(
+        "request logs",
+        "Only meaningful with a logs preset (logs, errors, error-summary). This "
+        "API returns rows of text rather than aggregated numbers, and filters "
+        "with query parameters rather than OData.",
+    )
+    logs.add_argument(
+        "--level",
+        metavar="LEVEL",
+        default=None,
+        help=(
+            "only requests that logged a line at one of these levels: "
+            + ", ".join(LOG_LEVELS)
+            + ", comma separated. Note that this matches application log lines "
+            "only, so a 5xx that printed nothing does not match"
+        ),
+    )
+    logs.add_argument(
+        "--status-code",
+        dest="status_code",
+        metavar="CODE",
+        default=None,
+        help=(
+            "only responses with this status: an integer such as 500, a class "
+            "such as 5xx, None for requests with no status recorded, or a comma "
+            "separated mix"
+        ),
+    )
+    logs.add_argument(
+        "--source",
+        metavar="SOURCE",
+        default=None,
+        help=(
+            "only requests served by: "
+            + ", ".join(LOG_SOURCES)
+            # Composed in logs.py from the alias table itself, so this help and
+            # the refusal that quotes the same fact cannot drift from it.
+            + f", comma separated. {SOURCE_ALIAS_NOTE}"
+        ),
+    )
+    logs.add_argument(
+        "--method",
+        metavar="METHOD",
+        default=None,
+        help="only this HTTP method, for example POST",
+    )
+    logs.add_argument(
+        "--search",
+        metavar="TEXT",
+        default=None,
+        help=(
+            "only requests whose path or log text contains this; free text and "
+            "nothing more, not a query syntax, so do not expect 'status:500' to "
+            "filter by status: use --status-code for that"
+        ),
+    )
+    logs.add_argument(
+        "--request-id",
+        dest="request_id",
+        metavar="ID",
+        default=None,
+        help="one request, by the id shown in the table",
+    )
+    logs.add_argument(
+        "--branch",
+        metavar="NAME",
+        default=None,
+        help="only deployments built from this git branch",
+    )
+    logs.add_argument(
+        "--deployment",
+        metavar="ID",
+        default=None,
+        help="only this deployment, by its dpl_ id",
+    )
+    logs.add_argument(
+        "--expand",
+        action="store_true",
+        help="print each full log message under its row instead of truncating it",
+    )
+
     filters = parser.add_argument_group(
         "filters",
         "Each flag adds one OData clause; all clauses are joined with 'and'. "
-        "A comma separated value becomes an 'in (...)' set.",
+        "A comma separated value becomes an 'in (...)' set. A logs preset has "
+        "only --path, --route and --environment, which become exact match query "
+        "parameters there; --search is the substring tool on that surface.",
     )
     filters.add_argument("--path", metavar="PATH", help="requestPath, exact URL path")
     filters.add_argument("--route", metavar="ROUTE", help="route, framework pattern")
@@ -514,10 +659,14 @@ class Settings:
     order_direction: str | None = None
     granularity: str | None = None
     bucket_timezone: str | None = None
-    #: Speed Insights only. A scope requires an ownerId, and for a team the
-    #: team id IS the owner. For a personal account it is read once from the
-    #: user endpoint at run time, because nothing else knows it.
+    #: Speed Insights and request logs. A scope requires an ownerId, and for a
+    #: team the team id IS the owner. For a personal account it is read once
+    #: from the project's own record at run time, because nothing else knows it.
     owner_id: str | None = None
+    #: Request logs only: wire-named filter values, keyed by
+    #: :data:`logs.FILTER_PARAMS`. Empty on the other two surfaces, which filter
+    #: with an OData expression in :attr:`filter_expr` instead.
+    log_filters: dict[str, str] = field(default_factory=dict)
 
     @property
     def aggregation_label(self) -> str:
@@ -535,6 +684,11 @@ class Settings:
         return self.surface == SPEED_INSIGHTS
 
     @property
+    def is_logs(self) -> bool:
+        """True when this run queries the request logs surface."""
+        return self.surface == LOGS
+
+    @property
     def project_label(self) -> str:
         """How to name what was queried, in a heading or an empty result line."""
         return self.project or "every project in the team"
@@ -545,23 +699,51 @@ def _env_value(env: Mapping[str, str], name: str) -> str | None:
     return value.strip() or None if value else None
 
 
-#: Every filter shorthand, in the order its clause is emitted, with the
-#: dimension it compiles to on each surface. The two APIs name the same thing
-#: differently, so the spelling follows the surface the query is going to, and
-#: ``None`` marks a shorthand that surface has no dimension for at all.
-FILTER_SHORTHANDS: tuple[tuple[str, str, str | None], ...] = (
-    ("--path", "requestPath", "request_path"),
-    ("--route", "route", "route"),
-    ("--country", "country", "country"),
-    ("--device", "deviceType", "device_type"),
-    ("--browser", "browserName", None),
-    ("--os", "osName", None),
-    ("--referrer", "referrerHostname", None),
-    ("--utm-source", "utmSource", None),
-    ("--utm-medium", "utmMedium", None),
-    ("--utm-campaign", "utmCampaign", None),
-    ("--environment", "environment", "environment"),
+#: Every filter shorthand, in the order its clause is emitted, with the name it
+#: compiles to on each surface: the flag, then Web Analytics, Speed Insights and
+#: request logs in that order. The three APIs name the same thing differently,
+#: so the spelling follows the surface the query is going to, and ``None`` marks
+#: a shorthand that surface has no dimension for at all. On the logs surface
+#: these names are query parameters rather than OData dimensions.
+FILTER_SHORTHANDS: tuple[tuple[str, str, str | None, str | None], ...] = (
+    ("--path", "requestPath", "request_path", "requestPath"),
+    ("--route", "route", "route", "route"),
+    ("--country", "country", "country", None),
+    ("--device", "deviceType", "device_type", None),
+    ("--browser", "browserName", None, None),
+    ("--os", "osName", None, None),
+    ("--referrer", "referrerHostname", None, None),
+    ("--utm-source", "utmSource", None, None),
+    ("--utm-medium", "utmMedium", None, None),
+    ("--utm-campaign", "utmCampaign", None, None),
+    ("--environment", "environment", "environment", "environment"),
 )
+
+#: What the request logs surface can filter on, named as the user writes it.
+#: The wire parameter names live in :data:`logs.FILTER_PARAMS`; these are the
+#: flags that reach them, which is what a refusal should tell the reader to use.
+LOGS_FILTER_FLAGS: tuple[str, ...] = (
+    "--path",
+    "--route",
+    "--environment",
+    "--level",
+    "--status-code",
+    "--source",
+    "--method",
+    "--branch",
+    "--deployment",
+    "--request-id",
+    "--search",
+)
+
+#: For each surface that lacks some shorthand's dimension: how that surface is
+#: named in the refusal, and what it does filter on instead. Web Analytics is
+#: absent because every shorthand compiles there, so the refusal cannot arise
+#: for it.
+_NO_DIMENSION_HELP: dict[str, tuple[str, tuple[str, ...]]] = {
+    SPEED_INSIGHTS: ("Speed Insights", SPEED_DIMENSIONS),
+    LOGS: ("the request logs API", LOGS_FILTER_FLAGS),
+}
 
 
 def _shorthand_values(args: argparse.Namespace) -> dict[str, str | None]:
@@ -590,21 +772,36 @@ def _resolve_filters(
     actually going to, and a shorthand the active surface has no dimension for
     is a configuration error naming why, never a clause the API would reject.
     """
-    speed = surface == SPEED_INSIGHTS
     values = _shorthand_values(args)
 
     clauses: list[str] = []
-    for flag, web_name, speed_name in FILTER_SHORTHANDS:
+    for flag, web_name, speed_name, logs_name in FILTER_SHORTHANDS:
         value = values[flag]
         if not value:
             continue
-        dimension = speed_name if speed else web_name
+        if surface == SPEED_INSIGHTS:
+            dimension = speed_name
+        elif surface == LOGS:
+            dimension = logs_name
+        else:
+            dimension = web_name
         if dimension is None:
+            # Looked up rather than indexed: a future shorthand with no Web
+            # Analytics dimension would reach a surface this table has no entry
+            # for, and a KeyError traceback is a worse answer than a ConfigError
+            # that names one thing less.
+            subject, filterable = _NO_DIMENSION_HELP.get(
+                surface, (SURFACE_LABELS[surface], ())
+            )
+            alternatives = (
+                f"That surface filters on {', '.join(filterable)}. "
+                if filterable
+                else ""
+            )
             raise ConfigError(
-                f"{flag} {value!r} is a Web Analytics filter: Speed Insights "
+                f"{flag} {value!r} is a Web Analytics filter: {subject} "
                 f"collects no {web_name} dimension, so it cannot filter on one. "
-                f"That surface filters on {', '.join(SPEED_DIMENSIONS)}; drop "
-                f"the flag, or run a Web Analytics preset instead"
+                f"{alternatives}Drop the flag, or run a Web Analytics preset instead"
             )
         clauses.append(build_clause(dimension, value))
 
@@ -633,6 +830,62 @@ def _resolve_filters(
     return combine_filters(clauses)
 
 
+def _resolve_log_filters(
+    args: argparse.Namespace, warnings: list[str]
+) -> dict[str, str]:
+    """Turn every logs filter flag into the query parameters the API takes.
+
+    This is the one place a flag becomes a wire parameter on this surface, and
+    each value goes through its validator here, before a request exists, because
+    the API answers an unknown level or source with HTTP 200 and zero rows: an
+    unchecked typo would read as a healthy site.
+
+    ``--method`` is the one vocabulary warned about rather than refused: a custom
+    HTTP method is legal, so refusing an unknown one would remove capability,
+    while saying nothing would leave the same zero-rows trap unmarked.
+
+    Args:
+        args: The parsed arguments.
+        warnings: Collector for anything worth saying on stderr without failing
+            the run, the same list :class:`Settings` carries.
+
+    Returns:
+        Wire-named filters, keyed by :data:`logs.FILTER_PARAMS`.
+
+    Raises:
+        ConfigError: From any validator, naming the flag and the accepted set.
+    """
+    filters: dict[str, str] = {}
+    if args.level:
+        filters["level"] = validate_levels(args.level)
+    if args.status_code:
+        filters["statusCode"] = validate_status_code(args.status_code)
+    if args.source:
+        filters["source"] = validate_sources(args.source)
+    if args.method:
+        # The API records the method in upper case, and matches it exactly.
+        method = normalize_method(str(args.method))
+        filters["requestMethod"] = method
+        warning = method_warning(method)
+        if warning:
+            warnings.append(warning)
+    if args.path:
+        filters["requestPath"] = args.path
+    if args.route:
+        filters["route"] = args.route
+    if args.environment:
+        filters["environment"] = args.environment
+    if args.branch:
+        filters["branch"] = args.branch
+    if args.deployment:
+        filters["deploymentId"] = args.deployment
+    if args.request_id:
+        filters["requestId"] = args.request_id
+    if args.search:
+        filters["search"] = args.search
+    return filters
+
+
 def _resolve_group_by(args: argparse.Namespace, preset: Preset) -> list[str]:
     """Merge the preset grouping with --group-by, --granularity and the sugar."""
     explicit = [dim for dim in (args.group_by or []) if dim]
@@ -652,35 +905,114 @@ def _resolve_group_by(args: argparse.Namespace, preset: Preset) -> list[str]:
     return group_by
 
 
-#: The Speed Insights presets, named in the error that rejects a Speed
-#: Insights option on the other surface.
-SPEED_PRESET_NAMES = ", ".join(
-    name for name, preset in PRESETS.items() if preset.is_speed
+#: Every option that is not meaningful on every surface: the argparse attribute,
+#: the flag as the user writes it, the surfaces it does mean something on, and
+#: the reason it means nothing elsewhere. One table rather than one per surface,
+#: because with three surfaces the pairwise version stops being readable. The
+#: filter shorthands are absent: :data:`FILTER_SHORTHANDS` already knows which
+#: surface has which dimension, and refuses the rest there.
+SURFACE_OPTIONS: tuple[tuple[str, str, frozenset[str], str], ...] = (
+    # Speed Insights only.
+    ("metric", "--metric", frozenset({SPEED_INSIGHTS}),
+     "only Speed Insights reports a metric per request"),
+    ("percentile", "--percentile", frozenset({SPEED_INSIGHTS}),
+     "a percentile only means something over a distribution of measurements"),
+    ("aggregation", "--aggregation", frozenset({SPEED_INSIGHTS}),
+     "an aggregation combines a distribution of measurements, and only Speed "
+     "Insights collects one"),
+    ("order_by", "--order-by", frozenset({SPEED_INSIGHTS}),
+     "only Speed Insights returns the rollup columns this orders by"),
+    ("order", "--order", frozenset({SPEED_INSIGHTS}),
+     "only Speed Insights takes an order for its grouped rows"),
+    ("bucket_timezone", "--bucket-timezone", frozenset({SPEED_INSIGHTS}),
+     "only Speed Insights aligns its time buckets to a zone"),
+    ("all_projects", "--all", frozenset({SPEED_INSIGHTS}),
+     "only Speed Insights can answer for every project in one request"),
+    ("data_points", "--data-points", frozenset({SPEED_INSIGHTS}),
+     "only Speed Insights counts the measurements behind a value"),
+    ("budget", "--budget", frozenset({SPEED_INSIGHTS}),
+     "a budget compares a measured value against a threshold, and only Speed "
+     "Insights reports one"),
+    # Web Analytics only. Each reason has to hold on both of the other two
+    # surfaces, since either can be the one refusing.
+    ("dataset", "--dataset", frozenset({WEB_ANALYTICS}),
+     "neither Speed Insights nor request logs has datasets; Speed Insights "
+     "queries one metric at a time, chosen with --metric, and request logs "
+     "answer with rows"),
+    ("event_name", "--event-name", frozenset({WEB_ANALYTICS}),
+     "neither Speed Insights nor request logs collect custom events"),
+    ("event_property", "--event-property", frozenset({WEB_ANALYTICS}),
+     "neither Speed Insights nor request logs collect custom events, so "
+     "neither has event properties to break out"),
+    ("flag", "--flag", frozenset({WEB_ANALYTICS}),
+     "neither Speed Insights nor request logs collect feature flag values"),
+    # Request logs only.
+    ("level", "--level", frozenset({LOGS}),
+     "only the request logs API records a log level"),
+    ("status_code", "--status-code", frozenset({LOGS}),
+     "only the request logs API reports a response status per request"),
+    ("source", "--source", frozenset({LOGS}),
+     "only the request logs API says what served a request"),
+    # These two are claims about what this client's analytics surfaces filter
+    # on, not about what the APIs behind them could do: the observability API
+    # publishes an HTTP method and a deployment among a metric's dimensions, and
+    # a future change here could reach them. Overstating that would be a fact
+    # this table cannot support.
+    ("method", "--method", frozenset({LOGS}),
+     "neither analytics surface here filters by HTTP method"),
+    ("search", "--search", frozenset({LOGS}),
+     "there is no log text to search on an analytics surface"),
+    ("request_id", "--request-id", frozenset({LOGS}),
+     "an analytics row is an aggregate, not one request"),
+    ("branch", "--branch", frozenset({LOGS}),
+     "neither analytics API records the git branch"),
+    ("deployment", "--deployment", frozenset({LOGS}),
+     "neither analytics surface here filters by deployment"),
+    ("expand", "--expand", frozenset({LOGS}),
+     "there is no log message to expand"),
+    # Both analytics surfaces, but not request logs.
+    ("group_by", "--group-by", frozenset({WEB_ANALYTICS, SPEED_INSIGHTS}),
+     "request logs are rows rather than buckets, so there is nothing to group; "
+     "use the error-summary preset, which groups by status, route and message"),
+    ("granularity", "--granularity", frozenset({WEB_ANALYTICS, SPEED_INSIGHTS}),
+     "request logs are rows rather than time buckets"),
+    ("raw_filters", "--filter", frozenset({WEB_ANALYTICS, SPEED_INSIGHTS}),
+     "the request logs API takes no OData; filter with "
+     + ", ".join(LOGS_FILTER_FLAGS)),
 )
 
-#: Options that only mean something on the Speed Insights surface, paired with
-#: how to read whether the user actually passed one.
-SPEED_ONLY_OPTIONS: tuple[tuple[str, str], ...] = (
-    ("--metric", "metric"),
-    ("--percentile", "percentile"),
-    ("--aggregation", "aggregation"),
-    ("--order-by", "order_by"),
-    ("--order", "order"),
-    ("--bucket-timezone", "bucket_timezone"),
-    ("--all", "all_projects"),
-    ("--data-points", "data_points"),
-)
 
-#: Options that only mean something on the Web Analytics surface. The filter
-#: shorthands are handled by :data:`FILTER_SHORTHANDS`; these are the rest.
-WEB_ONLY_OPTIONS: tuple[tuple[str, str, str], ...] = (
-    ("--dataset", "dataset", "Speed Insights has no datasets: it queries one "
-     "metric at a time, chosen with --metric"),
-    ("--event-name", "event_name", "Speed Insights does not collect custom events"),
-    ("--event-property", "event_property", "Speed Insights does not collect "
-     "custom events, so it has no event properties to break out"),
-    ("--flag", "flag", "Speed Insights does not collect feature flag values"),
-)
+def _surface_phrase(surfaces: frozenset[str]) -> str:
+    """Name the surfaces in prose, for example ``Speed Insights surface``.
+
+    Args:
+        surfaces: The surfaces an option means something on.
+
+    Returns:
+        The labels in a fixed order, singular or plural as the count needs.
+    """
+    labels = [SURFACE_LABELS[name] for name in SURFACES if name in surfaces]
+    if len(labels) == 1:
+        return f"{labels[0]} surface"
+    return f"{' and '.join(labels)} surfaces"
+
+
+def _preset_names(surfaces: frozenset[str]) -> str:
+    """The presets that query any of ``surfaces``, comma separated.
+
+    Every refusal names where the flag does work, because a message that only
+    says "not here" leaves the reader with nothing to try next.
+
+    Args:
+        surfaces: The surfaces an option means something on.
+
+    Returns:
+        The preset names in the order the preset table lists them.
+    """
+    return ", ".join(
+        name for name, preset in PRESETS.items() if preset.surface in surfaces
+    )
+
 
 #: A bucket timezone is an IANA zone name such as ``Europe/Paris`` or ``UTC``.
 _TIMEZONE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+_-]*(/[A-Za-z0-9+_.-]+){0,2}$")
@@ -689,9 +1021,23 @@ _TIMEZONE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+_-]*(/[A-Za-z0-9+_.-]+){0,2}$")
 def _reject_cross_surface_options(args: argparse.Namespace, preset: Preset) -> None:
     """Rules 14, 15 and 22: an option used on the surface it does not belong to.
 
-    Rule 14 first, because ``--dataset`` with ``--metric`` names a conflict
+    Walks :data:`SURFACE_OPTIONS` once, in all three directions: the preset
+    decides the surface, and an option not meaningful there is refused with the
+    reason and the presets it does work on. An option that is silently ignored
+    instead is the failure this exists to prevent, because a flag that promises
+    something and does nothing is worse than a flag that is refused.
+
+    Rule 14 goes first, because ``--dataset`` with ``--metric`` names a conflict
     between two options rather than between an option and a preset, and that
     is the more specific complaint.
+
+    Args:
+        args: The parsed arguments.
+        preset: The preset this run uses, which names the active surface.
+
+    Raises:
+        ConfigError: Naming the flag, the surface the preset queries, why the
+            flag means nothing there, and the presets it does work on.
     """
     if args.dataset and args.metric:
         raise ConfigError(
@@ -701,27 +1047,27 @@ def _reject_cross_surface_options(args: argparse.Namespace, preset: Preset) -> N
             "Insights web vital. Keep one, and pick a preset for that surface"
         )
 
-    if preset.is_speed:
-        for flag, attribute, reason in WEB_ONLY_OPTIONS:
-            value = getattr(args, attribute)
-            if not value:
-                continue
-            raise ConfigError(
-                f"{flag} has no meaning on the {preset.name} preset, which "
-                f"queries Speed Insights: {reason}. Drop the flag, or run a Web "
-                "Analytics preset such as top-pages"
-            )
-        return
-
-    for flag, attribute in SPEED_ONLY_OPTIONS:
+    for attribute, flag, surfaces, reason in SURFACE_OPTIONS:
         value = getattr(args, attribute)
-        if value is None or value is False:
+        # An appending option defaults to [] or None, and a store_true to
+        # False, so "was it passed" is not the same question as "is it truthy".
+        if value is None or value is False or value == []:
             continue
-        shown = f" {value!r}" if not isinstance(value, bool) else ""
+        if preset.surface in surfaces:
+            continue
+        if isinstance(value, bool):
+            shown = ""
+        elif isinstance(value, list):
+            # An appending flag holds a list, and printing the list itself would
+            # quote Python syntax back at a user who never typed any.
+            shown = f" {', '.join(str(item) for item in value)!r}"
+        else:
+            shown = f" {value!r}"
         raise ConfigError(
-            f"{flag}{shown} only applies to the Speed Insights surface, but the "
-            f"{preset.name} preset queries Web Analytics. Run one of "
-            f"{SPEED_PRESET_NAMES}, or drop the flag"
+            f"{flag}{shown} only applies to the {_surface_phrase(surfaces)}, "
+            f"but the {preset.name} preset queries "
+            f"{SURFACE_LABELS[preset.surface]}: {reason}. Run one of "
+            f"{_preset_names(surfaces)}, or drop the flag"
         )
 
 
@@ -891,16 +1237,18 @@ def _resolve_settings(args: argparse.Namespace, env: Mapping[str, str]) -> Setti
         or _env_value(env, "VERCEL_ORG_ID")
         or team
     )
-    if preset.surface == SPEED_INSIGHTS and team_slug and not owner_id:
-        # A slug names a team but is not an account id, and scope.ownerId wants
-        # an id. Falling through to the personal account lookup here would
-        # silently answer for the wrong account rather than failing, which is
-        # the worst outcome available.
+    if preset.surface in (SPEED_INSIGHTS, LOGS) and team_slug and not owner_id:
+        # Both of these surfaces scope by an owning account: Speed Insights
+        # through scope.ownerId and request logs through the ownerId parameter.
+        # A slug names a team but is not an account id, so falling through to
+        # the personal account lookup here would silently answer for the wrong
+        # account rather than failing, which is the worst outcome available.
         raise ConfigError(
-            f"--team-slug {team_slug!r} cannot scope a Speed Insights query on "
-            "its own: that surface needs the account id, and a slug is a name. "
-            "Pass --team with the team id (Team Settings, General), or "
-            "--owner-id. A slug still works for Web Analytics presets"
+            f"--team-slug {team_slug!r} cannot scope a "
+            f"{SURFACE_LABELS[preset.surface]} query on its own: that surface "
+            "needs the account id, and a slug is a name. Pass --team with the "
+            "team id (Team Settings, General), or --owner-id. A slug still "
+            "works for Web Analytics presets"
         )
     if team and team_slug:
         raise ConfigError(
@@ -920,6 +1268,13 @@ def _resolve_settings(args: argparse.Namespace, env: Mapping[str, str]) -> Setti
         raise ConfigError(
             "--csv needs a single table, but the overview preset issues three "
             "queries; use trend, top-pages or referrers with --csv instead"
+        )
+
+    if preset.name == "error-summary" and args.csv:
+        raise ConfigError(
+            "--csv needs a single table, but the error-summary preset tallies "
+            "the same errors three ways; use the errors preset with --csv "
+            "instead, which is one row per request"
         )
 
     if preset.metric == "*" and args.group_by:
@@ -957,6 +1312,7 @@ def _resolve_settings(args: argparse.Namespace, env: Mapping[str, str]) -> Setti
     order_by: str | None = None
     order_direction: str | None = None
     bucket_timezone: str | None = None
+    log_filters: dict[str, str] = {}
 
     if speed:
         metrics = _resolve_metrics(args, preset)
@@ -980,12 +1336,23 @@ def _resolve_settings(args: argparse.Namespace, env: Mapping[str, str]) -> Setti
             # The limit bounds grouped results per bucket, so an ungrouped
             # query has nothing to bound and the field is left out entirely.
             limit = None
+    elif preset.is_logs:
+        # This surface returns rows rather than groups, so there is nothing to
+        # group by, the limit counts requests, and the filters are query
+        # parameters rather than one OData expression.
+        group_by = []
+        limit = args.limit if args.limit is not None else preset.limit
+        limit = validate_logs_limit(limit if limit is not None else LOGS_DEFAULT_LIMIT)
+        log_filters = _resolve_log_filters(args, warnings)
     else:
         group_by = validate_group_by(_resolve_group_by(args, preset), dataset)
         limit = args.limit if args.limit is not None else preset.limit
         if limit is not None:
             limit = validate_limit(limit)
         if args.environment == "preview" and select_endpoint(group_by) == "count":
+            # Web Analytics only, which is what this branch is. A logs preset is
+            # ungrouped too, but it refuses --group-by outright, so the advice
+            # below would send its reader to a flag that surface does not take.
             raise ConfigError(
                 "--environment preview cannot be used with a count query: the "
                 "count endpoints report production traffic only. Add --group-by "
@@ -993,10 +1360,26 @@ def _resolve_settings(args: argparse.Namespace, env: Mapping[str, str]) -> Setti
                 "instead"
             )
 
+    # This runs on every surface, because it is what refuses a shorthand the
+    # active surface has no dimension for (--country on request logs, say).
     filter_expr = _resolve_filters(args, dataset, preset.surface)
+    if preset.is_logs:
+        # Request logs take no OData at all: their filters are already query
+        # parameters in log_filters, and leaving this empty is what keeps the
+        # header line from claiming a filter that was never sent.
+        filter_expr = None
 
     now = datetime.now(timezone.utc)
-    time_range = resolve_range(args.since, args.until, now)
+    # A preset may own a window default, and an explicit --since still wins:
+    # runtime logs are retained for an hour on Hobby and a day on Pro, so the
+    # global 7 day default would report nothing there and read as a healthy site.
+    # Tested against None rather than for truthiness, so --since "" still reaches
+    # the time parser and is still refused: silently substituting a default for
+    # an empty value would report a window nobody asked for as though they had.
+    since = args.since
+    if since is None:
+        since = preset.default_since or DEFAULT_SINCE
+    time_range = resolve_range(since, args.until, now)
 
     warning = reporting_window_warning(time_range[0], now)
     if warning:
@@ -1020,6 +1403,7 @@ def _resolve_settings(args: argparse.Namespace, env: Mapping[str, str]) -> Setti
         group_by=group_by,
         limit=limit,
         filter_expr=filter_expr,
+        log_filters=log_filters,
         time_range=time_range,
         timeout=timeout,
         warnings=warnings,
@@ -1057,9 +1441,54 @@ def _plan_speed_requests(settings: Settings) -> list[PreparedRequest]:
     return [build_speed_request(metric=metric, **common) for metric in settings.metrics]
 
 
+def _plan_log_requests(settings: Settings, page: int = 0) -> list[PreparedRequest]:
+    """One request logs call per filter set, all for the same page.
+
+    An errors preset needs two: ``level`` matches application log lines and
+    ``statusCode`` matches responses, so a 5xx that printed nothing is invisible
+    to the first and a 200 that logged a stack trace is invisible to the second.
+    An explicit ``--level`` or ``--status-code`` collapses that to one call.
+
+    It takes a page rather than looping over pages, because ``--dry-run`` prints
+    exactly what one page would ask for.
+
+    Args:
+        settings: The resolved settings for this run.
+        page: Zero based page index, the same for every filter set.
+
+    Returns:
+        One prepared request per filter set, in the order they are queried.
+    """
+    filter_sets = (
+        error_filter_sets(settings.log_filters)
+        if settings.preset.calls > 1
+        else [dict(settings.log_filters)]
+    )
+    return [
+        build_logs_request(
+            project=settings.project,
+            owner_id=settings.owner_id or "",
+            since=settings.time_range[0],
+            until=settings.time_range[1],
+            page=page,
+            filters=filters,
+            token=settings.token,
+        )
+        for filters in filter_sets
+    ]
+
+
 #: Shown in a dry run when the owner is not known without asking the API. A dry
 #: run must send nothing, including the one GET that would resolve this.
 OWNER_PLACEHOLDER = "<read from the project at run time>"
+
+
+#: Where a token is created in the dashboard, which is what both scope refusals
+#: below tell the reader to go and do. Named here rather than in the package root
+#: (where :data:`DOCS_TOKEN_URL`, the documentation anchor, lives) because this
+#: module is the only one that needs it, and written once so a moved Vercel page
+#: cannot leave one of the two hints stale.
+DASHBOARD_TOKEN_URL = "https://vercel.com/account/tokens"
 
 
 #: Appended to a 404 from the observability API. That surface scopes by account
@@ -1072,9 +1501,8 @@ OBSERVABILITY_SCOPE_HINT = (
     "Speed Insights is served by Vercel's observability API, which scopes by "
     "account rather than by project, so it needs a token with account (or "
     "team) scope. Web Analytics presets keep working with a project scoped "
-    "token. Create an account scoped token at "
-    "https://vercel.com/account/tokens, or confirm the scope of the current "
-    "one with: npx vercel@latest metrics schema"
+    f"token. Create an account scoped token at {DASHBOARD_TOKEN_URL}, or "
+    "confirm the scope of the current one with: npx vercel@latest metrics schema"
 )
 
 
@@ -1127,6 +1555,70 @@ def _explain_observability_404(exc: ApiError) -> ApiError:
         f"{exc.message}\n{OBSERVABILITY_SCOPE_HINT}",
         attempts=exc.attempts,
     )
+
+
+#: Appended to a 403 from the request logs endpoint. That endpoint is scoped by
+#: the owning account, through an ``ownerId`` query parameter it requires and
+#: cannot infer, so the commonest cause is a token that has no account to scope
+#: to. It accepts no ``teamId`` at all, which is why the Web Analytics team hint
+#: above would send the reader to a parameter this surface does not have.
+REQUEST_LOGS_SCOPE_HINT = (
+    "Request logs are scoped by the owning account (the ownerId parameter), so "
+    "a token scoped to a single project cannot read them: it cannot act for the "
+    "account that owns the project. Create an account or team scoped token at "
+    f"{DASHBOARD_TOKEN_URL}, and set VERCEL_TEAM_ID for a team owned project, "
+    "since a team is its own owner."
+)
+
+
+def _explain_request_logs_403(exc: ApiError) -> ApiError:
+    """Turn a 403 from the logs endpoint into the answer, not just the status.
+
+    ASSUMPTION: only a team scoped token was available to verify this against,
+    so the project scoped case is reasoned from the ``ownerId`` requirement
+    (omitting it is a 400, and a value the token cannot reach is a 403) rather
+    than observed. See docs/api-notes.md.
+
+    Args:
+        exc: The failure as the API reported it.
+
+    Returns:
+        A new :class:`ApiError` carrying Vercel's own message and then the
+        scope explanation, or ``exc`` unchanged for any other status.
+    """
+    if exc.status != 403:
+        return exc
+    return ApiError(
+        exc.status,
+        exc.code,
+        f"{exc.message}\n{REQUEST_LOGS_SCOPE_HINT}",
+        attempts=exc.attempts,
+    )
+
+
+def _explain_failure(exc: ApiError, operation: str, settings: Settings) -> ApiError:
+    """Add whatever explanation the failing operation's own scoping rules call for.
+
+    One dispatch point for all three surfaces, so a refusal can only ever
+    collect advice that fits the endpoint that refused: the Web Analytics team
+    hint on a request logs 403 would point at ``--team``, which that endpoint
+    does not accept, and would say nothing about the ``ownerId`` it does need.
+
+    Args:
+        exc: The failure as the API reported it.
+        operation: The operation key of the request that failed.
+        settings: The resolved settings, which decide whether the Web Analytics
+            team hint applies at all.
+
+    Returns:
+        Either a new :class:`ApiError` carrying the explanation, or ``exc``
+        unchanged when this status on this operation explains itself.
+    """
+    if operation == OBSERVABILITY_QUERY:
+        return _explain_observability_404(exc)
+    if operation == REQUEST_LOGS_QUERY:
+        return _explain_request_logs_403(exc)
+    return _explain_missing_team(exc, settings)
 
 
 class MissingProject(ConfigError):
@@ -1321,16 +1813,21 @@ def _resolve_project_record(
 ) -> tuple[str | None, str | None]:
     """Read one project record, returning its canonical id and owning account.
 
-    Called for the Speed Insights surface when either piece is missing. Two
-    things come from the one request, which is why they resolve together:
+    Called for the two surfaces that scope by an owning account, whenever
+    something they need is missing. Two things come from the one request, which
+    is why they resolve together:
 
-    * The **owner**, because a scope requires ``ownerId`` and only the API knows
-      it for a personal account. The account endpoint is not equivalent: a team
-      scoped token has no personal user and it answers 404 "User not found."
-    * The **canonical project id**, because this surface scopes by
+    * The **owner**, because both surfaces require one (Speed Insights as
+      ``scope.ownerId``, request logs as the ``ownerId`` parameter) and only the
+      API knows it for a personal account. The account endpoint is not
+      equivalent: a team scoped token has no personal user and it answers 404
+      "User not found."
+    * The **canonical project id**, because Speed Insights scopes by
       ``projectIds`` and wants identifiers, while Web Analytics happily accepts
       a project name. Resolving the name here is what stops ``--project
       my-site`` working for traffic and silently returning nothing for speed.
+      Request logs take a name or an id, so that surface never needs this on
+      its own.
 
     Returns:
         ``(project_id, owner_id)``, either of which may be ``None`` when the
@@ -1367,6 +1864,35 @@ def _resolve_project_record(
     return resolve_project_id(payload, settings.project), owner_from_project(payload)
 
 
+def _needs_owner_lookup(settings: Settings) -> bool:
+    """Whether this run must read the project record before it can query.
+
+    Both scoped surfaces need the owning account, and for a personal account
+    only the project's own record knows it. What each surface needs beyond that
+    differs:
+
+    * **Speed Insights** scopes by ``scope.ownerId`` and ``scope.projectIds``,
+      so it needs the owner and a real project id. A project name is legal input
+      and works as-is on Web Analytics, so it is resolved here rather than handed
+      to a field that cannot match it.
+    * **Request logs** require ``ownerId`` too: omitting it is a 400 and a value
+      the token cannot reach is a 403. That endpoint takes a project name as
+      happily as an id, so only a missing owner is worth the extra request.
+
+    Args:
+        settings: The resolved settings for this run.
+
+    Returns:
+        True when one extra GET is needed before the query can be built.
+    """
+    if settings.is_logs:
+        return not settings.owner_id
+    return settings.is_speed and (
+        not settings.owner_id
+        or not (settings.all_projects or looks_like_project_id(settings.project))
+    )
+
+
 def _overview_granularity(settings: Settings) -> str:
     """The time bucket the overview's trend query groups by.
 
@@ -1384,9 +1910,16 @@ def _overview_granularity(settings: Settings) -> str:
 
 
 def _plan_requests(settings: Settings) -> list[PreparedRequest]:
-    """Build every request a run needs: one, three for the overview, five for vitals."""
+    """Build every request a run needs.
+
+    One for most presets, two for an errors preset (one per filter set), three
+    for the overview and five for vitals. On the request logs surface these are
+    the first page only, which is what a dry run shows.
+    """
     if settings.is_speed:
         return _plan_speed_requests(settings)
+    if settings.is_logs:
+        return _plan_log_requests(settings)
 
     common: dict[str, Any] = {
         "dataset": settings.dataset,
@@ -1456,6 +1989,125 @@ def _empty_message(settings: Settings, group_by: Sequence[str]) -> str:
     )
 
 
+def _collect_logs(
+    settings: Settings,
+    args: argparse.Namespace,
+    session: Any,
+    on_retry: Callable[[str], None],
+    err: TextIO,
+) -> LogReport:
+    """Fetch every filter set, page by page, and build one report from them.
+
+    Each filter set gets its own paging budget, and the sets are then merged and
+    deduplicated by request id: one request can arrive from both of an errors
+    run's filter sets, because ``level`` matches what a request logged while
+    ``statusCode`` matches what it answered.
+
+    Args:
+        settings: The resolved settings for this run.
+        args: The parsed command line, for ``--verbose`` and ``--max-retries``.
+        session: The session every request is issued on.
+        on_retry: Called with one line of reason each time a request is retried.
+        err: Where the verbose lines go. Passed in rather than taken from
+            ``sys.stderr`` so they reach the same stream as the rest of the CLI's
+            diagnostics, which is also the stream the tests capture.
+
+    Returns:
+        One report covering every filter set, newest first.
+
+    Raises:
+        ApiError: On a failure the API reported, carrying the token scope
+            explanation when it was a 403; or with code ``invalid_response``
+            when a page was not an object carrying ``rows``.
+        RateLimitError: When retrying did not clear a rate limit.
+
+    Note:
+        This is where the credential scrub is supplied, because this is the
+        caller that holds the prepared request and therefore its headers. Rows
+        on this surface are free text an application wrote, so a response can
+        echo the very token that fetched it; this tool knows exactly one secret
+        and must never be the thing that discloses it. The scrub is handed to
+        the normalization step, which is the single boundary where a payload
+        becomes typed rows, so no renderer and no output format has to remember
+        it. It rewrites this client's own credential only: nothing can tell a
+        user's own API key from ordinary log text, and pretending otherwise
+        would be a promise this tool cannot keep.
+    """
+    limit = settings.limit or LOGS_DEFAULT_LIMIT
+    # Built once, for the filter set count and for the header line below. The
+    # rebuild inside the loop is only because a page index has to reach the
+    # request, and every page of a set carries the same headers.
+    planned = _plan_log_requests(settings)
+    groups: list[list[LogEntry]] = []
+    truncated = False
+    pages = 0
+
+    for index, first_page in enumerate(planned):
+        # Bound per filter set from the request that will carry it, rather than
+        # rebuilt from the token here: the headers are the authority on what the
+        # credential actually is, and every page of a set carries the same ones.
+        def scrub(text: str, headers: Mapping[str, str] = first_page.headers) -> str:
+            """Rewrite this client's own credential out of a response string."""
+            return scrub_credentials(text, headers)
+
+        if args.verbose:
+            # Once per filter set rather than once per page, so the output stays
+            # proportional to the paging. This is also the line that shows a
+            # reader the token is redacted wherever the tool prints a request.
+            print(
+                f"verbose: headers {redact_headers(first_page.headers)}",
+                file=err,
+            )
+
+        def call(page: int, index: int = index) -> Mapping[str, Any]:
+            """Fetch one page of one filter set. Injected into logs.collect."""
+            prepared = _plan_log_requests(settings, page)[index]
+            if args.verbose:
+                # The params name the page and the filter set's own statusCode or
+                # level, which is what tells two interleaved sets apart: without
+                # them an errors run reads "page 0, page 1, page 0".
+                print(f"verbose: {prepared.method} {prepared.url}", file=err)
+                print(f"verbose: params {prepared.params}", file=err)
+            try:
+                answer = execute(
+                    prepared,
+                    session,
+                    max_retries=args.max_retries,
+                    timeout=settings.timeout,
+                    on_retry=on_retry,
+                )
+            except ApiError as exc:
+                raise _explain_failure(exc, prepared.operation, settings) from None
+            if not isinstance(answer, Mapping):
+                raise ApiError(
+                    200,
+                    "invalid_response",
+                    "the request logs response was a JSON array, but this "
+                    "endpoint answers with an object carrying 'rows'",
+                )
+            return answer
+
+        entries, call_truncated, call_pages = collect_logs(
+            call, limit=limit, scrub=scrub
+        )
+        groups.append(entries)
+        truncated = truncated or call_truncated
+        pages += call_pages
+
+    merged, merge_truncated = merge_logs(groups, limit=limit)
+    return build_log_report(
+        merged,
+        time_range=settings.time_range,
+        project_label=settings.project_label,
+        preset=settings.preset.name,
+        filters=settings.log_filters,
+        truncated=truncated or merge_truncated,
+        pages_fetched=pages,
+        requested_limit=limit,
+        counts_errors=settings.preset.name in ("errors", "error-summary"),
+    )
+
+
 def _run(
     args: argparse.Namespace,
     env: Mapping[str, str],
@@ -1482,13 +2134,7 @@ def _run(
     for warning in settings.warnings:
         print(f"warning: {warning}", file=err)
 
-    # Speed Insights needs both an owner and a real project id. A name is legal
-    # input and works as-is on Web Analytics, so it is only resolved here, where
-    # scope.projectIds would otherwise be handed something it cannot match.
-    needs_lookup = settings.is_speed and (
-        not settings.owner_id
-        or not (settings.all_projects or looks_like_project_id(settings.project))
-    )
+    needs_lookup = _needs_owner_lookup(settings)
 
     if args.dry_run:
         # A dry run sends nothing, including the GET that would resolve the
@@ -1500,8 +2146,13 @@ def _run(
                 print(file=out)
             print(format_dry_run(prepared), file=out)
         if needs_lookup and settings.owner_id == OWNER_PLACEHOLDER:
+            # The two surfaces carry the owner differently: Speed Insights posts
+            # it inside a scope object, request logs send it as a plain query
+            # parameter. Naming a scope object the logs API does not have would
+            # send its reader hunting for a field that is not there.
+            owner_field = "the ownerId parameter" if settings.is_logs else "scope.ownerId"
             print(
-                f"\nscope.ownerId shows {OWNER_PLACEHOLDER} because no --team "
+                f"\n{owner_field} shows {OWNER_PLACEHOLDER} because no --team "
                 "and no --owner-id were given. A real run reads it once from "
                 "the project's own record (its accountId); pass --owner-id to "
                 "skip that call.",
@@ -1514,6 +2165,10 @@ def _run(
             print(f"verbose: {reason}", file=err)
 
     payloads: list[dict[str, Any]] = []
+    # Declared here, before the session, so this one name has a single type all
+    # the way through: the emitter below branches on it having been collected
+    # rather than on the surface, which needs neither an assert nor a cast.
+    report: LogReport | None = None
     session = requests.Session()
     try:
         if needs_lookup:
@@ -1533,44 +2188,54 @@ def _run(
             if not settings.owner_id:
                 raise ConfigError(
                     f"project {settings.project!r} carried no owning account, "
-                    "so a Speed Insights scope could not be built; pass "
-                    "--owner-id explicitly, or set VERCEL_OWNER_ID"
+                    f"so a {SURFACE_LABELS[settings.surface]} query could not "
+                    "be scoped; pass --owner-id explicitly, or set "
+                    "VERCEL_OWNER_ID"
                 )
 
-        requests_to_send = _plan_requests(settings)
+        if settings.is_logs:
+            # This surface pages, so its requests are issued as they are needed
+            # rather than all planned up front, and it answers with rows rather
+            # than with the grouped payload the loop below collects.
+            report = _collect_logs(settings, args, session, on_retry, err)
+        else:
+            requests_to_send = _plan_requests(settings)
 
-        if args.verbose:
+            if args.verbose:
+                for prepared in requests_to_send:
+                    print(f"verbose: {prepared.method} {prepared.url}", file=err)
+                    print(f"verbose: params {prepared.params}", file=err)
+                    print(
+                        f"verbose: headers {redact_headers(prepared.headers)}",
+                        file=err,
+                    )
+
             for prepared in requests_to_send:
-                print(f"verbose: {prepared.method} {prepared.url}", file=err)
-                print(f"verbose: params {prepared.params}", file=err)
-                print(f"verbose: headers {redact_headers(prepared.headers)}", file=err)
-
-        for prepared in requests_to_send:
-            try:
-                answer = execute(
-                    prepared,
-                    session,
-                    max_retries=args.max_retries,
-                    timeout=settings.timeout,
-                    on_retry=on_retry,
-                )
-            except ApiError as exc:
-                if prepared.operation == OBSERVABILITY_QUERY:
-                    raise _explain_observability_404(exc) from None
-                raise _explain_missing_team(exc, settings) from None
-            if not isinstance(answer, Mapping):
-                # Only the schema endpoint answers with a top level array; a
-                # query that does is a response this client cannot interpret.
-                raise ApiError(
-                    200,
-                    "invalid_response",
-                    "the query returned a JSON array, but a query response is "
-                    "an object carrying 'data'; run with --json to see it",
-                )
-            payloads.append(dict(answer))
+                try:
+                    answer = execute(
+                        prepared,
+                        session,
+                        max_retries=args.max_retries,
+                        timeout=settings.timeout,
+                        on_retry=on_retry,
+                    )
+                except ApiError as exc:
+                    raise _explain_failure(exc, prepared.operation, settings) from None
+                if not isinstance(answer, Mapping):
+                    # Only the schema endpoint answers with a top level array; a
+                    # query that does is a response this client cannot interpret.
+                    raise ApiError(
+                        200,
+                        "invalid_response",
+                        "the query returned a JSON array, but a query response "
+                        "is an object carrying 'data'; run with --json to see it",
+                    )
+                payloads.append(dict(answer))
     finally:
         session.close()
 
+    if report is not None:
+        return _emit_logs(settings, args, report, style, out, err)
     if settings.is_speed:
         return _emit_speed(settings, args, payloads, style, out, err)
     if settings.preset.name == "overview":
@@ -1810,6 +2475,56 @@ def _emit_overview(
         ),
         file=out,
     )
+    return 0
+
+
+def _emit_logs(
+    settings: Settings,
+    args: argparse.Namespace,
+    report: LogReport,
+    style: Style,
+    out: TextIO,
+    err: TextIO,
+) -> int:
+    """Print a logs report in whichever format was asked for.
+
+    Args:
+        settings: The resolved settings, for the preset that decides the layout.
+        args: The parsed command line, for the output format and ``--expand``.
+        report: The collected report.
+        style: Colour and glyph settings.
+        out: Stream for the report.
+        err: Stream for the report's notes when the report itself is machine
+            readable, the same way ``_emit_budgets`` moves its verdict aside for
+            ``--json`` and ``--csv``.
+
+    Returns:
+        0, always. An empty window is a complete answer to "what broke", and
+        exiting non-zero for it would fail a caller's pipeline over good news.
+    """
+    if args.json:
+        # The notes are a field of the document here, so they need no second
+        # copy: a consumer reads them out of it.
+        print(format_logs_json(report), file=out)
+        return 0
+    if args.csv:
+        print(format_logs_csv(report), end="", file=out)
+        # CSV has nowhere to carry a caveat, so the caveats go to the other
+        # stream rather than nowhere: without this, a table cut at its limit is
+        # indistinguishable from a complete one, and an empty window from a
+        # healthy site, to exactly the caller who cannot tell otherwise.
+        for note in report.notes:
+            print(f"note: {note}", file=err)
+        return 0
+    if settings.preset.name == "error-summary":
+        # Tallied from the merged entries, and by this one caller, so the tables
+        # can only ever count the rows the report itself carries.
+        print(
+            render_error_summary(report, summarize(report.entries), style=style),
+            file=out,
+        )
+        return 0
+    print(render_logs(report, style=style, expand=args.expand), file=out)
     return 0
 
 

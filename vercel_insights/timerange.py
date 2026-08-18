@@ -18,15 +18,17 @@ from . import ConfigError
 #: Time buckets. At most one may appear in a single grouping.
 TIME_GRANULARITIES: tuple[str, ...] = ("hour", "day", "week", "month", "year")
 
-#: The two query surfaces, spelled as the user facing messages spell them.
+#: The three query surfaces, spelled as the user facing messages spell them.
 WEB_ANALYTICS = "web-analytics"
 SPEED_INSIGHTS = "speed-insights"
-SURFACES: tuple[str, ...] = (WEB_ANALYTICS, SPEED_INSIGHTS)
+LOGS = "logs"
+SURFACES: tuple[str, ...] = (WEB_ANALYTICS, SPEED_INSIGHTS, LOGS)
 
 #: How a surface is named in prose.
 SURFACE_LABELS: dict[str, str] = {
     WEB_ANALYTICS: "Web Analytics",
     SPEED_INSIGHTS: "Speed Insights",
+    LOGS: "request logs",
 }
 
 #: Every spelling a user may type, mapped to the meaning it names. Both
@@ -44,7 +46,10 @@ GRANULARITY_ALIASES: dict[str, str] = {
 
 #: How each meaning is spelled on each surface. ``None`` means that surface has
 #: no documented equivalent, which is a configuration error rather than
-#: something to translate approximately.
+#: something to translate approximately. LOGS is deliberately absent: that
+#: surface has no time buckets at all, ``--granularity`` is rejected before any
+#: request is built, and inventing an entry here would imply a translation that
+#: does not exist.
 GRANULARITY_BY_SURFACE: dict[str, dict[str, str | None]] = {
     WEB_ANALYTICS: {
         "hour": "hour",
@@ -219,6 +224,24 @@ def to_api_timestamp(dt: datetime) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def to_unix_ms(dt: datetime) -> str:
+    """Render an aware datetime as the Unix millisecond string one API wants.
+
+    The request-logs endpoint takes ``startDate`` and ``endDate`` in
+    milliseconds, unlike the two ISO-8601 surfaces, and every query parameter
+    this client sends is a string.
+
+    Args:
+        dt: The instant to render. A naive value is read as UTC.
+
+    Returns:
+        Whole milliseconds since the Unix epoch, as a decimal string.
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return str(int(dt.astimezone(timezone.utc).timestamp() * 1000))
 
 
 def reporting_window_warning(since: datetime, now: datetime) -> str | None:

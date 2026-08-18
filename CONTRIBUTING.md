@@ -7,34 +7,55 @@ changing behaviour; where they disagree with folklore, they win.
 
 ## The layout
 
-The tool is a package at the repository root, not a script. It covers two
+The tool is a package at the repository root, not a script. It covers three
 different Vercel APIs with different request shapes, so one file no longer earns
 its keep.
 
 ```
 vercel_insights/
-  __init__.py        VERSION, exceptions, shared constants
+  __init__.py        VERSION, exceptions, sanitizers, shared constants
   __main__.py        entry point, path-robust so it runs from anywhere
   timerange.py       time parsing, range resolution, granularity translation
   odata.py           OData quoting, clause building, JSON dimension keys
   http.py            operation allowlist, request prep, redaction, retries
   webanalytics.py    Web Analytics request building and response normalization
   speedinsights.py   Speed Insights request building and response normalization
-  render.py          table, JSON, CSV, overview and vitals renderers
+  logs.py            request logs: request building, the level, source and
+                     status vocabularies, response normalization, paging, the
+                     two-call merge, and the local tally behind error-summary
+  projects.py        project listing, and the one project record lookup
+  budgets.py         budget parsing and evaluation
+  render.py          table, JSON, CSV, overview, vitals and logs renderers
   presets.py         the preset table
   cli.py             argument parsing and main()
 tests/               one module per package module, plus test_security.py for
-                     the invariants and test_speed_cli.py / test_speed_render.py
-                     for the Speed Insights paths through cli and render
+                     the invariants, test_speed_cli.py / test_speed_render.py
+                     for the Speed Insights paths through cli and render, and
+                     test_logs.py / test_logs_cli.py / test_logs_render.py for
+                     the request logs paths
 docs/                api-notes.md (verified facts), cli-contract.md (the interface)
 ```
 
 The layering is the point, so keep it: `http`, `odata`, `timerange` and `render`
-know nothing about either API. Everything Web Analytics specific lives in
-`webanalytics.py` and everything Speed Insights specific in `speedinsights.py`,
-and neither imports the other. That is what let the second surface be added
-without touching the first, and a patch that reaches across the line will be
-asked to move.
+know nothing about any of the APIs. Everything Web Analytics specific lives in
+`webanalytics.py`, everything Speed Insights specific in `speedinsights.py`, and
+everything request logs specific in `logs.py`, and none of them imports another.
+That is what let the second and third surfaces be added without touching the
+first, and a patch that reaches across the line will be asked to move.
+
+The logs surface shows where that line runs. Its containers, `LogLine`,
+`LogEntry`, `RouteTally`, `MessageTally`, `LogSummary` and `LogReport`, live in
+`render.py` beside `Row` and `Result`, because `render.py` must not import a
+surface module; `logs.py` imports all six from there, plus `ERROR_LEVELS`, and
+builds them, exactly as `webanalytics.py` builds `Result`. And the prose is
+composed in `logs.py`, not in the renderer: what counted as an error, what was
+left out, and what an empty answer does not prove are all API facts, so they are
+decided in the surface module and carried to `render.py` as data. `render.py`
+only lays out what it is given.
+
+`logs.py` also performs no I/O of its own: `collect` takes an injected page
+fetcher, which is what lets the paging loop, its page cap and the merge be tested
+with no HTTP at all.
 
 Both invocations must keep working:
 
@@ -91,7 +112,11 @@ on whichever surface you touched:
 ```bash
 .venv/bin/python -m vercel_insights top-pages --project p --dry-run
 .venv/bin/python -m vercel_insights vitals --project p --dry-run
+.venv/bin/python -m vercel_insights errors --project p --owner-id o --dry-run
 ```
+
+The last one prints two requests, because `errors` queries the status filter and
+the level filter separately and merges the results.
 
 No test may touch the network. `execute()` takes an injected `session`, `sleep`
 and `jitter` precisely so retry behaviour is deterministic offline; pass a fake
@@ -111,14 +136,23 @@ wrong.
   colon when what follows explains what precedes it, a semicolon between two
   related clauses, parentheses or paired commas for an aside, or just a full
   stop. This is enforced in review.
-- **Read-only forever.** The operation allowlist in `http.py` has exactly three
-  entries and there are exactly two HTTP call sites, `session.get` and
-  `session.post`, both inside `execute()`. A patch that adds a fourth operation,
-  a method or host taken from user input, or any write path will be declined:
-  the toggle endpoints that enable and disable these features are deliberately
-  absent. So will anything that puts the token anywhere except the
-  `Authorization` header, or renders headers without going through
-  `redact_headers`.
+- **Read-only forever.** The operation allowlist in `http.py` has exactly six
+  entries, on exactly two hosts, and there are exactly two HTTP call sites,
+  `session.get` and `session.post`, both inside `execute()`. A patch that adds a
+  seventh operation, a third host, a method or host taken from user input, or any
+  write path will be declined: the toggle endpoints that enable and disable these
+  features are deliberately absent. So will anything that puts the token anywhere
+  except the `Authorization` header, or renders headers without going through
+  `redact_headers`. `tests/test_security.py` holds its own hand-written copy of
+  that table, taken from `docs/cli-contract.md` rather than read back from the
+  code, so widening the allowlist means updating the transcription and the
+  contract as well, and the suite fails until the first of those is done.
+- **Treat every response string as hostile.** It is sanitized once, at the
+  normalization boundary in the surface module, and nothing downstream re-does or
+  skips it. The logs surface additionally scrubs this client's own credential out
+  of every string in every row, because a log line is whatever an application
+  printed and can echo the token back on a successful response. That covers the
+  one secret the tool knows; it claims nothing about the user's own.
 - **Docstrings** on public functions: what it does, its arguments, what it
   returns, and what it raises.
 - **Error messages** name the offending value and the fix. No stack trace ever
@@ -126,27 +160,35 @@ wrong.
 - **Mark an assumption as one.** The published OpenAPI document declares the
   observability `scope`, `granularity` and 200 response body as bare objects, so
   parts of `speedinsights.py` are inferred from documented CLI behaviour rather
-  than read from a schema. Those spots say ASSUMPTION in a comment. If you learn
-  the real shape, fix the code *and* the comment, and update
-  `docs/api-notes.md`.
+  than read from a schema. The request logs endpoint is not in that document at
+  all, so `logs.py` carries two assumptions of its own: the shape of a `logs[]`
+  item, which no probe ever saw populated, and that a project scoped token cannot
+  read the endpoint, which was reasoned from its `ownerId` requirement rather than
+  observed. Those spots say ASSUMPTION in a comment. If you learn the real shape,
+  fix the code *and* the comment, and update `docs/api-notes.md`.
 
 ## Proposing a new preset
 
 A preset is a named bundle of defaults, so adding one is cheap. First decide
 which surface it belongs to, because that decides almost everything else:
 
-| | Web Analytics | Speed Insights |
-| --- | --- | --- |
-| Answers | how many people came | how fast it was for them |
-| `Preset` fields | `dataset`, `group_by`, `limit` | also `surface=SPEED_INSIGHTS`, `metric`, `aggregation`, `order_by`, `order`, `granularity`, `data_points` |
-| Dimensions | camelCase (`requestPath`) | snake_case (`request_path`) |
-| Time buckets | part of `group_by` (`day`) | the separate `granularity` field (`1d`) |
+| | Web Analytics | Speed Insights | Request logs |
+| --- | --- | --- | --- |
+| Answers | how many people came | how fast it was for them | what broke, and what it printed |
+| `Preset` fields | `dataset`, `group_by`, `limit` | also `surface=SPEED_INSIGHTS`, `metric`, `aggregation`, `order_by`, `order`, `granularity`, `data_points` | `surface=LOGS`, `dataset=LOGS_DATASET`, empty `group_by`, a row `limit`, and `default_since` |
+| Dimensions | camelCase (`requestPath`) | snake_case (`request_path`) | none; query parameters, and no grouping at all |
+| Time buckets | part of `group_by` (`day`) | the separate `granularity` field (`1d`) | none; rows, newest first |
 
 A preset queries exactly one surface and no flag changes that: `--metric` picks
 which web vital a Speed Insights preset reports, it does not turn a Web
-Analytics preset into a Speed Insights one. On a Web Analytics preset `--metric`
-is a configuration error, and on `vitals` it is one too, since that preset
-reports all five vitals and has no single metric to choose.
+Analytics preset into a Speed Insights one. On a Web Analytics or logs preset
+`--metric` is a configuration error, and on `vitals` it is one too, since that
+preset reports all five vitals and has no single metric to choose.
+
+A logs preset needs `default_since` set, because the global 7 day default would
+report nothing on a plan whose runtime logs are kept for an hour, and an empty
+answer reads as a healthy site. It also needs a `limit` in rows rather than
+groups, bounded by `logs.MAX_LIMIT`.
 
 Then do all five steps in the same pull request, or the preset will be
 half-documented:
@@ -155,18 +197,19 @@ half-documented:
    name, dataset, grouping, limit, and a one-line description. The description
    is what `--list-presets` prints, so keep it to one clause. A Speed Insights
    preset also sets `surface=SPEED_INSIGHTS` and uses `SPEED_DATASET` for its
-   `dataset` column.
+   `dataset` column; a logs preset sets `surface=LOGS`, `LOGS_DATASET` and
+   `default_since`.
 2. **Add a test** in `tests/` covering the preset's resolved grouping, dataset
-   and limit, and covering the request it builds. Both `build_request`
-   functions are pure, so assert on the `PreparedRequest`: on Web Analytics
-   that means the query parameters, on Speed Insights the JSON body, including
-   which optional fields are *absent* rather than sent as null.
+   and limit, and covering the request it builds. All three `build_request`
+   functions are pure, so assert on the `PreparedRequest`: on Web Analytics and
+   request logs that means the query parameters, on Speed Insights the JSON body,
+   including which optional fields are *absent* rather than sent as null.
 3. **Add a row to the right presets table in `README.md`.** There is one per
    surface.
 4. **Add a row to the decision table in `SKILL.md`**, phrased the way a user
-   would actually ask, in the traffic or the performance half. That table is how
-   an agent picks the command, so a preset missing from it effectively does not
-   exist.
+   would actually ask, in the errors, traffic or performance section. That table
+   is how an agent picks the command, so a preset missing from it effectively does
+   not exist.
 5. **Add sample output to `examples/example_outputs.md`.** Capture it from a
    real run through `main()` against a stub session. Nothing in the docs is
    hand-written to look like terminal output, and nothing new should be.
@@ -216,6 +259,11 @@ each with its own package, and each only has data from the moment it was turned
 on), that `--since` is inside your plan's reporting window (1 month on Hobby),
 and that custom events and UTM dimensions are available on your plan. Speed
 Insights itself needs no Observability Plus.
+
+On a logs preset the reasoning inverts: there is no switch to check, and a
+*wider* window is as likely to be the problem as the fix, because runtime logs
+are kept for 1 hour on Hobby and 1 day on Pro. An empty answer over more than an
+hour prints that retention note itself.
 
 ## License
 

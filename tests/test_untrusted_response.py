@@ -19,8 +19,9 @@ import json
 
 import pytest
 from conftest import Cli
-from helpers import PROJECT, TOKEN, FakeResponse, FakeSession
+from helpers import PROJECT, TOKEN, FakeResponse, FakeSession, logs_row
 
+from vercel_insights import logs as vi_logs
 from vercel_insights.http import MIN_SCRUBBABLE_CREDENTIAL, scrub_credentials
 
 #: An escape that clears the screen, a bell, and a carriage return that would
@@ -98,6 +99,36 @@ def test_a_hostile_metric_name_cannot_break_the_csv_header_row(cli: Cli) -> None
     rows = list(csv.reader(io.StringIO(out)))
     # A raw carriage return inside a header cell would split the header in two.
     assert len({len(row) for row in rows if row}) == 1, "the CSV came out ragged"
+
+
+# ---------------------------------------------------------------------------
+# A request-logs row is remote input
+# ---------------------------------------------------------------------------
+
+
+def test_a_log_message_cannot_repaint_the_terminal() -> None:
+    entry = vi_logs.normalize(
+        {"rows": [logs_row(logs=[{"level": "error", "message": "\x1b[2Jerror: fine"}])]}
+    )[0][0]
+    assert "\x1b" not in entry.headline
+    assert "\\x1b" in entry.headline
+
+
+def test_a_hostile_request_path_is_escaped() -> None:
+    entry = vi_logs.normalize({"rows": [logs_row(requestPath="/a\rerror: fine")]})[0][0]
+    assert "\r" not in entry.path
+    assert "\\x0d" in entry.path
+
+
+def test_a_multi_line_log_message_keeps_its_lines_but_is_indented() -> None:
+    # A stack trace is the one place newlines carry meaning, so they survive.
+    # Every line after the first is indented, so nothing the server sends can
+    # reach column zero and forge a line of this tool's own output.
+    message = "Error: boom\nat handler (/api/checkout)"
+    entry = vi_logs.normalize(
+        {"rows": [logs_row(logs=[{"level": "error", "message": message}])]}
+    )[0][0]
+    assert entry.headline.splitlines()[1].startswith("  ")
 
 
 # ---------------------------------------------------------------------------

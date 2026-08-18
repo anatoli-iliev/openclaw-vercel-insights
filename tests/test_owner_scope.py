@@ -119,6 +119,9 @@ def test_a_project_without_an_account_id_fails_with_the_flag_to_set(cli: Cli) ->
     assert code == 2
     assert "--owner-id" in err
     assert "Traceback" not in err
+    # The refusal names the surface that could not be scoped, because the same
+    # lookup now serves request logs and the two need telling apart.
+    assert "Speed Insights query could not be scoped" in err
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +181,10 @@ def test_a_dry_run_shows_a_placeholder_owner_and_explains_it(cli: Cli) -> None:
     assert scope["projectIds"] == [PROJECT]
     assert "accountId" in out or "project" in out
     assert "--owner-id" in out
+    # This surface really does carry the owner inside a scope object, so the note
+    # names it that way. The request logs surface sends a plain query parameter
+    # and gets its own wording; tests/test_logs_cli.py holds that half.
+    assert "scope.ownerId shows" in out
 
 
 def test_a_dry_run_with_a_known_owner_prints_no_placeholder_note(cli: Cli) -> None:

@@ -24,7 +24,7 @@ import io
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from . import OTHERS_LABEL, sanitize_label
@@ -86,6 +86,23 @@ DATA_POINTS_NOTE = (
     "read the value next to its data point count."
 )
 
+#: Log levels ordered by severity, so the worst line on a request can be picked
+#: without a surface module having to rank them. The names are validated in
+#: logs.py; tests/test_logs.py asserts the two agree.
+LOG_LEVEL_SEVERITY: dict[str, int] = {
+    "info": 0,
+    "warning": 1,
+    "error": 2,
+    "fatal": 3,
+}
+
+#: The levels that make a request an error rather than a note, in the order they
+#: are sent as a filter. Defined here because LogEntry.is_error needs them and
+#: this module must not import a surface module; a later task has logs.py
+#: import them from here, so there will be one definition rather than two that
+#: can drift.
+ERROR_LEVELS: tuple[str, ...] = ("error", "fatal")
+
 
 # ---------------------------------------------------------------------------
 # The untrusted-input boundary
@@ -111,6 +128,11 @@ def stringify_label(value: Any) -> str:
     if isinstance(value, str):
         return sanitize_label(value) or "(empty)"
     return sanitize_label(str(value))
+
+
+# ---------------------------------------------------------------------------
+# Result containers, shared by both analytics surfaces
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -230,6 +252,189 @@ class Result:
             for name in self.metric_names:
                 totals[name] += row.metrics.get(name, 0)
         return totals
+
+
+# ---------------------------------------------------------------------------
+# Request logs containers, and the widths their tables use
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class LogLine:
+    """One application log line attached to a request.
+
+    ``message`` is already sanitized: the surface module escapes it once, on
+    the way in, so nothing downstream has to remember to.
+    """
+
+    level: str
+    message: str
+    truncated: bool = False
+
+
+@dataclass(frozen=True)
+class LogEntry:
+    """One request, as the request logs surface reports it.
+
+    Every string field arrives sanitized. ``raw`` is the exception: it keeps the
+    row as it arrived, unescaped, so ``--json`` can hand back everything the API
+    sent rather than only the columns this tool tabulates. That is safe because
+    ``raw`` is only ever emitted through ``json.dumps``, which escapes control
+    characters, so no escape sequence in it can reach a terminal. It must never
+    be printed directly, and tests/test_logs_render.py holds that line.
+
+    One rewrite does reach ``raw``: this client's own credential is replaced
+    wherever it appears in a row, since a log line is free text an application
+    wrote and can echo the token that fetched it. That happens in
+    ``logs.normalize``, before this container exists.
+    """
+
+    request_id: str = ""
+    timestamp: datetime | None = None
+    status: int | None = None
+    method: str = ""
+    path: str = ""
+    route: str = ""
+    source: str = ""
+    environment: str = ""
+    deployment_id: str = ""
+    duration_ms: float | None = None
+    region: str = ""
+    error_code: str = ""
+    branch: str = ""
+    domain: str = ""
+    trace_id: str = ""
+    crashed: bool = False
+    lines: tuple[LogLine, ...] = ()
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def worst_line(self) -> LogLine | None:
+        """The most severe log line on this request, if it logged anything.
+
+        ``max`` is stable in Python, so among lines tied for the worst level
+        the first one wins, which is the earliest one logged.
+        """
+        if not self.lines:
+            return None
+        return max(
+            self.lines,
+            key=lambda line: LOG_LEVEL_SEVERITY.get(line.level, -1),
+        )
+
+    @property
+    def worst_level(self) -> str | None:
+        """The level of :attr:`worst_line`, or ``None`` when nothing was logged."""
+        line = self.worst_line
+        return line.level if line is not None else None
+
+    @property
+    def headline(self) -> str:
+        """The message worth showing on one row, empty when nothing was logged."""
+        line = self.worst_line
+        return line.message if line is not None else ""
+
+    @property
+    def is_error(self) -> bool:
+        """True when this request is something to worry about.
+
+        Three ways to qualify: the response was a 5xx, the function crashed, or
+        the request logged an error or fatal line. A 4xx does not qualify: a
+        401 on a login route is the application working.
+        """
+        if self.status is not None and self.status >= 500:
+            return True
+        if self.crashed:
+            return True
+        return self.worst_level in ERROR_LEVELS
+
+    @property
+    def label(self) -> str:
+        """What to show in the route column: the route, or the path, or a mark."""
+        return self.route or self.path or "(unknown)"
+
+
+@dataclass(frozen=True)
+class RouteTally:
+    """How many requests hit one route, at what worst status, and when."""
+
+    route: str
+    count: int
+    worst_status: int | None
+    first_seen: datetime | None
+    last_seen: datetime | None
+
+
+@dataclass(frozen=True)
+class MessageTally:
+    """How many requests logged one exact message, and when."""
+
+    message: str
+    count: int
+    first_seen: datetime | None
+    last_seen: datetime | None
+
+
+@dataclass(frozen=True)
+class LogSummary:
+    """A merged list of entries, tallied by status, by route and by message."""
+
+    total: int
+    by_status: tuple[tuple[str, int], ...]
+    by_route: tuple[RouteTally, ...]
+    by_message: tuple[MessageTally, ...]
+    #: Entries that are errors only because they logged an error or fatal
+    #: line: a non-5xx status that did not crash but did carry such a line.
+    #: All three conditions are checked, so this is safe to compute on any
+    #: set of entries, not just one already filtered to errors.
+    logged_only: int
+
+
+@dataclass(frozen=True)
+class LogReport:
+    """Everything :func:`render_logs` needs, already decided by ``logs.py``.
+
+    ``render.py`` lays this out without knowing any API fact: every sentence
+    beyond the table itself, including whether one is owed at all, is decided
+    by :func:`vercel_insights.logs.build_report` and carried here as data.
+    """
+
+    entries: list[LogEntry]
+    time_range: tuple[datetime, datetime]
+    project_label: str
+    preset: str
+    #: The window as a person says it, for example "30 minutes". Composed in
+    #: logs.py so it cannot disagree with the range line.
+    window_label: str = ""
+    filters: dict[str, str] = field(default_factory=dict)
+    truncated: bool = False
+    pages_fetched: int = 0
+    requested_limit: int = 0
+    header_note: str | None = None
+    notes: tuple[str, ...] = ()
+    #: The "try this next" line, dropped when --expand already did it.
+    hint: str | None = None
+
+
+#: Column widths for the request logs table, wide enough for a route or a
+#: one-line message excerpt without either dominating the row.
+LOG_MESSAGE_WIDTH = 34
+LOG_ROUTE_WIDTH = 32
+
+#: Message width for the error-summary's message table, wider than the row
+#: table's since that table has no route or status column competing for
+#: space.
+LOG_SUMMARY_MESSAGE_WIDTH = 48
+
+#: Printed in the message column for an error that logged nothing, so a blank
+#: cell there reads as the fact that the response failed before any handler
+#: printed rather than as a rendering fault.
+NO_LINE_ERROR = "(no log line: the response failed)"
+
+
+# ---------------------------------------------------------------------------
+# Decoration, value formatting and the grid every table is built on
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -373,6 +578,11 @@ def _label_cells(row: Row, count: int) -> list[str]:
 def _range_line(time_range: tuple[datetime, datetime]) -> str:
     since, until = time_range
     return f"Range: {to_api_timestamp(since)} to {to_api_timestamp(until)} (UTC)"
+
+
+# ---------------------------------------------------------------------------
+# The analytics table, and its JSON and CSV forms
+# ---------------------------------------------------------------------------
 
 
 def format_table(
@@ -661,6 +871,11 @@ def _sparkline_rows(result: Result, style: Style, width: int = 24) -> list[str]:
     return lines
 
 
+# ---------------------------------------------------------------------------
+# The composed analytics reports: overview and vitals
+# ---------------------------------------------------------------------------
+
+
 def render_overview(
     results: Sequence[Result],
     *,
@@ -845,3 +1060,407 @@ def render_vitals(
         )
     )
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Request logs rendering: rows, the three tallies, JSON and CSV
+# ---------------------------------------------------------------------------
+
+
+def _clock_pattern(time_range: tuple[datetime, datetime]) -> str:
+    """The strftime pattern a clock in this report should use.
+
+    ``HH:MM:SS`` is enough to tell rows apart inside one day; a window
+    spanning more than a day needs the date too, or two rows a day apart would
+    print identical times. Shared by :func:`_log_time` and the error-summary's
+    per tally "first seen" and "last seen" columns, so both read the same
+    window the same way.
+    """
+    span = time_range[1] - time_range[0]
+    return "%H:%M:%S" if span <= timedelta(hours=24) else "%m-%d %H:%M:%S"
+
+
+def _log_time(entry: LogEntry, time_range: tuple[datetime, datetime]) -> str:
+    """The row's clock, at a precision the window justifies."""
+    if entry.timestamp is None:
+        return "(no time)"
+    return entry.timestamp.strftime(_clock_pattern(time_range))
+
+
+def _seen_cell(timestamp: datetime | None, time_range: tuple[datetime, datetime]) -> str:
+    """A tally's ``first seen`` or ``last seen`` cell, or a mark when it has none.
+
+    A route or message group can end up with no timestamped member (a row can
+    arrive with no ``timestamp`` at all), and a blank cell there would read as
+    a rendering fault rather than as the fact that nothing was recorded.
+    """
+    if timestamp is None:
+        return "(no time)"
+    return timestamp.strftime(_clock_pattern(time_range))
+
+
+def _log_message_cell(entry: LogEntry, style: Style) -> str:
+    """The one line of message that fits in the table.
+
+    An error that logged nothing says so: an empty cell there reads as a
+    rendering fault rather than as the fact that the response failed before any
+    handler printed anything.
+    """
+    message = entry.headline
+    if not message:
+        return NO_LINE_ERROR if entry.is_error else ""
+    return _truncate(message.splitlines()[0], LOG_MESSAGE_WIDTH, style)
+
+
+def _expanded_lines(entry: LogEntry, style: Style) -> list[str]:
+    """Every log line of one request, worst first, indented under its row.
+
+    A message may itself be several lines: ``sanitize_message`` indents its
+    continuations, so they stay visibly quoted rather than reaching column
+    zero. This adds its own indent on top of that on every line, rather than
+    only on the first, so a continuation never renders less indented than the
+    line above it: a stack trace must not step backwards under ``--expand``.
+    """
+    ordered = sorted(
+        entry.lines,
+        key=lambda line: LOG_LEVEL_SEVERITY.get(line.level, -1),
+        reverse=True,
+    )
+    out: list[str] = []
+    for line in ordered:
+        label = f"{line.level}: " if line.level else ""
+        suffix = " [truncated by Vercel]" if line.truncated else ""
+        rows = line.message.split("\n")
+        rows[0] = f"{label}{rows[0]}"
+        rows[-1] = f"{rows[-1]}{suffix}"
+        out.append(style.dim("\n".join(f"    {row}" for row in rows)))
+    if entry.request_id:
+        out.append(style.dim(f"    request {entry.request_id}"))
+    return out
+
+
+def render_logs(
+    report: LogReport, *, style: Style = PLAIN_STYLE, expand: bool = False
+) -> str:
+    """Render a logs report as aligned text.
+
+    One row per request, newest first. An empty report prints one line naming
+    what was asked rather than a table head with nothing under it.
+
+    Args:
+        report: The report to print.
+        style: Colour and glyph settings.
+        expand: Print every full log message under its row.
+
+    Returns:
+        The report as text, with no trailing newline.
+    """
+    title = (
+        f"Vercel request logs: {report.project_label} "
+        f"({report.preset}, last {report.window_label})"
+    )
+    parts: list[str] = [style.bold(title), _range_line(report.time_range)]
+    if report.filters:
+        shown = ", ".join(f"{name} {value}" for name, value in report.filters.items())
+        parts.append(f"Filter: {shown}")
+    if report.header_note:
+        parts.append(style.dim(report.header_note))
+    parts.append("")
+
+    if not report.entries:
+        since, until = report.time_range
+        parts.append(
+            f"No request logs for project {report.project_label} between "
+            f"{to_api_timestamp(since)} and {to_api_timestamp(until)}."
+        )
+    else:
+        headers = ["time", "level", "status", "method", "route", "source", "message"]
+        aligns = ["left", "left", "right", "left", "left", "left", "left"]
+        body = [
+            [
+                _log_time(entry, report.time_range),
+                entry.worst_level or "-",
+                str(entry.status) if entry.status is not None else "(none)",
+                entry.method or "-",
+                _truncate(entry.label, LOG_ROUTE_WIDTH, style),
+                entry.source or "-",
+                _log_message_cell(entry, style),
+            ]
+            for entry in report.entries
+        ]
+        grid = render_grid(headers, aligns, body, None, style)
+        # render_grid emits the head, the rule, then one line per body row in
+        # order, which is what lets the expansions be spliced under their rows.
+        parts.extend(grid[:2])
+        for index, entry in enumerate(report.entries):
+            parts.append(grid[2 + index])
+            if expand:
+                parts.extend(_expanded_lines(entry, style))
+
+    if report.notes:
+        parts.append("")
+        parts.extend(style.dim(note) for note in report.notes)
+    if report.hint and not expand:
+        parts.append(style.dim(report.hint))
+    return "\n".join(parts)
+
+
+def _share(count: int, total: int) -> str:
+    """A share of ``total``, formatted like ``format_table``'s share column."""
+    share = (count / total * 100) if total else 0.0
+    return f"{share:.1f}%"
+
+
+def _status_table(summary: LogSummary, style: Style) -> list[str]:
+    """The status breakdown: grouped by HTTP status alone.
+
+    A request that is an error only because it logged an error or fatal line
+    still appears under its real status here rather than under a level name:
+    mixing a level into this column would read as though ``fatal`` were a
+    status code. ``report.notes`` is what explains how many rows qualify that
+    way; this table only counts.
+    """
+    headers = ["status", "count", "share"]
+    aligns = ["left", "right", "right"]
+    body = [
+        [status, str(count), _share(count, summary.total)]
+        for status, count in summary.by_status
+    ]
+    footer = ["TOTAL", str(summary.total), _share(summary.total, summary.total)]
+    return render_grid(headers, aligns, body, footer, style)
+
+
+def _route_table(
+    summary: LogSummary, time_range: tuple[datetime, datetime], style: Style
+) -> list[str]:
+    """The per route breakdown. No totals row: a worst status does not add up."""
+    headers = ["route", "count", "worst status", "first seen", "last seen"]
+    aligns = ["left", "right", "right", "left", "left"]
+    body = [
+        [
+            tally.route,
+            str(tally.count),
+            str(tally.worst_status) if tally.worst_status is not None else "(none)",
+            _seen_cell(tally.first_seen, time_range),
+            _seen_cell(tally.last_seen, time_range),
+        ]
+        for tally in summary.by_route
+    ]
+    return render_grid(headers, aligns, body, None, style)
+
+
+def _message_table(
+    summary: LogSummary, time_range: tuple[datetime, datetime], style: Style
+) -> list[str]:
+    """The per exact message breakdown. No totals row, for the same reason as routes."""
+    headers = ["message", "count", "first seen", "last seen"]
+    aligns = ["left", "right", "left", "left"]
+    body = [
+        [
+            _truncate(tally.message, LOG_SUMMARY_MESSAGE_WIDTH, style),
+            str(tally.count),
+            _seen_cell(tally.first_seen, time_range),
+            _seen_cell(tally.last_seen, time_range),
+        ]
+        for tally in summary.by_message
+    ]
+    return render_grid(headers, aligns, body, None, style)
+
+
+def render_error_summary(
+    report: LogReport, summary: LogSummary, *, style: Style = PLAIN_STYLE
+) -> str:
+    """Render a logs report as three grouped tables: status, route and message.
+
+    Unlike :func:`render_logs`, which prints one row per request, this groups
+    the same entries three ways so "what is breaking" reads off a handful of
+    rows instead of scrolling a table of individual requests. ``summary`` is
+    supplied rather than recomputed here so a caller building both the report
+    and its summary controls exactly which entries were tallied.
+
+    The report's notes are printed verbatim and are the only prose this
+    function adds: ``build_report`` already composes the sentence explaining
+    a non-5xx row in the status table (the ``logged_only`` count), so this
+    renderer must not print a second copy of it.
+
+    Args:
+        report: The report to print.
+        summary: The same report's entries, tallied by status, route and
+            message.
+        style: Colour and glyph settings.
+
+    Returns:
+        The report as text, with no trailing newline.
+    """
+    title = (
+        f"Vercel request logs: {report.project_label} "
+        f"({report.preset}, last {report.window_label})"
+    )
+    parts: list[str] = [style.bold(title), _range_line(report.time_range)]
+    if report.filters:
+        # Same line as render_logs, for the same reason: this report's footer
+        # counts the rows that matched, and a count of matching rows read
+        # without the filter beside it reads as a count of everything.
+        shown = ", ".join(f"{name} {value}" for name, value in report.filters.items())
+        parts.append(f"Filter: {shown}")
+
+    if not report.entries:
+        since, until = report.time_range
+        parts.append("")
+        parts.append(
+            f"No request logs for project {report.project_label} between "
+            f"{to_api_timestamp(since)} and {to_api_timestamp(until)}."
+        )
+    else:
+        parts.append("")
+        parts.extend(_status_table(summary, style))
+        parts.append("")
+        parts.extend(_route_table(summary, report.time_range, style))
+        parts.append("")
+        parts.extend(_message_table(summary, report.time_range, style))
+
+    if report.notes:
+        parts.append("")
+        parts.extend(style.dim(note) for note in report.notes)
+    return "\n".join(parts)
+
+
+def _log_entry_json(entry: LogEntry) -> dict[str, Any]:
+    """One entry as a JSON object, keeping the whole row alongside the columns.
+
+    Args:
+        entry: The entry to render.
+
+    Returns:
+        A JSON-safe mapping. ``raw`` is included as the row arrived, save for
+        the credential rewrite ``logs.normalize`` applied to it: this
+        function's result must only ever be handed to :func:`json.dumps`, never
+        printed directly, because ``raw`` is not escaped.
+    """
+    return {
+        "requestId": entry.request_id,
+        "timestamp": entry.timestamp.isoformat() if entry.timestamp else None,
+        "status": entry.status,
+        "method": entry.method,
+        "path": entry.path,
+        "route": entry.route,
+        "source": entry.source,
+        "environment": entry.environment,
+        "deploymentId": entry.deployment_id,
+        "durationMs": entry.duration_ms,
+        "region": entry.region,
+        "errorCode": entry.error_code,
+        "branch": entry.branch,
+        "domain": entry.domain,
+        "traceId": entry.trace_id,
+        "crashed": entry.crashed,
+        "isError": entry.is_error,
+        "level": entry.worst_level,
+        "message": entry.headline,
+        "lines": [
+            {
+                "level": line.level,
+                "message": line.message,
+                "truncated": line.truncated,
+            }
+            for line in entry.lines
+        ],
+        "raw": entry.raw,
+    }
+
+
+def format_logs_json(report: LogReport) -> str:
+    """Render a logs report as JSON, keeping every field the API sent.
+
+    ``raw`` carries the unescaped row, which is safe here and only here: this
+    is the one output path that escapes control characters on the way out. It is
+    not entirely untouched, since ``logs.normalize`` rewrote this client's own
+    credential out of it, but nothing else in it was altered.
+
+    Args:
+        report: The report to render.
+
+    Returns:
+        The report as an indented JSON document, with strict JSON semantics:
+        ``NaN`` and ``Infinity`` are refused rather than emitted, since the
+        README sells piping ``--json`` into ``jq``.
+
+    Raises:
+        ValueError: If a value in ``report`` is a non-finite float, since
+            ``json.dumps`` is called with ``allow_nan=False``.
+    """
+    # allow_nan=False is a second line of defence, not the first: http.py's
+    # response parser already walks every parsed body and refuses a NaN,
+    # Infinity or -Infinity with an invalid_response error, so one of those
+    # cannot reach `raw` from a real API response. This still refuses to
+    # write one out rather than propagate it, in case a value ever reached
+    # here some other way.
+    since, until = report.time_range
+    document = {
+        "query": {
+            "project": report.project_label,
+            "preset": report.preset,
+            "since": to_api_timestamp(since),
+            "until": to_api_timestamp(until),
+            "filters": report.filters,
+            "limit": report.requested_limit,
+        },
+        "entries": [_log_entry_json(entry) for entry in report.entries],
+        "truncated": report.truncated,
+        "pagesFetched": report.pages_fetched,
+        "notes": list(report.notes),
+    }
+    return json.dumps(document, indent=2, allow_nan=False)
+
+
+#: The CSV columns, in order. Kept next to the writer so the header and the
+#: row cannot drift apart.
+LOG_CSV_COLUMNS: tuple[str, ...] = (
+    "time",
+    "level",
+    "status",
+    "method",
+    "route",
+    "path",
+    "source",
+    "requestId",
+    "message",
+)
+
+
+def format_logs_csv(report: LogReport) -> str:
+    """Render a logs report as CSV, one row per request.
+
+    A message can contain a literal newline: ``sanitize_message`` deliberately
+    keeps them, because a stack trace's line structure is the one place a
+    newline carries meaning (``sanitize_label``, used for every other string
+    field here, is the one that escapes them). What keeps that newline from
+    breaking a row open is :mod:`csv` itself: ``csv.writer`` quotes any field
+    that contains its line terminator, so the message stays inside one cell
+    rather than starting a new record.
+
+    Args:
+        report: The report to render.
+
+    Returns:
+        The report as CSV text, header first, with the columns named in
+        :data:`LOG_CSV_COLUMNS`.
+    """
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(LOG_CSV_COLUMNS)
+    for entry in report.entries:
+        writer.writerow(
+            [
+                entry.timestamp.isoformat() if entry.timestamp else "",
+                entry.worst_level or "",
+                entry.status if entry.status is not None else "",
+                entry.method,
+                entry.route,
+                entry.path,
+                entry.source,
+                entry.request_id,
+                entry.headline,
+            ]
+        )
+    return buffer.getvalue()

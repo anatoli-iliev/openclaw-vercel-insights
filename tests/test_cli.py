@@ -135,6 +135,21 @@ CONFIG_ERROR_CASES: list[tuple[str, list[str], dict[str, str], list[str]]] = [
         ["--since must be strictly earlier than --until"],
     ),
     (
+        # An empty value is a value: it has to reach the time parser and be
+        # refused there. Quietly reading it as "nobody asked" would report the
+        # default window as though the user had chosen it.
+        "empty-since",
+        ["top-pages", "--since", ""],
+        dict(BASE_ENV),
+        ["empty time value"],
+    ),
+    (
+        "empty-until",
+        ["top-pages", "--until", ""],
+        dict(BASE_ENV),
+        ["empty time value"],
+    ),
+    (
         "rule13-flag-without-equals",
         ["top-pages", "--flag", "beta_banner"],
         dict(BASE_ENV),
@@ -943,6 +958,19 @@ def test_both_entry_points_exist_and_the_module_form_is_importable() -> None:
 
 def test_the_parser_prog_is_the_renamed_command(cli: Cli) -> None:
     assert vi_cli.build_parser().prog == "vercel-insights"
+
+
+def test_the_help_names_every_surface_and_what_a_limit_means_on_each() -> None:
+    # The help doubles as the reference docs, so a surface the tool can query
+    # but does not mention is a surface nobody finds. --limit is the one flag
+    # whose meaning changes between them: groups on the analytics APIs, rows on
+    # request logs, with a different ceiling.
+    # Whitespace collapsed, because argparse wraps the help to the terminal and
+    # a phrase would otherwise be split by a line break rather than missing.
+    help_text = " ".join(vi_cli.build_parser().format_help().split())
+    for surface in ("Web Analytics", "Speed Insights", "request logs"):
+        assert surface in help_text, f"{surface} is queryable but unmentioned"
+    assert "counts rows rather than groups, up to 200" in help_text
 
 
 def test_dry_run_calls_helper_sees_one_entry_per_planned_request(cli: Cli) -> None:
