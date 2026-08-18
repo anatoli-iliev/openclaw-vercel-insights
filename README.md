@@ -524,6 +524,36 @@ Three presets, all read-only, all against the same endpoint:
 - **`error-summary`** groups the same errors three ways, by status, by route and
   by exact message, which is the "where is this concentrated" view.
 
+### What a log line can carry
+
+Read this before running one, because it is the one thing about this feature that
+cannot be fixed in code.
+
+A log line is whatever your application printed. Applications print API keys,
+connection strings, session identifiers, email addresses and customer records
+into their logs far more often than anyone intends, and this surface prints those
+lines exactly as they were logged.
+
+This tool redacts exactly one secret: the Vercel token it is holding, wherever a
+response echoes it back, in every output format including `--json`. That is the
+only string it can recognise. It cannot tell your API key from ordinary log text,
+so nothing else is redacted and nothing else can usefully be: a pattern matcher
+aggressive enough to catch an unknown secret would also mangle the stack traces
+this feature exists to show, and a redactor you cannot trust is worse than one
+you know the limits of.
+
+So treat log output as sensitive by default:
+
+- **Quote the lines that answer the question**, not the whole table. A screen of
+  rows is rarely the answer to anything.
+- **Do not forward it.** An issue tracker, a chat channel, a paste service or
+  another API is a copy you no longer control, made of text you did not write.
+- **`--json` and `--csv` need more care, not less.** They carry the whole row as
+  the API sent it, including the fields the table has no column for.
+- **The same goes for anything an agent relays.** The guidance in `SKILL.md`
+  tells it to quote the minimum and forward nothing, which is worth knowing if
+  you are the one reading its summary.
+
 Here is a real run, captured against a live account and then redacted. The
 shape, the columns and every note are exactly what it printed; the project id,
 the route names and the timestamps were replaced afterwards with fictional

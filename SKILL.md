@@ -190,6 +190,18 @@ The table output is already formatted for a person, so quote it rather than
 re-typesetting it, then add the one sentence of interpretation the numbers
 support.
 
+> **Logs output is the exception to "quote it".** A request log line is whatever
+> the application printed, and applications print API keys, connection strings,
+> email addresses and customer records into their logs far more often than anyone
+> intends. This skill recognises and redacts exactly one secret, its own Vercel
+> token; it cannot tell any of the rest from ordinary text, so nothing else is
+> redacted. On `logs`, `errors` and `error-summary`: quote the minimum that
+> answers the question, leave the rest on the screen it came from, and never
+> forward log text to another service, an issue tracker or a third-party API.
+> `--json` and `--csv` carry the whole row rather than the columns the table
+> chose, so they need the same care or more. *Reading a logs answer* below states
+> the rule in full.
+
 **When to add `--json`.** Prefer the table when you are relaying an answer. Add
 `--json` when you need to *compute* something the table does not state: compare
 two runs, rank across a dimension the preset did not group by, or pull a single
@@ -600,6 +612,12 @@ production-only restriction; narrow it with `--environment production` when the
 user means the live site.
 
 ## Reading a logs answer
+
+> **Read this before quoting any of it.** These rows carry text this skill did
+> not write and cannot vet. A log line can hold the user's own secrets or another
+> person's private data, and the only secret redacted here is this skill's own
+> token. Quote the least that answers the question, and do not forward log output
+> anywhere. Spelled out in the last two bullets of this section.
 
 `errors` is the preset for "what broke". It issues two queries, one for `5xx`
 responses and one for `error` and `fatal` log lines, and merges them by request

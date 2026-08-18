@@ -669,6 +669,15 @@ function `fetchRequestLogs`, which is what `vercel logs` calls in its
 non-streaming mode, plus the live probes recorded below. It can change without
 notice, which is exactly why every claim in this chapter says how it was learned.
 
+And read this before quoting anything this surface returns: **a request log row
+is free text that somebody else's application wrote.** It can hold that
+application's own API keys, connection strings, session identifiers or customer
+data, and this client can recognise and redact exactly one secret, its own Vercel
+token. There is no general redaction here, and there cannot be a useful one, so
+the rule is to quote the minimum that answers the question and never to forward
+log output to another service. *This client scrubs its own token out of log rows*,
+below, states exactly what is covered and what is not.
+
 Sources:
 
 - Vercel CLI source, `packages/cli/src/util/logs-v2.ts`, function `fetchRequestLogs` (the endpoint, its parameters, and the `logs[]` item shape)
@@ -976,7 +985,17 @@ one it holds. Nothing can distinguish a user's own API key, connection string or
 customer record from ordinary log text, so **no general redaction is possible or
 claimed**. What the application logged is what a reader will see. That is why the
 guidance in `SKILL.md` is to quote only the lines needed to answer the question
-and never to forward log output to another service.
+and never to forward log output to another service, and why `README.md` carries
+the same warning where it introduces the feature rather than only in its security
+section.
+
+The covered half has a regression test:
+`tests/test_security.py::test_a_response_echoing_the_token_never_reaches_any_logs_output`
+drives the CLI with a **successful** response whose log message contains the
+token and asserts the token appears in no output format, checking the table,
+`--expand`, `--json`, `--csv` and `error-summary` separately, because each
+renders a row differently. A 200 is the case that matters: an error path was
+always scrubbed, and a success was not until this surface existed.
 
 ## The two alternatives that do not work
 
