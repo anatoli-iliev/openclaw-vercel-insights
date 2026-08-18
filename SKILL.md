@@ -582,7 +582,7 @@ id, because neither of those questions answers the other:
 
 ```console
 $ python3 -m vercel_insights errors --since 30m
-Vercel request logs: dobri-web (errors, last 30 minutes)
+Vercel request logs: acme-docs (errors, last 30 minutes)
 Range: 2026-08-17T10:36:00Z to 2026-08-17T11:06:00Z (UTC)
 Counted as an error: a 5xx response, a crashed function, or a request that logged an error or fatal line.
 
@@ -591,7 +591,7 @@ time      level  status  method  route                  source      message
 11:05:19  error     500  POST    /api/checkout          serverless  TypeError: Cannot read properties…
 11:04:52  error     500  POST    /api/checkout          serverless  TypeError: Cannot read properties…
 11:02:41  fatal     200  GET     /api/cron/sync         serverless  FATAL: connection pool exhausted
-10:58:03  -         502  GET     /api/offerings/[slug]  serverless  (no log line: the response failed)
+10:58:03  -         502  GET     /api/documents/[slug]  serverless  (no log line: the response failed)
 
 4 errors in 30 minutes: 2 x 500, 1 x 200, 1 x 502.
 Most affected route: /api/checkout (2).

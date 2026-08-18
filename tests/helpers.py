@@ -604,15 +604,16 @@ SPEED_MALFORMED_PAYLOADS: list[tuple[str, dict[str, Any]]] = [
 # Request logs payload fixtures.
 #
 # These rows are copied from docs/api-notes.md, which in turn holds the real
-# probed rows.
+# probed rows. Their shape is real; their identifiers are fictional, replaced
+# in both places at the same time so the fixture and the record still agree.
 
 
 def logs_row(**overrides: Any) -> dict[str, Any]:
     """One request-logs row, shaped exactly as the live API returns them."""
     row: dict[str, Any] = {
-        "requestId": "zgzc9-1786964768933-ce3a0a3fb303",
+        "requestId": "abcde-1786964768933-0123456789ab",
         "timestamp": "2026-08-17T11:06:08.933Z",
-        "deploymentId": "dpl_8fQLGTTwTZXixzmKhKm9DaXeadTJ",
+        "deploymentId": "dpl_ExampleDeploymentId000000000",
         "environment": "production",
         "deploymentDomain": "demo.vercel.app",
         "branch": "main",
@@ -663,8 +664,8 @@ LOGS_ERROR_PAGE: dict[str, Any] = {
         logs_row(
             requestId="err-2",
             timestamp="2026-08-17T10:58:03.000Z",
-            requestPath="/api/offerings/summer",
-            route="/api/offerings/[slug]",
+            requestPath="/api/documents/summer",
+            route="/api/documents/[slug]",
             statusCode=502,
             logs=[],
         ),

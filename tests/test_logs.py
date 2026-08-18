@@ -259,7 +259,7 @@ def test_normalize_reads_the_fields_the_table_shows() -> None:
     entries, has_more = vi_logs.normalize(LOGS_PAGE)
     assert has_more is False
     entry = entries[0]
-    assert entry.request_id == "zgzc9-1786964768933-ce3a0a3fb303"
+    assert entry.request_id == "abcde-1786964768933-0123456789ab"
     assert entry.status == 401
     assert entry.method == "GET"
     assert entry.path == "/api/me"

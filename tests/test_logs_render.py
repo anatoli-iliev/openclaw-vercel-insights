@@ -27,7 +27,7 @@ def _report(payload: Mapping[str, Any], **overrides: object) -> LogReport:
     entries, _more = vi_logs.normalize(payload)
     kwargs: dict[str, object] = {
         "time_range": WINDOW,
-        "project_label": "dobri-web",
+        "project_label": "acme-docs",
         "preset": "errors",
         "filters": {},
         "truncated": False,
@@ -41,7 +41,7 @@ def _report(payload: Mapping[str, Any], **overrides: object) -> LogReport:
 
 def test_the_table_shows_one_row_per_request() -> None:
     text = render_logs(_report(LOGS_ERROR_PAGE))
-    assert "Vercel request logs: dobri-web (errors" in text
+    assert "Vercel request logs: acme-docs (errors" in text
     assert "Range: 2026-08-17T10:36:00Z to 2026-08-17T11:06:00Z (UTC)" in text
     assert "/api/checkout" in text
     # The fixture message is 46 characters, wider than LOG_MESSAGE_WIDTH (34),
@@ -99,7 +99,7 @@ def test_a_request_that_logged_nothing_says_so_rather_than_showing_a_blank() -> 
 
 def test_a_row_with_no_level_shows_a_dash() -> None:
     lines = render_logs(_report(LOGS_ERROR_PAGE)).splitlines()
-    row = next(line for line in lines if "/api/offerings/[slug]" in line)
+    row = next(line for line in lines if "/api/documents/[slug]" in line)
     assert " -  " in row or row.split()[1] == "-"
 
 

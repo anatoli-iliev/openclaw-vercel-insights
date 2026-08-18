@@ -323,8 +323,8 @@ def test_the_shorthand_filters_compile_to_query_parameters(cli: Cli) -> None:
 #: being mirrored by it.
 LOGS_ONLY_MAPPINGS: list[tuple[list[str], str]] = [
     (["--branch", "release/2026-08"], "branch"),
-    (["--deployment", "dpl_8fQLGTTwTZXixzmKhKm9DaXeadTJ"], "deploymentId"),
-    (["--request-id", "zgzc9-1786964768933-ce3a0a3fb303"], "requestId"),
+    (["--deployment", "dpl_ExampleDeploymentId000000000"], "deploymentId"),
+    (["--request-id", "abcde-1786964768933-0123456789ab"], "requestId"),
     (["--search", "Cannot read properties"], "search"),
 ]
 

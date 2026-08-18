@@ -664,10 +664,10 @@ several lines keeps its shape, indented, so a stack trace never steps back to
 column zero and cannot forge a line of this tool's own output.
 
 ```console
-$ vercel-insights logs --request-id zgzc9-1786964768933-ce3a0a3fb303 --expand --since 2026-08-17T10:36:00Z --until 2026-08-17T11:06:00Z
+$ vercel-insights logs --request-id abcde-1786964768933-0123456789ab --expand --since 2026-08-17T10:36:00Z --until 2026-08-17T11:06:00Z
 Vercel request logs: prj_9RkQm2vT7xLpN4dWbYcF3sJz (logs, last 30 minutes)
 Range: 2026-08-17T10:36:00Z to 2026-08-17T11:06:00Z (UTC)
-Filter: requestId zgzc9-1786964768933-ce3a0a3fb303
+Filter: requestId abcde-1786964768933-0123456789ab
 
 time      level  status  method  route          source      message
 --------  -----  ------  ------  -------------  ----------  ----------------------------------
@@ -676,7 +676,7 @@ time      level  status  method  route          source      message
           at handler (/var/task/checkout.js:42:19)
     warning: retrying payment provider call (attempt 2 of 3)
     info: cart 4192 for customer 88213 has 3 items and a coupon code that is [truncated by Vercel]
-    request zgzc9-1786964768933-ce3a0a3fb303
+    request abcde-1786964768933-0123456789ab
 
 1 request in 30 minutes: 1 x 500.
 [exit code 0]
@@ -712,7 +712,7 @@ $ vercel-insights logs --request-id err-3 --json --since 2026-08-17T10:36:00Z --
       "route": "/api/cron/sync",
       "source": "serverless",
       "environment": "production",
-      "deploymentId": "dpl_8fQLGTTwTZXixzmKhKm9DaXeadTJ",
+      "deploymentId": "dpl_ExampleDeploymentId000000000",
       "durationMs": 54.0,
       "region": "fra1",
       "errorCode": "",
@@ -733,7 +733,7 @@ $ vercel-insights logs --request-id err-3 --json --since 2026-08-17T10:36:00Z --
       "raw": {
         "requestId": "err-3",
         "timestamp": "2026-08-17T11:02:41.000Z",
-        "deploymentId": "dpl_8fQLGTTwTZXixzmKhKm9DaXeadTJ",
+        "deploymentId": "dpl_ExampleDeploymentId000000000",
         "environment": "production",
         "deploymentDomain": "demo.vercel.app",
         "branch": "main",

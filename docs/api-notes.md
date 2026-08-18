@@ -734,7 +734,7 @@ Optional, all verified to filter:
 | `source` | `serverless`, `edge-function`, `edge-middleware`, `static`, comma separated | The display vocabulary differs; see below. |
 | `environment` | `production`, `preview` | |
 | `requestPath` | exact path | **Exact match**: `/api` returned nothing, `/api/me` returned only that path. |
-| `route` | exact route pattern | `/api/offerings/[slug]` returned 23 rows across 14 distinct paths. |
+| `route` | exact route pattern | `/api/documents/[slug]` returned 23 rows across 14 distinct paths. |
 | `requestMethod` | `GET`, `POST`, ... | Recorded in upper case on every row seen. Whether the filter is case sensitive was never probed; this client upper-cases the value, which cannot be wrong either way. |
 | `branch` | git branch name | |
 | `deploymentId` | `dpl_...` | |
@@ -757,17 +757,21 @@ arrive newest first, which was observed rather than documented, so
 `logs.merge` sorts anyway: ordering is then a property of this client rather than
 an assumption about a server.
 
-One real row, trimmed, from a live production project:
+One real row, trimmed, from a live production project. Every field name,
+every type and every empty string is exactly as the API returned them. The
+identifiers are not: the request id, deployment id, domains, invocation id and
+route name below were replaced with fictional values of the same shape, because
+this file is published and a real account's identifiers are not documentation.
 
 ```json
 {
-  "requestId": "zgzc9-1786964768933-ce3a0a3fb303",
+  "requestId": "abcde-1786964768933-0123456789ab",
   "timestamp": "2026-08-17T11:06:08.933Z",
-  "deploymentId": "dpl_8fQLGTTwTZXixzmKhKm9DaXeadTJ",
+  "deploymentId": "dpl_ExampleDeploymentId000000000",
   "environment": "production",
-  "deploymentDomain": "dobri-4zfpwg8vq-...vercel.app",
+  "deploymentDomain": "acme-docs-1a2b3c4d5-...vercel.app",
   "branch": "main",
-  "domain": "dobri-4zfpwg8vq-...vercel.app",
+  "domain": "acme-docs-1a2b3c4d5-...vercel.app",
   "requestMethod": "GET",
   "requestPath": "/api/me",
   "statusCode": 401,
@@ -790,7 +794,7 @@ One real row, trimmed, from a live production project:
       "functionRuntime": "nodejs24.x",
       "functionStartType": "hot",
       "functionMaxMemoryUsed": 329,
-      "invocationId": "01M07PCY66AS0DTZJ2M4GFQS9F"
+      "invocationId": "01EXAMPLEINVOCATION0000000"
     }
   ],
   "requestTags": ["ssr", "rsc"]
