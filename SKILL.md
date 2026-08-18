@@ -71,15 +71,45 @@ symptom is `404 Observability Data not found.`, which reads like "no data" but
 means "this token cannot ask". Request logs scope by account too, so a project
 scoped token is expected to be refused there as well.
 
-### The easy way
+Take the least privileged read scope Vercel offers: an account-scoped token can
+read every project, analytics dataset and request log that account can see, so
+its reach is the blast radius of any copy of it that gets away.
+
+### Recommended: keep the token out of the config file
+
+`apiKey` accepts a reference as well as a literal, so the token can stay in the
+environment or a secrets provider:
+
+```bash
+openclaw config set skills.entries.vercel-insights.apiKey \
+  --ref-provider default --ref-source env --ref-id VERCEL_TOKEN
+```
+
+No secret is on that command line, so none reaches the shell history or a
+process listing, and `~/.openclaw/openclaw.json` holds a pointer rather than a
+credential. `VERCEL_TOKEN` has to be set wherever the gateway starts, not only
+in an interactive shell.
+
+### The fallback: the token in the config
+
+Simpler, and less safe, because the token then rests in plaintext in the config
+file:
 
 ```bash
 openclaw config set skills.entries.vercel-insights.apiKey YOUR_TOKEN
 ```
 
-Or in the Control UI (`openclaw dashboard`): **Skills, vercel-insights, Save
-key**. Both write the same place. `openclaw skills info vercel-insights` prints
-these two routes for itself.
+> **What that costs.** A token pasted on a command line goes into the shell
+> history file and is readable in a process listing while the command runs, and
+> it is then stored in plaintext in `~/.openclaw/openclaw.json`, with the
+> previous value copied to `~/.openclaw/openclaw.json.bak` on every change.
+> Keep both readable only by their owner, keep them out of backups and synced
+> folders, and rotate the token at <https://vercel.com/account/tokens> if either
+> has been somewhere less private.
+
+The Control UI (`openclaw dashboard`): **Skills, vercel-insights, Save key**
+writes the same place without the token crossing a command line.
+`openclaw skills info vercel-insights` prints both routes for itself.
 
 This works because the skill declares `primaryEnv: VERCEL_TOKEN`, which is what
 maps a saved key onto `skills.entries.vercel-insights.apiKey`.
@@ -87,19 +117,10 @@ maps a saved key onto `skills.entries.vercel-insights.apiKey`.
 Note that `openclaw configure --section skills` reports skill status but does
 not prompt for a key, so it is not the route to use here.
 
-### Without storing the secret in the config file
-
-`apiKey` also accepts a reference, so the token can stay in the environment or a
-secrets provider:
-
-```bash
-openclaw config set skills.entries.vercel-insights.apiKey \
-  --ref-provider default --ref-source env --ref-id VERCEL_TOKEN
-```
-
 ### By hand
 
-`~/.openclaw/openclaw.json`, under `skills.entries`:
+`~/.openclaw/openclaw.json`, under `skills.entries`. Same plaintext-at-rest
+caveat as the box above, including the `.bak` copy:
 
 ```json
 {

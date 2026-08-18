@@ -69,20 +69,55 @@ A token is a password that lets this skill read your Vercel data. Make one at
 When Vercel asks about **scope**, choose your **account** or your **team**. Do
 not choose a single project. This matters more than it sounds like it does, and
 [the note below](#the-one-thing-that-trips-people-up) explains why. Read access
-is all this skill ever needs; it cannot change anything.
+is all this skill ever needs; it cannot change anything. So take the narrowest
+read scope Vercel will give you and nothing wider: what the token can reach is
+what an accident with it can reach.
 
-Vercel shows the token once, so copy it before closing the page. Then:
+Vercel shows the token once, so copy it before closing the page. Now pick how to
+hand it over. The first route keeps the secret out of your OpenClaw config file,
+and it is the one to prefer.
+
+**Best: keep the token in an environment variable and point the config at it.**
+
+```bash
+openclaw config set skills.entries.vercel-insights.apiKey \
+  --ref-provider default --ref-source env --ref-id VERCEL_TOKEN
+```
+
+No secret appears on that line, so none reaches your shell history. What it
+saves is a *reference*: OpenClaw reads the token out of `VERCEL_TOKEN` when it
+needs one, and `~/.openclaw/openclaw.json` never holds the token itself. The
+catch is that `VERCEL_TOKEN` has to be set wherever the OpenClaw gateway starts,
+not only in the terminal you are typing in, so this route is for you if you know
+where that is.
+
+**Simpler, and less safe: save the token itself.**
 
 ```bash
 openclaw config set skills.entries.vercel-insights.apiKey PASTE_YOUR_TOKEN_HERE
+```
+
+> **What that costs, so you can decide on purpose.** A token typed after
+> `config set` is written to your shell history file, and is readable in a
+> process listing for as long as the command runs. It is then stored in
+> plaintext in `~/.openclaw/openclaw.json`, and `config set` copies the previous
+> contents to `~/.openclaw/openclaw.json.bak` on every change, so a second copy
+> lives there too. Keep both files readable by your user alone
+> (`chmod 600 ~/.openclaw/openclaw.json*`), keep them out of backups and synced
+> folders, and rotate the token at <https://vercel.com/account/tokens> if either
+> file has been anywhere less private. Prefer clicking to typing?
+> `openclaw dashboard` opens the Control UI, where
+> **Skills, vercel-insights, Save key** saves the same value without it passing
+> through a command line, though it still lands in the config file.
+
+Either way, check it:
+
+```bash
 openclaw skills check
 ```
 
 **You should see:** `vercel-insights` listed as ready, not under "Missing
 requirements".
-
-Prefer clicking to typing? `openclaw dashboard` opens the Control UI, where
-**Skills, vercel-insights, Save key** does the same thing.
 
 If your Vercel projects belong to a **team** rather than to you personally, add
 this one extra line (find the ID under Team Settings, General):
@@ -133,8 +168,12 @@ cd openclaw-vercel-insights
 python3 -m venv .venv && .venv/bin/python -m pip install requests
 
 # 2. A token, from https://vercel.com/account/tokens
-#    Scope it to the ACCOUNT or TEAM, not to a single project. See the note below.
-export VERCEL_TOKEN="..."
+#    Scope it to the ACCOUNT or TEAM, not to a single project. See the note below,
+#    and take the narrowest read scope offered: this tool never writes.
+#    Typed at a prompt rather than pasted into the command line, because a token
+#    in an `export VERCEL_TOKEN=...` command is saved to your shell history file
+#    and is visible in a process listing while that command runs.
+printf 'Vercel token: '; read -rs VERCEL_TOKEN; echo; export VERCEL_TOKEN
 
 # 3. Which project? This lists them, and needs nothing else configured.
 .venv/bin/python -m vercel_insights --list-projects
@@ -324,9 +363,18 @@ export VERCEL_PROJECT_ID="prj_XXXXXXXXXXXXXXXX"   # or just use --project
 # export VERCEL_ORG_ID="team_XXXXXXXXXXXXXXXX"    # written by `vercel link`
 ```
 
+The first line is the one to be careful with, and only the first: the others are
+not secrets. A real token typed after `export` is recorded in your shell history
+file and is readable in a process listing while the command runs, so prefer a
+prompt, `printf 'Vercel token: '; read -rs VERCEL_TOKEN; echo; export
+VERCEL_TOKEN`, or a file that only your user can read.
+
 `.env.example` documents all of them. Nothing is read from or written to a file
 by the tool itself, so load them however you like:
-`set -a; . ./.env; set +a`.
+`set -a; . ./.env; set +a`. A `.env` holding a real token is a secret at rest:
+`chmod 600` it, and keep it out of git, out of container images and out of
+backups. Use the least privileged read token Vercel will issue, so that a copy
+you lose track of is worth as little as possible.
 
 ## What it looks like
 

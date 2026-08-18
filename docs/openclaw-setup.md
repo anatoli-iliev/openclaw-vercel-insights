@@ -18,7 +18,8 @@ SKILL=~/.openclaw/workspace/skills/vercel-insights
 chmod +x "$SKILL/bin/vercel-insights"                       # exec bit is not preserved
 python3 -m venv "$SKILL/.venv" && "$SKILL/.venv/bin/python" -m pip install requests
 
-openclaw config set skills.entries.vercel-insights.apiKey YOUR_TOKEN
+openclaw config set skills.entries.vercel-insights.apiKey \
+  --ref-provider default --ref-source env --ref-id VERCEL_TOKEN     # token stays in $VERCEL_TOKEN
 openclaw config set skills.entries.vercel-insights.env.VERCEL_TEAM_ID team_...   # team projects only
 openclaw skills check
 ```
@@ -28,10 +29,17 @@ From a local checkout, which preserves the exec bit and so needs no `chmod`:
 ```bash
 git clone https://github.com/anatoli-iliev/openclaw-vercel-insights.git
 openclaw skills install ./openclaw-vercel-insights --as vercel-insights
-openclaw config set skills.entries.vercel-insights.apiKey YOUR_TOKEN
+openclaw config set skills.entries.vercel-insights.apiKey \
+  --ref-provider default --ref-source env --ref-id VERCEL_TOKEN     # token stays in $VERCEL_TOKEN
 openclaw config set skills.entries.vercel-insights.env.VERCEL_TEAM_ID team_...   # team projects only
 openclaw skills check
 ```
+
+That `apiKey` line saves a *reference*, not the token: no secret goes on the
+command line, and `~/.openclaw/openclaw.json` ends up pointing at the
+`VERCEL_TOKEN` environment variable instead of holding a credential. Set that
+variable wherever the gateway starts. [Step 4](#4-save-the-token-where-the-gateway-reads-it)
+covers it properly, along with the plainer route and what that one costs.
 
 The rest of this page explains each step, and what to do when one of them does
 not behave.
@@ -47,7 +55,10 @@ not behave.
 ## 1. Get a token, scoped correctly
 
 <https://vercel.com/account/tokens>. Read scope is enough: this skill never
-writes.
+writes. **Take the least privileged read scope Vercel offers you**, because the
+token's reach is the blast radius of any copy of it that gets away: an
+account-scoped token can read every project, every analytics dataset and every
+request log that account can see, not only the ones you meant to ask about.
 
 **Scope it to the account or team, not to a single project.** This is the single
 most common way to end up with a half-working install, because the failure does
@@ -121,23 +132,11 @@ the one it tried, rather than failing with an import traceback.
 ## 4. Save the token where the gateway reads it
 
 The gateway runs as its own process. **A variable exported in an interactive
-shell may never reach it.** Save it in the config instead.
+shell may never reach it.** So the token has to be somewhere the gateway itself
+looks: an environment it inherits, or the config file. Those are the two routes
+below, safer one first.
 
-```bash
-openclaw config set skills.entries.vercel-insights.apiKey YOUR_TOKEN
-```
-
-Or in the Control UI (`openclaw dashboard`): **Skills, vercel-insights, Save
-key**. `openclaw skills info vercel-insights` prints both routes itself.
-
-This works because the skill declares `primaryEnv: VERCEL_TOKEN`, which is what
-maps a saved key onto `skills.entries.vercel-insights.apiKey`.
-
-> `openclaw configure --section skills` does **not** prompt for a key. It reports
-> skill status and exits. Verified by diffing the config before and after: it
-> changed nothing but timestamps.
-
-### Keeping the token out of the config file
+### Recommended: a reference, so the token is not in the config file
 
 `apiKey` accepts a reference as well as a literal:
 
@@ -146,12 +145,57 @@ openclaw config set skills.entries.vercel-insights.apiKey \
   --ref-provider default --ref-source env --ref-id VERCEL_TOKEN
 ```
 
-The token then stays in the environment or a secrets provider. Make sure it is
-set wherever the gateway starts, not only in your shell.
+Nothing secret is on that command line, so nothing secret reaches your shell
+history or a process listing, and the config file holds a pointer rather than a
+credential. The token stays wherever you keep your environment: a systemd unit's
+`EnvironmentFile`, a launchd plist, a secrets provider, or a profile file only
+your user can read. Set it where the gateway starts, not only in your shell, or
+the skill reports a missing token and stays in "Missing requirements".
+
+### The fallback: the token in the config, in plaintext
+
+Simpler, and what most people do. It is worth knowing exactly what it costs:
+
+```bash
+openclaw config set skills.entries.vercel-insights.apiKey YOUR_TOKEN
+```
+
+> **This stores a secret at rest.** Three consequences, none of them obvious:
+>
+> - A token pasted on a command line is written to your shell history file, and
+>   is readable in a process listing for as long as the command runs. Deleting
+>   the history entry afterwards is a patch, not a fix.
+> - The value is then in plaintext in `~/.openclaw/openclaw.json`. Anything that
+>   can read that file can read this account's Vercel data for as long as the
+>   token lives.
+> - `config set` writes `~/.openclaw/openclaw.json.bak` on every change, so the
+>   previous token survives in the backup too. A synced home directory, a
+>   dotfiles repository or an ordinary machine backup carries both copies.
+>
+> So: `chmod 600 ~/.openclaw/openclaw.json ~/.openclaw/openclaw.json.bak`, keep
+> both out of anything that syncs or archives, use the least privileged read
+> token Vercel will issue, and rotate it at
+> <https://vercel.com/account/tokens> if it has ever been anywhere less private
+> than that.
+
+Or in the Control UI (`openclaw dashboard`): **Skills, vercel-insights, Save
+key**. That keeps the token off a command line, though the value still lands in
+the config file, so the file caveats above still apply.
+`openclaw skills info vercel-insights` prints both routes itself.
+
+This works because the skill declares `primaryEnv: VERCEL_TOKEN`, which is what
+maps a saved key onto `skills.entries.vercel-insights.apiKey`.
+
+> `openclaw configure --section skills` does **not** prompt for a key. It reports
+> skill status and exits. Verified by diffing the config before and after: it
+> changed nothing but timestamps.
 
 ### By hand
 
-`~/.openclaw/openclaw.json`:
+`~/.openclaw/openclaw.json`. This is the plaintext route written out, so every
+caveat in the box above applies to it in full. The reference form is written by
+`config set --ref-provider ...` rather than by hand here, because how it is
+stored was not something this page verified.
 
 ```json
 {
@@ -168,9 +212,11 @@ set wherever the gateway starts, not only in your shell.
 ```
 
 The `env` map takes `"${SOME_VAR}"` to read from the environment instead of
-storing a value. `config set` writes a `.bak` beside the file on every change,
-so `cp ~/.openclaw/openclaw.json.bak ~/.openclaw/openclaw.json` undoes the last
-one.
+storing a value, which is the same idea as the reference above applied to the
+settings that are not secrets. `config set` writes a `.bak` beside the file on
+every change, so `cp ~/.openclaw/openclaw.json.bak ~/.openclaw/openclaw.json`
+undoes the last one: useful after a mistake, and one more file with your token
+in it to keep private.
 
 ## 5. Add the team, if the project belongs to one
 
