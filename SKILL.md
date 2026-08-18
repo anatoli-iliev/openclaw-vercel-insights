@@ -891,9 +891,9 @@ id with `--metric`. Naming a metric is enough; no preset is needed.
 **Be straight about how wide that is.** `--list-metrics` and `--metric` are not
 confined to the errors, traffic and speed story this skill leads with: they reach
 whatever the account's observability schema exposes, which was 96 metrics on the
-account this was probed against. Read-only, one fixed endpoint, and still true
-that an account-scoped token therefore gives this skill read access to **every
-metric that account can see**, not only the web vitals. Say so if a user is
+account this was probed against. It is read-only and it is one fixed endpoint,
+and it still means an account-scoped token gives this skill read access to
+**every metric that account can see**, not only the web vitals. Say so if a user is
 deciding how to scope a token, and point them at the narrowest scope that still
 answers their question. Do not go exploring the schema unasked: run
 `--list-metrics` when the user's question needs a metric this skill has no preset

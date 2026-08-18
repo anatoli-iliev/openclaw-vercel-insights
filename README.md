@@ -526,8 +526,8 @@ Three presets, all read-only, all against the same endpoint:
 
 ### What a log line can carry
 
-Read this before running one, because it is the one thing about this feature that
-cannot be fixed in code.
+Read this before running a logs command, because it is the one thing about this
+feature that cannot be fixed in code.
 
 A log line is whatever your application printed. Applications print API keys,
 connection strings, session identifiers, email addresses and customer records
