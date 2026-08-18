@@ -476,20 +476,25 @@ Three presets, all read-only, all against the same endpoint:
 - **`error-summary`** groups the same errors three ways, by status, by route and
   by exact message, which is the "where is this concentrated" view.
 
-Here is a real run, captured against a live account:
+Here is a real run, captured against a live account and then redacted. The
+shape, the columns and every note are exactly what it printed; the project id,
+the route names and the timestamps were replaced afterwards with fictional
+equivalents, because a real account's identifiers do not belong in a published
+file. Read your own output the same way before you share it: it carries your
+project id, your route names and whatever your application logged.
 
 ```console
 $ vercel-insights logs --since 30m --limit 5
-Vercel request logs: prj_tjgvYZgQGYqNxBP1nQffcF1A92Ag (logs, last 30 minutes)
-Range: 2026-08-17T20:18:19Z to 2026-08-17T20:48:19Z (UTC)
+Vercel request logs: prj_ExampleRedactedProjectId0000 (logs, last 30 minutes)
+Range: 2026-08-17T09:18:19Z to 2026-08-17T09:48:19Z (UTC)
 
 time      level  status  method  route                             source                 message
 --------  -----  ------  ------  --------------------------------  ---------------------  -------
-20:47:59  -         200  GET     /api/orgs/[orgSlug]               serverless
-20:47:59  -         401  GET     /api/me                           serverless
-20:47:59  -         200  GET     /api/offerings/[slug]             serverless
-20:47:59  -         200  GET     /robots.txt                       serverless
-20:47:59  -         200  GET     /[locale]/o/[orgSlug]/[offering…  serverless-middleware
+09:47:59  -         200  GET     /api/teams/[teamId]               serverless
+09:47:59  -         401  GET     /api/me                           serverless
+09:47:59  -         200  GET     /api/documents/[slug]             serverless
+09:47:59  -         200  GET     /robots.txt                       serverless
+09:47:59  -         200  GET     /[locale]/t/[teamId]/[documentS…  serverless-middleware
 
 Showing the most recent 5 of more requests that matched in 30 minutes: 4 x 200, 1 x 401.
 More rows matched than were shown. Raise --limit (up to 200) or narrow the window.
@@ -520,11 +525,11 @@ recognising:
 
 ```console
 $ vercel-insights errors --since 24h
-Vercel request logs: prj_tjgvYZgQGYqNxBP1nQffcF1A92Ag (errors, last 24 hours)
-Range: 2026-08-16T17:34:31Z to 2026-08-17T17:34:31Z (UTC)
+Vercel request logs: prj_ExampleRedactedProjectId0000 (errors, last 24 hours)
+Range: 2026-08-16T06:34:31Z to 2026-08-17T06:34:31Z (UTC)
 Counted as an error: a 5xx response, a crashed function, or a request that logged an error or fatal line.
 
-No request logs for project prj_tjgvYZgQGYqNxBP1nQffcF1A92Ag between 2026-08-16T17:34:31Z and 2026-08-17T17:34:31Z.
+No request logs for project prj_ExampleRedactedProjectId0000 between 2026-08-16T06:34:31Z and 2026-08-17T06:34:31Z.
 
 Runtime log retention is 1 hour on Hobby, 1 day on Pro, 3 days on Enterprise and 30 days with Observability Plus, so an empty result over a longer window can mean the logs aged out rather than that nothing failed.
 ```

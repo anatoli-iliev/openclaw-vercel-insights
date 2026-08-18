@@ -7,11 +7,22 @@ sections.
 
 Three blocks are the exception, and say so where they appear: the first three in
 [Errors: request logs](#errors-request-logs) were captured against a **live
-Vercel account**, so their project id, routes and timestamps are real, and the
-project happened to have no errors at all: the third asks for 4xx responses by
-name, which is why it has rows to show. The rest of that section is stub-driven
-like everything else, with data invented to show what a failing project looks
-like.
+Vercel account and then redacted**, which is not the same as synthetic. The
+shape, the columns, the counts and every note in them are exactly what the tool
+printed. The project id, the route names and the timestamps were replaced
+afterwards with fictional equivalents of the same shape, because a real
+account's ids and internal route naming do not belong in a published file. That
+project happened to have no errors at all: the third block asks for 4xx
+responses by name, which is why it has rows to show. The rest of that section is
+stub-driven like everything else, with data invented to show what a failing
+project looks like.
+
+**Read your own output before you share it.** The blocks here are safe because
+they were redacted; a real run is not. Request logs carry your project id, your
+route names, your deployment ids and whatever your application chose to log,
+which can include secrets or personal data. Quote the part that answers the
+question, leave out the rest, and do not forward it to a service that did not
+already have access to it.
 
 `vercel-insights` is shorthand for `python3 -m vercel_insights`.
 
@@ -486,11 +497,12 @@ They are what makes a percentile trustworthy, so a group with few of them is not
 
 ## Errors: request logs
 
-### Recent requests, captured against a live account
+### Recent requests, captured live and redacted
 
-Real output from a real project. The `level` column is `-` on every row because
-none of these requests printed a log line, which is the ordinary case: a filter
-like `--level error` would have matched none of them.
+Real output from a real project, with its identifiers replaced as described at
+the top of this file. The `level` column is `-` on every row because none of
+these requests printed a log line, which is the ordinary case: a filter like
+`--level error` would have matched none of them.
 
 `--limit 5` cut the table, and the footer describes what is on screen rather than
 the half hour: *showing the most recent 5 of more requests that matched*, with the
@@ -503,16 +515,16 @@ block in this section shows being resolved.
 
 ```console
 $ vercel-insights logs --since 30m --limit 5
-Vercel request logs: prj_tjgvYZgQGYqNxBP1nQffcF1A92Ag (logs, last 30 minutes)
-Range: 2026-08-17T20:18:19Z to 2026-08-17T20:48:19Z (UTC)
+Vercel request logs: prj_ExampleRedactedProjectId0000 (logs, last 30 minutes)
+Range: 2026-08-17T09:18:19Z to 2026-08-17T09:48:19Z (UTC)
 
 time      level  status  method  route                             source                 message
 --------  -----  ------  ------  --------------------------------  ---------------------  -------
-20:47:59  -         200  GET     /api/orgs/[orgSlug]               serverless
-20:47:59  -         401  GET     /api/me                           serverless
-20:47:59  -         200  GET     /api/offerings/[slug]             serverless
-20:47:59  -         200  GET     /robots.txt                       serverless
-20:47:59  -         200  GET     /[locale]/o/[orgSlug]/[offering…  serverless-middleware
+09:47:59  -         200  GET     /api/teams/[teamId]               serverless
+09:47:59  -         401  GET     /api/me                           serverless
+09:47:59  -         200  GET     /api/documents/[slug]             serverless
+09:47:59  -         200  GET     /robots.txt                       serverless
+09:47:59  -         200  GET     /[locale]/t/[teamId]/[documentS…  serverless-middleware
 
 Showing the most recent 5 of more requests that matched in 30 minutes: 4 x 200, 1 x 401.
 More rows matched than were shown. Raise --limit (up to 200) or narrow the window.
@@ -522,19 +534,19 @@ Add --expand for full messages, or --request-id to pull one request apart.
 
 ### What a healthy project looks like
 
-Also captured live, and the case most worth recognising: nothing failed. Exit
-code 0, because "no errors" is an answer rather than a failure. The last line is
-the honest part. Runtime logs are kept for far less time than analytics data, so
+Also captured live and redacted, and the case most worth recognising: nothing
+failed. Exit code 0, because "no errors" is an answer rather than a failure. The
+last line is the honest part. Runtime logs are kept for far less time than analytics data, so
 over 24 hours an empty result can mean "nothing broke" or "most of that window
 has already aged out", and the tool refuses to imply the first.
 
 ```console
 $ vercel-insights errors --since 24h
-Vercel request logs: prj_tjgvYZgQGYqNxBP1nQffcF1A92Ag (errors, last 24 hours)
-Range: 2026-08-16T17:34:31Z to 2026-08-17T17:34:31Z (UTC)
+Vercel request logs: prj_ExampleRedactedProjectId0000 (errors, last 24 hours)
+Range: 2026-08-16T06:34:31Z to 2026-08-17T06:34:31Z (UTC)
 Counted as an error: a 5xx response, a crashed function, or a request that logged an error or fatal line.
 
-No request logs for project prj_tjgvYZgQGYqNxBP1nQffcF1A92Ag between 2026-08-16T17:34:31Z and 2026-08-17T17:34:31Z.
+No request logs for project prj_ExampleRedactedProjectId0000 between 2026-08-16T06:34:31Z and 2026-08-17T06:34:31Z.
 
 Runtime log retention is 1 hour on Hobby, 1 day on Pro, 3 days on Enterprise and 30 days with Observability Plus, so an empty result over a longer window can mean the logs aged out rather than that nothing failed.
 [exit code 0]
@@ -542,9 +554,9 @@ Runtime log retention is 1 hour on Hobby, 1 day on Pro, 3 days on Enterprise and
 
 ### Asking for 4xx, which are not errors
 
-Live too, and the one case worth showing on purpose: `errors` normally
-decides for itself what an error is, and an explicit `--level` or `--status-code`
-takes that decision away from it. The preset then issues a single query carrying
+Live and redacted too, and the one case worth showing on purpose: `errors`
+normally decides for itself what an error is, and an explicit `--level` or
+`--status-code` takes that decision away from it. The preset then issues a single query carrying
 your filter, so the rows are whatever it matched. `--status-code 4xx` matches
 401s, and a 401 on `/api/me` is the application turning away an unauthenticated
 request, so the header says the filter replaced the error definition rather than
@@ -553,16 +565,16 @@ claims those three rows are faults.
 
 ```console
 $ vercel-insights errors --status-code 4xx --since 1h --limit 3
-Vercel request logs: prj_tjgvYZgQGYqNxBP1nQffcF1A92Ag (errors, last 1 hour)
-Range: 2026-08-17T19:48:40Z to 2026-08-17T20:48:40Z (UTC)
+Vercel request logs: prj_ExampleRedactedProjectId0000 (errors, last 1 hour)
+Range: 2026-08-17T08:48:40Z to 2026-08-17T09:48:40Z (UTC)
 Filter: statusCode 4xx
 These rows are what statusCode 4xx matched: your filter chose them, not this tool's own error query. An explicit --level or --status-code replaces the error definition rather than narrowing it.
 
 time      level  status  method  route    source      message
 --------  -----  ------  ------  -------  ----------  -------
-20:47:59  -         401  GET     /api/me  serverless
-20:47:52  -         401  GET     /api/me  serverless
-20:47:52  -         401  GET     /api/me  serverless
+09:47:59  -         401  GET     /api/me  serverless
+09:47:52  -         401  GET     /api/me  serverless
+09:47:52  -         401  GET     /api/me  serverless
 
 Showing the most recent 3 of more requests that matched in 1 hour: 3 x 401.
 More rows matched than were shown. Raise --limit (up to 200) or narrow the window.
@@ -596,7 +608,7 @@ time      level  status  method  route                  source      message
 11:04:52  error     500  POST    /api/checkout          serverless  TypeError: Cannot read properties…
 11:03:19  error     500  POST    /api/checkout          serverless  TypeError: Cannot read properties…
 11:02:41  fatal     200  GET     /api/cron/sync         serverless  FATAL: connection pool exhausted
-10:58:03  -         502  GET     /api/offerings/[slug]  serverless  (no log line: the response failed)
+10:58:03  -         502  GET     /api/documents/[slug]  serverless  (no log line: the response failed)
 
 4 errors in 30 minutes: 2 x 500, 1 x 200, 1 x 502.
 Most affected route: /api/checkout (2).
@@ -629,7 +641,7 @@ TOTAL      55  100.0%
 route                  count  worst status  first seen  last seen
 ---------------------  -----  ------------  ----------  ---------
 /api/checkout             38           500  05:11:02    10:44:41
-/api/offerings/[slug]     12           502  06:40:19    10:42:19
+/api/documents/[slug]     12           502  06:40:19    10:42:19
 /api/cron/sync             5           500  06:30:00    11:02:41
 
 message                                         count  first seen  last seen
@@ -784,7 +796,7 @@ time,level,status,method,route,path,source,requestId,message
 2026-08-17T11:04:52.100000+00:00,error,500,POST,/api/checkout,/api/checkout,serverless,err-1,TypeError: Cannot read properties of undefined
 2026-08-17T11:03:19.400000+00:00,error,500,POST,/api/checkout,/api/checkout,serverless,err-2,TypeError: Cannot read properties of undefined
 2026-08-17T11:02:41+00:00,fatal,200,GET,/api/cron/sync,/api/cron/sync,serverless,err-3,FATAL: connection pool exhausted
-2026-08-17T10:58:03+00:00,,502,GET,/api/offerings/[slug],/api/offerings/summer,serverless,err-4,
+2026-08-17T10:58:03+00:00,,502,GET,/api/documents/[slug],/api/documents/summer,serverless,err-4,
 note: 4 errors in 30 minutes: 2 x 500, 1 x 200, 1 x 502.
 note: Most affected route: /api/checkout (2).
 note: 1 of them returned a non-5xx status and count as errors only because they logged an error or fatal line.
