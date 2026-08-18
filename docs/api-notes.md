@@ -267,7 +267,20 @@ Rate limiting returns code `rate_limited` and carries a `limit` object:
 as per-endpoint, so one throttled endpoint does not block the others.
 
 Surface `error.message` verbatim to the user. It is the most specific diagnostic
-available and is written for humans.
+available and is written for humans. This client escapes every control character
+in it and scrubs its own token out of it first, so what reaches a screen is
+Vercel's sentence and nothing that can forge a line of output around it.
+
+**Show it to whoever asked, and stop there.** The wording is Vercel's choice
+rather than this tool's, so it can carry operational context alongside the
+diagnosis: an internal identifier, a team or account name, a project id, a rate
+limit budget together with the endpoint key it belongs to, or which add-on a plan
+is missing. That is precisely why it is worth putting in front of the operator
+debugging the problem, and precisely why it should not travel any further.
+Nothing here rewrites it into a general-audience string, so it should not be
+forwarded onward or pasted into an issue tracker, a chat channel, a status page
+or another service without being read first. Quoting it to the person who asked
+is deliberate; passing it along is not.
 
 ## Reporting window
 

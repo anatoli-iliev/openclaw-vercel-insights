@@ -200,9 +200,13 @@ question.
 say "no data in that window", not "it failed". On a logs preset say what an empty
 answer does not prove as well, because runtime logs age out within an hour on
 Hobby, and *Reading a logs answer* below has the sentence to use. `1` the API
-returned an error, and the message is Vercel's own, so quote it. `2` the command
-was wrong, and the message names the fix, so apply it and retry rather than
-reporting it verbatim.
+returned an error, and the message is Vercel's own, so quote it to the user who
+asked and no further: because Vercel wrote it rather than this skill, it can
+carry operational context along with the fault, an internal identifier, a team or
+project id, a rate limit budget or a missing add-on, which is worth showing to
+the person debugging and not worth copying into an issue tracker, a chat channel
+or another service. `2` the command was wrong, and the message names the fix, so
+apply it and retry rather than reporting it verbatim.
 `3` only from `--budget`: the query worked and a threshold was exceeded.
 
 **Never invent a number.** If a query comes back empty, or a metric is missing,
