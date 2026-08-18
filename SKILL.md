@@ -6,7 +6,7 @@ description: >-
   Vitals. Trigger on requests like "what errors did my site have in the last
   30 minutes", "why am I getting 500s", "show me the logs", "how is my
   traffic this week", or "which pages are slowest". Read only.
-version: 1.1.0
+version: 1.1.1
 homepage: https://github.com/anatoli-iliev/openclaw-vercel-insights
 compatibility: openclaw >=1.0
 metadata:

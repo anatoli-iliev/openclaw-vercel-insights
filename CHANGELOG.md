@@ -7,6 +7,122 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-08-18
+
+Documentation and packaging only. **No behaviour changed**: nothing under
+`vercel_insights/` differs from 1.1.0 except the version constant, no flag was
+added or removed, no output was reworded, no dependency moved, and the same 1371
+tests pass.
+
+ClawHub's scan of the 1.1.0 publish returned BENIGN at high confidence with clean
+moderation, and its SkillSpector engine raised nine MEDIUM findings alongside it.
+This release answers all nine. Three came from files that had no business being
+published at all. Four asked for a warning to be where a reader actually meets it
+rather than in a section further down. One asked for the safer token route to be
+the recommended one rather than the alternative. One asked for an honest
+statement of how wide the generic metric surface is.
+
+### Removed
+
+- **`docs/superpowers/` no longer ships.** Two files, about 4,700 lines: the
+  design spec and the implementation plan for the request logs work in 1.1.0.
+  ClawHub publishes every file in the repository tree and its scanner reads
+  documentation as live guidance, so a design record written for the people
+  building the feature was read as instructions to the people running it. It
+  produced three findings that describe nothing the shipped code does: the spec's
+  honest record of a token-scrubbing gap, found and fixed during implementation,
+  was reported as a live credential leak; the plan's draft trigger phrases were
+  reported as over-broad agent routing; and the spec's acknowledgement that log
+  bodies may contain secrets was reported as reliance on guidance rather than
+  controls.
+
+  The design record is not discarded. It stays in git history, reachable at tag
+  `v1.1.0` and through PR #24. `docs/api-notes.md` remains the maintained record
+  of every API fact, which is what the spec deferred to in the first place.
+
+### Security
+
+- **The token setup now leads with the route that does not store the secret.**
+  `README.md`, `docs/openclaw-setup.md` and `SKILL.md` all documented
+  `--ref-provider default --ref-source env --ref-id VERCEL_TOKEN`, and all three
+  documented it second, with the warnings in a distant section. That is the part
+  the scan was right about: a warning a reader meets after pasting the token has
+  warned nobody. The reference route is now first and labelled as the one to
+  prefer, and the plaintext routes are labelled fallbacks with the cost stated
+  immediately beside the command: shell history and process listings for a token
+  typed on a command line, and for the config file that it is a secret at rest,
+  that `config set` leaves a second copy in `openclaw.json.bak`, that both want
+  mode 600 and no place in a backup or synced folder, and that the token should
+  be the least privileged read scope Vercel will issue. No route was removed: the
+  simple path is still there, now with enough beside it to choose on purpose.
+
+  The README's terminal quick start reads the token from a prompt with `read -rs`
+  instead of showing `export VERCEL_TOKEN=...` with the value on the line.
+
+- **The example output no longer carries a real account.** Three blocks in
+  `examples/example_outputs.md`, one of them quoted in `README.md`, said they
+  were captured against a live Vercel account, and they carried that account's
+  project id, its internal route naming and the wall-clock time of the run. The
+  same account was in three quieter places that announced nothing: the project
+  name heading `SKILL.md`'s logs example, the real probed row recorded in
+  `docs/api-notes.md` with its request id, deployment id, preview domain and
+  invocation id, and the fixture in `tests/helpers.py` copied from it.
+
+  All of it is now fictional. Redacted rather than replaced with invention,
+  because "this is what the tool really printed" is worth keeping: every
+  replacement is the same length as the value it replaces, so the tables are
+  byte-identical in layout to what the renderer produced, the row that
+  demonstrates 32 character route truncation still truncates at 32, and the row
+  that shows the `serverless-middleware` display spelling still shows it.
+  Timestamps are shifted by a constant, which preserves every window width and
+  the fact that one request appears in two blocks. The files now say what these
+  blocks are: captured from a real run and then redacted, which is neither
+  synthetic nor a verbatim publication.
+
+- **The log content warning moved to where it is read.** It was accurate and it
+  was buried: a bullet deep inside a list in `SKILL.md`, a bullet in the README's
+  security section. `README.md` now has "What a log line can carry" as a section
+  of its own, before the first log output it shows; `SKILL.md` warns the agent at
+  the point it is told to quote output and again at the head of "Reading a logs
+  answer"; `docs/api-notes.md` carries it at the top of the request logs chapter.
+  All of them cover that log lines may hold secrets or personal data, that only
+  this tool's own token is redacted, that quoted output should be the minimum
+  that answers the question, that it should not be forwarded to another service,
+  and that `--json` and `--csv` carry more than the table rather than less.
+
+  No pattern-based redactor was added, and that is a decision. Nothing can
+  distinguish a user's own API key from ordinary log text, and a matcher
+  aggressive enough to catch an unknown secret would also mangle the stack traces
+  this feature exists to show.
+
+- **Provider error messages carry a disclosure.** `docs/api-notes.md` tells this
+  client to surface upstream `error.message` verbatim, which is deliberate: it is
+  the most specific diagnostic available and it is already escaped of control
+  characters and scrubbed of this client's token. What was missing is the note
+  beside it, now in `docs/api-notes.md` and in `SKILL.md`'s exit code guidance,
+  that Vercel wrote the wording rather than this tool, that it can carry
+  operational context along with the fault (an internal identifier, a team or
+  project id, a rate limit budget, a missing add-on), and that it should go to
+  the person who asked and no further.
+
+- **The generic metric surface says how wide it is.** `--list-metrics` and
+  `--metric` reach whatever the account's observability schema exposes, 96
+  metrics on the account this project probed, rather than only the web vitals in
+  the section above them. `SKILL.md` and `README.md` now say so where the
+  capability is introduced, and point a reader who wants a narrower blast radius
+  at scoping the token, with the trade-off stated: Speed Insights and request
+  logs both need account or team scope, so a project-scoped token costs two of
+  the three features. The capability itself is unchanged. Gating or allowlisting
+  it would remove documented, read-only behaviour in a patch release, which
+  serves a user worse than the finding does.
+
+### Changed
+
+- **Version strings in the docs.** The two "You should see" lines in the README's
+  install steps and the `User-Agent` in the five dry-run blocks in
+  `examples/example_outputs.md` read 1.1.1, because that is what a reader of this
+  release will see.
+
 ## [1.1.0] - 2026-08-17
 
 A third surface: **request logs**. The skill could report how many people came
@@ -803,7 +919,8 @@ API, packaged as an OpenClaw skill.
   is ever built.
 - No `eval`, no `exec`, no `subprocess`, and no filesystem writes.
 
-[Unreleased]: https://github.com/anatoli-iliev/openclaw-vercel-insights/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/anatoli-iliev/openclaw-vercel-insights/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/anatoli-iliev/openclaw-vercel-insights/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/anatoli-iliev/openclaw-vercel-insights/compare/v1.0.3...v1.1.0
 [1.0.3]: https://github.com/anatoli-iliev/openclaw-vercel-insights/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/anatoli-iliev/openclaw-vercel-insights/compare/v1.0.1...v1.0.2

@@ -41,7 +41,7 @@ always know whether it worked before moving on.
 clawhub install vercel-insights
 ```
 
-**You should see:** `Installed vercel-insights v1.1.0 -> ...`
+**You should see:** `Installed vercel-insights v1.1.1 -> ...`
 
 #### Step 2: make it runnable
 
@@ -57,7 +57,7 @@ python3 -m venv "$SKILL/.venv"
 "$SKILL/bin/vercel-insights" --version
 ```
 
-**You should see:** `vercel-insights 1.1.0` on the last line. Anything installed
+**You should see:** `vercel-insights 1.1.1` on the last line. Anything installed
 here goes inside the skill's own folder and touches nothing else on your
 computer.
 

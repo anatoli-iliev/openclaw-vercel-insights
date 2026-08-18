@@ -828,7 +828,7 @@ Query parameters:
 Headers:
   Accept         application/json
   Authorization  Bearer <redacted>
-  User-Agent     vercel-insights-skill/1.1.0
+  User-Agent     vercel-insights-skill/1.1.1
 
 Encoded URL (never contains the token):
   https://vercel.com/api/logs/request-logs?projectId=prj_9RkQm2vT7xLpN4dWbYcF3sJz&ownerId=own_demo&page=0&startDate=1786962960000&endDate=1786964760000&source=edge-middleware
@@ -1101,7 +1101,7 @@ Query parameters:
 Headers:
   Accept         application/json
   Authorization  Bearer <redacted>
-  User-Agent     vercel-insights-skill/1.1.0
+  User-Agent     vercel-insights-skill/1.1.1
 
 Encoded URL (never contains the token):
   https://api.vercel.com/v1/query/web-analytics/visits/aggregate?projectId=prj_9RkQm2vT7xLpN4dWbYcF3sJz&by=requestPath&since=2026-08-08T00%3A00%3A00Z&until=2026-08-15T00%3A00%3A00Z&limit=10&filter=country+eq+%27US%27
@@ -1133,7 +1133,7 @@ Query parameters:
 Headers:
   Accept         application/json
   Authorization  Bearer <redacted>
-  User-Agent     vercel-insights-skill/1.1.0
+  User-Agent     vercel-insights-skill/1.1.1
 
 Encoded URL (never contains the token):
   https://vercel.com/api/logs/request-logs?projectId=prj_9RkQm2vT7xLpN4dWbYcF3sJz&ownerId=team_8mHvK3nQpR6tXwZa&page=0&startDate=1786962960000&endDate=1786964760000&statusCode=5xx
@@ -1153,7 +1153,7 @@ Query parameters:
 Headers:
   Accept         application/json
   Authorization  Bearer <redacted>
-  User-Agent     vercel-insights-skill/1.1.0
+  User-Agent     vercel-insights-skill/1.1.1
 
 Encoded URL (never contains the token):
   https://vercel.com/api/logs/request-logs?projectId=prj_9RkQm2vT7xLpN4dWbYcF3sJz&ownerId=team_8mHvK3nQpR6tXwZa&page=0&startDate=1786962960000&endDate=1786964760000&level=error%2Cfatal
@@ -1174,7 +1174,7 @@ Query parameters:
 Headers:
   Accept         application/json
   Authorization  Bearer <redacted>
-  User-Agent     vercel-insights-skill/1.1.0
+  User-Agent     vercel-insights-skill/1.1.1
 
 JSON body:
   {
